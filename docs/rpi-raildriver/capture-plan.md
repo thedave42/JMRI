@@ -28,8 +28,6 @@ post-hoc human activity outside the scope of either script.
 
 ## 2. Scope
 
-### In scope
-
 For every labeled control in `control-inventory.md`:
 
 - **Switches and buttons** — capture HID reports while the control is held in
