@@ -34,5 +34,3 @@ is free to map them to whatever DCC functionality the user wants.
 | 13 | Lights                      | 3-position switch: Off, Dim, Full                          | |
 | 42 (user SPDT)     | unknown                | unknown       | n/a |
 | 43 (hat switch)    | 624–688 (rocker / POV) | `selectRosterEntry`, `dispatchAddress`, frame nav | n/a |
-  inventory's item numbers is tentative until the Phase 2 fixtures
-  arrive.
