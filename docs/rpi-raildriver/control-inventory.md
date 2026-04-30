@@ -29,5 +29,5 @@ is free to map them to whatever DCC functionality the user wants.  The numbering
 | 9  | Throttle / Dynamic Brake    | Continuous analog, bipolar                                 | Down = throttle (centre→max). Centre = idle. Up = dynamic brake (centre→max). |
 | 10 | Auto Brake                  | Continuous analog with specific positions SUP, CS, EMG     | Continuous between the named positions. |
 | 11 | Independent Brake           | Continuous analog plus two bail-off positions              | |
-| 12 | Wiper                       | 3-positions: Off, Slow, Full                         | |
-| 13 | Lights                      | 3-positions: Off, Dim, Full                          | |
+| 12 | Wiper                       | Analog with 3 physical positions: Off, Slow, Full                         | |
+| 13 | Lights                      | Analog with 3 physical positions: Off, Dim, Full                          | |
