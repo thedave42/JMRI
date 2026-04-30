@@ -1,10 +1,5 @@
 # RailDriver structured capture protocol
 
-> **Companion docs:** `control-inventory.md` (the authoritative list of physical
-> controls), `plan.md` (the umbrella RailDriver-on-Linux project plan).
-> **Companion scripts:** `rd-record.sh` (capture) and `rd-analyze.sh`
-> (analysis) — see §10.
-
 ## 1. Problem statement
 
 The existing captures under `docs/rpi-raildriver/test-data/` (five `xxd -c 14`
