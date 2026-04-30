@@ -32,8 +32,6 @@ is free to map them to whatever DCC functionality the user wants.
 | 11 | Independent Brake           | Continuous analog plus two bail-off positions              | ASSUMPTION: spec wrote "ball off and on", treated as a typo for "bail off and on". |
 | 12 | Wiper                       | 3-position switch: Off, Slow, Full                         | |
 | 13 | Lights                      | 3-position switch: Off, Dim, Full                          | |
-
-silently dropped (see issue #1 §4.1) |
 | 42 (user SPDT)     | unknown                | unknown       | n/a |
 | 43 (hat switch)    | 624–688 (rocker / POV) | `selectRosterEntry`, `dispatchAddress`, frame nav | n/a |
   inventory's item numbers is tentative until the Phase 2 fixtures
