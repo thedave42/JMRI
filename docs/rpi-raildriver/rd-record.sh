@@ -63,6 +63,12 @@
 #   RD_HIDRAW    /dev/hidrawN node (default /dev/hidraw0)
 #   RD_OUTDIR    output directory (default ~/rd-capture)
 #   RD_START     numeric prefix offset for action files (default 100)
+#   RD_JITTER    LSB tolerance for ADC noise on analog bytes 0-6
+#                during baseline capture (default 2). Bytes 7-13 are
+#                button bytes and must match exactly regardless.
+#                Reporting during per-action captures also uses this
+#                tolerance: changes <= RD_JITTER are flagged as
+#                "(jitter)" rather than treated as a real movement.
 #
 # See issue #1 for the broader plan and
 # docs/rpi-raildriver/control-inventory.md for the inventory.
@@ -154,58 +160,200 @@ diff_payloads() {
     echo
 }
 
-# For a captured xxd file, report which byte positions varied at any point
-# in the file (compared to the baseline payload). For each varying byte,
-# list the distinct values seen.
+# Analyze a captured xxd file. Two outputs:
+#
+#   1. Human-readable lines printed to stdout (for the operator).
+#   2. A single tab-separated summary line appended to $RD_SUMMARY (if set).
+#      Format: <type>\t<label>\t<KEY=VALUE>\t<KEY=VALUE>\t...\t<file>
+#      Keys depend on $type:
+#        button | spdt-direction | hat-direction:
+#            byte=N  bit_mask=0xMM  bit_index=N  transitions=...  flag=...
+#        analog | analog-bipolar | analog-positional:
+#            byte=N  rest=0xRR  min=0xMM  max=0xMM  range=N  flag=...
+#
+# Args: <file> <baseline_payload> <type> <label>
 report_capture() {
     local file="$1"
     local baseline_payload="$2"
+    local type="$3"
+    local label="$4"
+    local jitter="${RD_JITTER:-2}"
 
     local n_reports
     n_reports=$(wc -l < "$file")
     echo "    reports captured       : $n_reports"
+    echo "    control type           : $type"
 
-    # Single python invocation. File path is passed as arg; nothing piped to
-    # stdin, so there is no collision with the python -c form.
     python3 -c '
 import sys, re
+from collections import Counter
 baseline = sys.argv[1]
-path = sys.argv[2]
+path     = sys.argv[2]
+jitter   = int(sys.argv[3])
+type_    = sys.argv[4]
+label    = sys.argv[5]
+summary_path = sys.argv[6]
+file_basename = sys.argv[7]
+
 hex_re = re.compile(r"[0-9a-fA-F]{2}")
-seen = [set() for _ in range(14)]
-unique_payloads = set()
+rows = []
 for line in open(path):
     try:
         _, rest = line.split(":", 1)
     except ValueError:
         continue
-    hex_part = rest.split("  ")[0]
-    pairs = hex_re.findall(hex_part)
-    if len(pairs) < 14:
-        continue
-    payload = "".join(p.lower() for p in pairs[:14])
-    unique_payloads.add(payload)
+    pairs = hex_re.findall(rest.split("  ")[0])
+    if len(pairs) >= 14:
+        rows.append([p.lower() for p in pairs[:14]])
+
+print(f"    distinct payloads      : {len({tuple(r) for r in rows})}")
+
+# Per-byte distinct values seen
+seen = [set() for _ in range(14)]
+for r in rows:
     for i in range(14):
-        seen[i].add(pairs[i].lower())
-print(f"    distinct payloads      : {len(unique_payloads)}")
-diffs = []
-for i, vals in enumerate(seen):
+        seen[i].add(r[i])
+
+# Classify each byte: real-change | jitter | unchanged
+real_changed = []   # bytes where a button bit toggled OR analog spread > jitter
+jitter_only = []    # analog bytes 0-6 with spread <= jitter
+for i in range(14):
     bv = baseline[2*i:2*i+2]
-    if any(v != bv for v in vals):
-        diffs.append((i, sorted(vals), bv))
-if not diffs:
-    print("    bytes that varied      : NONE -- the user may not have done anything")
-else:
-    print("    bytes that varied vs baseline:")
-    for i, vals, bv in diffs:
-        labelled = []
+    if not any(v != bv for v in seen[i]):
+        continue
+    if i < 7:
+        max_dev = max(abs(int(v, 16) - int(bv, 16)) for v in seen[i])
+        if max_dev <= jitter:
+            jitter_only.append((i, sorted(seen[i]), bv, max_dev))
+            continue
+    real_changed.append((i, sorted(seen[i], key=lambda x: int(x, 16)), bv))
+
+# Print jitter info regardless of type
+def print_jitter():
+    if jitter_only:
+        info = ", ".join(f"byte {i} ({chr(177)}{dev})" for i, _, _, dev in jitter_only)
+        print(f"    minor analog jitter    : {info} (within {chr(177)}{jitter} LSB, ignored)")
+
+# ---- Decide what to extract based on type ----
+
+flag = ""
+extracted = {}    # KEY=VALUE pairs for the summary line
+
+is_binary_type    = type_ in ("button", "spdt-direction", "hat-direction")
+is_analog_type    = type_.startswith("analog")
+
+if is_binary_type:
+    # Expect exactly one button-byte (7-13) to have toggled bits.
+    button_changes = [(i, vals, bv) for i, vals, bv in real_changed if i >= 7]
+    analog_changes = [(i, vals, bv) for i, vals, bv in real_changed if i < 7]
+    if not button_changes:
+        print("    bytes that varied      : NONE in button range -- the user may not have done anything")
+        flag = "no-change"
+    elif len(button_changes) > 1:
+        print("    WARNING: multiple button bytes changed (expected exactly one):")
+        for i, vals, bv in button_changes:
+            print(f"      byte {i:>2} (rest={bv}): {chr(32).join(vals)}")
+        flag = "multi-byte"
+    else:
+        i, vals, bv = button_changes[0]
+        # Compute changed bits across the capture (XOR of all values vs baseline).
+        bv_int = int(bv, 16)
+        bits_ever_set = 0
         for v in vals:
-            if v == bv:
-                labelled.append(f"{v}(rest)")
-            else:
-                labelled.append(v)
-        print(f"      byte {i:>2} (rest={bv}): {chr(32).join(labelled)}  [{len(vals)} distinct]")
-' "$baseline_payload" "$file"
+            bits_ever_set |= (int(v, 16) ^ bv_int)
+        # Count transitions on each bit using the row sequence.
+        transitions_per_bit = [0]*8
+        prev = bv_int
+        for r in rows:
+            cur = int(r[i], 16)
+            for b in range(8):
+                if ((prev ^ cur) >> b) & 1:
+                    transitions_per_bit[b] += 1
+            prev = cur
+        # Pick THE one bit with most transitions; warn if multiple.
+        active_bits = [b for b in range(8) if transitions_per_bit[b] > 0]
+        if not active_bits:
+            print("    WARNING: button byte saw values but no bit transitions detected")
+            flag = "no-bit"
+        elif len(active_bits) > 1:
+            print(f"    WARNING: multiple bits active in byte {i}: {active_bits}")
+            print(f"             transitions per bit: {transitions_per_bit}")
+            flag = "multi-bit"
+            chosen_bit = max(active_bits, key=lambda b: transitions_per_bit[b])
+        else:
+            chosen_bit = active_bits[0]
+        if active_bits:
+            mask = 1 << chosen_bit
+            up_count   = sum(1 for k in range(1, len(rows))
+                             if (int(rows[k][i],16) ^ int(rows[k-1][i],16)) & mask
+                             and (int(rows[k][i],16) & mask))
+            down_count = sum(1 for k in range(1, len(rows))
+                             if (int(rows[k][i],16) ^ int(rows[k-1][i],16)) & mask
+                             and not (int(rows[k][i],16) & mask))
+            print(f"    byte changed           : {i}")
+            print(f"    bit changed            : 0x{mask:02x} (bit {chosen_bit})")
+            print(f"    transitions seen       : {up_count} press, {down_count} release")
+            extracted = dict(byte=i, bit_mask=f"0x{mask:02x}", bit_index=chosen_bit,
+                             press=up_count, release=down_count)
+    if analog_changes and not flag:
+        # A binary capture also moved an analog axis -- worth flagging.
+        print("    NOTE: analog byte(s) also moved during this binary capture:")
+        for i, vals, bv in analog_changes:
+            print(f"      byte {i:>2} (rest={bv}): "
+                  f"min={vals[0]} max={vals[-1]}")
+        flag = (flag + ";" if flag else "") + "analog-also-moved"
+
+elif is_analog_type:
+    button_changes = [(i, vals, bv) for i, vals, bv in real_changed if i >= 7]
+    analog_changes = [(i, vals, bv) for i, vals, bv in real_changed if i < 7]
+    if not analog_changes:
+        print("    bytes that varied      : NONE in analog range -- the user may not have moved the lever far enough")
+        flag = "no-change"
+    elif len(analog_changes) > 1:
+        print("    WARNING: multiple analog bytes changed (expected exactly one):")
+        for i, vals, bv in analog_changes:
+            mn = int(vals[0], 16); mx = int(vals[-1], 16)
+            print(f"      byte {i:>2} (rest={bv}): min={vals[0]} max={vals[-1]} range={mx-mn}")
+        flag = "multi-byte"
+    else:
+        i, vals, bv = analog_changes[0]
+        bv_int = int(bv, 16)
+        ints = [int(v, 16) for v in vals]
+        mn = min(ints); mx = max(ints)
+        print(f"    byte that varied       : {i}")
+        print(f"    rest value             : 0x{bv_int:02x}")
+        print(f"    min value seen         : 0x{mn:02x}  ({mn-bv_int:+d} from rest)")
+        print(f"    max value seen         : 0x{mx:02x}  ({mx-bv_int:+d} from rest)")
+        print(f"    range                  : {mx - mn}")
+        if type_ == "analog-bipolar":
+            if mn >= bv_int or mx <= bv_int:
+                print("    WARNING: bipolar analog did not span both sides of rest")
+                flag = "asymmetric"
+        else:
+            if mn >= bv_int and mx == bv_int:
+                print("    WARNING: analog never moved away from rest")
+                flag = "no-change"
+        extracted = dict(byte=i, rest=f"0x{bv_int:02x}",
+                         min=f"0x{mn:02x}", max=f"0x{mx:02x}", range=mx-mn)
+    if button_changes and not flag:
+        print("    NOTE: button byte(s) also changed during this analog capture:")
+        for i, vals, bv in button_changes:
+            print(f"      byte {i:>2} (rest={bv}): {chr(32).join(vals)}")
+        flag = (flag + ";" if flag else "") + "button-also-moved"
+
+else:
+    print(f"    WARNING: unknown control type: {type_}")
+    flag = "unknown-type"
+
+print_jitter()
+
+# ---- Append a summary line ----
+if summary_path and extracted:
+    flag_str = flag if flag else "ok"
+    with open(summary_path, "a") as f:
+        kv = "\t".join(f"{k}={v}" for k, v in extracted.items())
+        f.write(type_ + "\t" + label + "\t" + kv + "\tflag=" + flag_str + "\tfile=" + file_basename + "\n")
+' "$baseline_payload" "$file" "$jitter" "$type" "$label" "${RD_SUMMARY:-}" "$(basename "$file")"
 }
 
 # Capture in the background until the user presses Enter, then stop.
@@ -231,6 +379,7 @@ stop_capture() {
 
 establish_baseline() {
     local baseline_log="$OUTDIR/${FILE_PREFIX}000-baseline.log"
+    local jitter="${RD_JITTER:-2}"
     while true; do
         cat <<'BASELINE_PROMPT'
 
@@ -250,7 +399,13 @@ establish_baseline() {
     Hat switch         -> at centre, not pressed in any direction
 
   Once everything is at rest, press Enter. Recording starts on Enter
-  and runs for ~1 second to verify the report stays steady.
+  and runs for ~1 second.
+
+  Note: the analog axes (potentiometers in the levers) typically
+  jitter by 1-2 LSB at idle even when nothing is moving. The script
+  tolerates per-byte spread of up to RD_JITTER (default 2) on the
+  analog bytes (0-6) before flagging a problem; button bytes (7-13)
+  must be exactly identical (button bits don't jitter).
 BASELINE_PROMPT
         read -r -p "  [Enter]=record baseline  q=quit  : " ans
         if [[ "${ans:-}" =~ ^[qQ]$ ]]; then
@@ -259,7 +414,7 @@ BASELINE_PROMPT
         fi
 
         local bin="$OUTDIR/${FILE_PREFIX}000-baseline.bin"
-        echo "  Recording baseline (1 second)..."
+        echo "  Recording baseline (1 second, jitter tolerance ±${jitter} LSB on analog bytes)..."
         sudo -n timeout 1 dd if="$DEV" of="$bin" bs=14 status=none 2>/dev/null || true
 
         if [[ ! -s "$bin" ]]; then
@@ -273,50 +428,133 @@ BASELINE_PROMPT
         xxd -c 14 "$bin" > "$baseline_log"
         sudo rm -f "$bin"
 
-        local n_unique baseline_payload
-        n_unique=$(awk '{
-            gsub(/^[0-9a-fA-F]+: */, "")
-            sub(/ +[^ ]+$/, "")
-            gsub(/ /, "")
-            print tolower($0)
-        }' "$baseline_log" | sort -u | wc -l)
+        # Analyze the captured window. Outcome lines:
+        #   STABLE <payload>                        -- single payload, ideal
+        #   QUIET <payload> <byte:spread,...>       -- analog jitter only, within tolerance
+        #   MOVING <payload> <reason>               -- real change detected; payload is the modal
+        local result
+        result=$(python3 -c '
+import sys, re
+from collections import Counter
+path = sys.argv[1]
+jitter = int(sys.argv[2])
+hex_re = re.compile(r"[0-9a-fA-F]{2}")
+rows = []
+for line in open(path):
+    try:
+        _, rest = line.split(":", 1)
+    except ValueError:
+        continue
+    pairs = hex_re.findall(rest.split("  ")[0])
+    if len(pairs) >= 14:
+        rows.append([p.lower() for p in pairs[:14]])
+if not rows:
+    print("EMPTY"); sys.exit()
 
-        if [[ "$n_unique" -ne 1 ]]; then
-            echo "  WARNING: $n_unique distinct payloads in the baseline window."
-            echo "           Something was moving. Holding everything STILL is required."
-            awk '{
-                gsub(/^[0-9a-fA-F]+: */, "")
-                sub(/ +[^ ]+$/, "")
-                gsub(/ /, "")
-                print tolower($0)
-            }' "$baseline_log" | sort | uniq -c | sort -rn | head -5 \
-                | awk '{printf "             seen %d time(s): %s\n", $1, $2}'
-            read -r -p "  [Enter]=retry  a=accept anyway (use most-frequent)  q=quit  : " ans2
-            case "${ans2:-}" in
-                q|Q) exit 0 ;;
-                a|A)
-                    baseline_payload=$(awk '{
-                        gsub(/^[0-9a-fA-F]+: */, "")
-                        sub(/ +[^ ]+$/, "")
-                        gsub(/ /, "")
-                        print tolower($0)
-                    }' "$baseline_log" | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
-                    BASELINE_PAYLOAD="$baseline_payload"
-                    echo "  Accepted baseline payload: $baseline_payload"
-                    return
-                    ;;
-                *)
-                    rm -f "$baseline_log"
-                    continue
-                    ;;
-            esac
-        fi
+unique = Counter(tuple(r) for r in rows)
+if len(unique) == 1:
+    chosen = list(unique.keys())[0]
+    print("STABLE", "".join(chosen)); sys.exit()
 
-        baseline_payload=$(extract_payload "$baseline_log" 1)
-        BASELINE_PAYLOAD="$baseline_payload"
-        echo "  Baseline payload: $baseline_payload"
-        echo "  Saved to $baseline_log"
-        return
+# Per-byte analysis
+button_bytes_constant = True
+button_violations = []
+analog_spreads = []   # list of (i, spread, vals_hex_sorted)
+for i in range(14):
+    vals_hex = sorted({r[i] for r in rows}, key=lambda x: int(x, 16))
+    if i >= 7:  # button byte
+        if len(vals_hex) > 1:
+            button_bytes_constant = False
+            button_violations.append((i, vals_hex))
+    else:       # analog byte
+        spread = int(vals_hex[-1], 16) - int(vals_hex[0], 16)
+        analog_spreads.append((i, spread, vals_hex))
+
+# Per-byte modal payload (most common value at each byte position)
+modal = []
+for i in range(14):
+    cnt = Counter(r[i] for r in rows)
+    modal.append(cnt.most_common(1)[0][0])
+modal_payload = "".join(modal)
+
+if button_bytes_constant:
+    max_spread = max((s for _, s, _ in analog_spreads), default=0)
+    if max_spread <= jitter:
+        # Quiet -- normal ADC noise on analog axes only
+        info = ",".join(f"byte{i}:spread{s}" for i, s, _ in analog_spreads if s > 0)
+        if not info:
+            info = "none"
+        print("QUIET", modal_payload, info); sys.exit()
+
+# Genuine movement
+reasons = []
+if button_violations:
+    bv = ",".join(f"byte{i}:{{{chr(32).join(v)}}}" for i, v in button_violations)
+    reasons.append(f"button-byte-changed[{bv}]")
+big = [(i, s, v) for i, s, v in analog_spreads if s > jitter]
+if big:
+    bs = ",".join(f"byte{i}:spread{s}" for i, s, _ in big)
+    reasons.append(f"analog-exceeded-tolerance[{bs}]")
+print("MOVING", modal_payload, ";".join(reasons))
+' "$baseline_log" "$jitter")
+
+        case "$result" in
+            "STABLE "*)
+                BASELINE_PAYLOAD="${result#STABLE }"
+                echo "  Baseline payload: $BASELINE_PAYLOAD"
+                echo "  Window was perfectly steady (1 distinct payload)."
+                echo "  Saved to $baseline_log"
+                return
+                ;;
+            "QUIET "*)
+                local rest_str="${result#QUIET }"
+                BASELINE_PAYLOAD="${rest_str%% *}"
+                local jitter_info="${rest_str#* }"
+                echo "  Baseline payload: $BASELINE_PAYLOAD"
+                echo "  Analog axes showed normal ADC jitter at rest: $jitter_info"
+                echo "  (Within tolerance RD_JITTER=$jitter; treated as steady.)"
+                echo "  Saved to $baseline_log"
+                return
+                ;;
+            "EMPTY")
+                echo "  ERROR: no parseable payloads in $baseline_log"
+                rm -f "$baseline_log"
+                continue
+                ;;
+            "MOVING "*)
+                local rest_str="${result#MOVING }"
+                local modal_payload="${rest_str%% *}"
+                local why="${rest_str#* }"
+                echo "  WARNING: baseline window contains REAL changes (not just ADC noise)."
+                echo "           Cause: $why"
+                echo "           Top observed payloads:"
+                awk '{
+                    gsub(/^[0-9a-fA-F]+: */, "")
+                    sub(/ +[^ ]+$/, "")
+                    gsub(/ /, "")
+                    print tolower($0)
+                }' "$baseline_log" | sort | uniq -c | sort -rn | head -5 \
+                    | awk '{printf "             seen %d time(s): %s\n", $1, $2}'
+                read -r -p "  [Enter]=retry  a=accept modal payload anyway  q=quit  : " ans2
+                case "${ans2:-}" in
+                    q|Q) exit 0 ;;
+                    a|A)
+                        BASELINE_PAYLOAD="$modal_payload"
+                        echo "  Accepted modal payload as baseline: $BASELINE_PAYLOAD"
+                        return
+                        ;;
+                    *)
+                        rm -f "$baseline_log"
+                        continue
+                        ;;
+                esac
+                ;;
+            *)
+                echo "  ERROR: unexpected analyzer output: $result"
+                rm -f "$baseline_log"
+                continue
+                ;;
+        esac
     done
 }
 
@@ -334,42 +572,42 @@ echo "===================================================================="
 ACTIONS=(
 
     # --- Item 1: Range (SPDT momentary, up/off/down) ---
-    "item01-range-up|Item 1 (Range, SPDT momentary):
+    "item01-range-up|spdt-direction|Item 1 (Range, SPDT momentary):
     Press the Range switch UP and HOLD for ~1 second, then release.
     The switch is spring-return; centre is rest."
 
-    "item01-range-down|Item 1 (Range, SPDT momentary):
+    "item01-range-down|spdt-direction|Item 1 (Range, SPDT momentary):
     Press the Range switch DOWN and HOLD for ~1 second, then release."
 
     # --- Item 2: E-Stop (SPDT momentary) ---
-    "item02-estop-up|Item 2 (E-Stop, SPDT momentary):
+    "item02-estop-up|spdt-direction|Item 2 (E-Stop, SPDT momentary):
     Press the E-Stop switch UP and HOLD ~1 s, then release."
 
-    "item02-estop-down|Item 2 (E-Stop, SPDT momentary):
+    "item02-estop-down|spdt-direction|Item 2 (E-Stop, SPDT momentary):
     Press the E-Stop switch DOWN and HOLD ~1 s, then release."
 
     # --- Items 3-6: simple buttons ---
-    "item03-alert|Item 3 (Alert button):
+    "item03-alert|button|Item 3 (Alert button):
     Press and HOLD the Alert button ~1 s, then release."
 
-    "item04-sand|Item 4 (Sand button):
+    "item04-sand|button|Item 4 (Sand button):
     Press and HOLD the Sand button ~1 s, then release."
 
-    "item05-p|Item 5 (P button, assumed Pantograph):
+    "item05-p|button|Item 5 (P button, assumed Pantograph):
     Press and HOLD the P button ~1 s, then release."
 
-    "item06-bell|Item 6 (Bell button):
+    "item06-bell|button|Item 6 (Bell button):
     Press and HOLD the Bell button ~1 s, then release."
 
     # --- Item 7: Horn (SPDT momentary) ---
-    "item07-horn-up|Item 7 (Horn, SPDT momentary):
+    "item07-horn-up|spdt-direction|Item 7 (Horn, SPDT momentary):
     Push the Horn lever UP and HOLD ~1 s, then release."
 
-    "item07-horn-down|Item 7 (Horn, SPDT momentary):
+    "item07-horn-down|spdt-direction|Item 7 (Horn, SPDT momentary):
     Push the Horn lever DOWN and HOLD ~1 s, then release."
 
     # --- Item 8: Reverser (3 detents) ---
-    "item08-reverser-sweep|Item 8 (Reverser, 3 physical detents):
+    "item08-reverser-sweep|analog-positional|Item 8 (Reverser, 3 physical detents):
     From baseline (NEUTRAL), perform this sweep:
        Forward (pause ~1 s)
     -> Neutral (pause ~1 s)
@@ -378,7 +616,7 @@ ACTIONS=(
     Press Enter when done."
 
     # --- Item 9: Throttle / Dyn-Brake (continuous bipolar) ---
-    "item09-throttle-dynbrake-sweep|Item 9 (Throttle/Dyn-Brake, continuous bipolar):
+    "item09-throttle-dynbrake-sweep|analog-bipolar|Item 9 (Throttle/Dyn-Brake, continuous bipolar):
     From baseline (Idle, centre), perform this sweep:
        Push DOWN to maximum throttle (pause ~1 s)
     -> back to Idle (centre, pause ~1 s)
@@ -387,7 +625,7 @@ ACTIONS=(
     Press Enter when done."
 
     # --- Item 10: Auto Brake (continuous, 4 named positions) ---
-    "item10-autobrake-sweep|Item 10 (Auto Brake):
+    "item10-autobrake-sweep|analog-positional|Item 10 (Auto Brake):
     From baseline (Release), perform this sweep:
        Move to SUP (pause ~1 s)
     -> CS (pause ~1 s)
@@ -396,7 +634,7 @@ ACTIONS=(
     Press Enter when done."
 
     # --- Item 11a: Independent Brake lever (continuous) ---
-    "item11a-indepbrake-lever-sweep|Item 11a (Independent Brake LEVER ONLY -- not bail-off):
+    "item11a-indepbrake-lever-sweep|analog|Item 11a (Independent Brake LEVER ONLY -- not bail-off):
     From baseline (Release), perform this sweep:
        Move to FULL APPLY (pause ~1 s)
     -> back to Release.
@@ -404,14 +642,14 @@ ACTIONS=(
     Press Enter when done."
 
     # --- Item 11b: Bail-off (spring-loaded, button-style) ---
-    "item11b-indepbrake-bailoff|Item 11b (Independent Brake BAIL-OFF only):
+    "item11b-indepbrake-bailoff|button|Item 11b (Independent Brake BAIL-OFF only):
     With the Independent Brake LEVER at Release (baseline),
     engage the spring-loaded bail-off and HOLD ~1 s, then release.
     (The bail-off does not stay engaged on its own.)
     Press Enter when done."
 
     # --- Item 12: Wiper (3-position switch) ---
-    "item12-wiper-sweep|Item 12 (Wiper, 3-position switch):
+    "item12-wiper-sweep|analog-positional|Item 12 (Wiper, 3-position switch):
     From baseline (Off), perform this sweep:
        Move to SLOW (pause ~1 s)
     -> FULL (pause ~1 s)
@@ -419,7 +657,7 @@ ACTIONS=(
     Press Enter when done."
 
     # --- Item 13: Lights (3-position switch) ---
-    "item13-lights-sweep|Item 13 (Lights, 3-position switch):
+    "item13-lights-sweep|analog-positional|Item 13 (Lights, 3-position switch):
     From baseline (Off), perform this sweep:
        Move to DIM (pause ~1 s)
     -> FULL (pause ~1 s)
@@ -427,77 +665,77 @@ ACTIONS=(
     Press Enter when done."
 
     # --- Items 14-41: 28 user-assignable buttons (2 x 14 layout) ---
-    "item14-button-row1-pos1|Item 14 (user button ROW 1 POS 1, leftmost top-row):
+    "item14-button-row1-pos1|button|Item 14 (user button ROW 1 POS 1, leftmost top-row):
     Press and HOLD ~1 s, release."
-    "item15-button-row1-pos2|Item 15 (user button ROW 1 POS 2):
+    "item15-button-row1-pos2|button|Item 15 (user button ROW 1 POS 2):
     Press and HOLD ~1 s, release."
-    "item16-button-row1-pos3|Item 16 (user button ROW 1 POS 3):
+    "item16-button-row1-pos3|button|Item 16 (user button ROW 1 POS 3):
     Press and HOLD ~1 s, release."
-    "item17-button-row1-pos4|Item 17 (user button ROW 1 POS 4):
+    "item17-button-row1-pos4|button|Item 17 (user button ROW 1 POS 4):
     Press and HOLD ~1 s, release."
-    "item18-button-row1-pos5|Item 18 (user button ROW 1 POS 5):
+    "item18-button-row1-pos5|button|Item 18 (user button ROW 1 POS 5):
     Press and HOLD ~1 s, release."
-    "item19-button-row1-pos6|Item 19 (user button ROW 1 POS 6):
+    "item19-button-row1-pos6|button|Item 19 (user button ROW 1 POS 6):
     Press and HOLD ~1 s, release."
-    "item20-button-row1-pos7|Item 20 (user button ROW 1 POS 7):
+    "item20-button-row1-pos7|button|Item 20 (user button ROW 1 POS 7):
     Press and HOLD ~1 s, release."
-    "item21-button-row1-pos8|Item 21 (user button ROW 1 POS 8):
+    "item21-button-row1-pos8|button|Item 21 (user button ROW 1 POS 8):
     Press and HOLD ~1 s, release."
-    "item22-button-row1-pos9|Item 22 (user button ROW 1 POS 9):
+    "item22-button-row1-pos9|button|Item 22 (user button ROW 1 POS 9):
     Press and HOLD ~1 s, release."
-    "item23-button-row1-pos10|Item 23 (user button ROW 1 POS 10):
+    "item23-button-row1-pos10|button|Item 23 (user button ROW 1 POS 10):
     Press and HOLD ~1 s, release."
-    "item24-button-row1-pos11|Item 24 (user button ROW 1 POS 11):
+    "item24-button-row1-pos11|button|Item 24 (user button ROW 1 POS 11):
     Press and HOLD ~1 s, release."
-    "item25-button-row1-pos12|Item 25 (user button ROW 1 POS 12):
+    "item25-button-row1-pos12|button|Item 25 (user button ROW 1 POS 12):
     Press and HOLD ~1 s, release."
-    "item26-button-row1-pos13|Item 26 (user button ROW 1 POS 13):
+    "item26-button-row1-pos13|button|Item 26 (user button ROW 1 POS 13):
     Press and HOLD ~1 s, release."
-    "item27-button-row1-pos14|Item 27 (user button ROW 1 POS 14, rightmost top-row):
+    "item27-button-row1-pos14|button|Item 27 (user button ROW 1 POS 14, rightmost top-row):
     Press and HOLD ~1 s, release."
-    "item28-button-row2-pos1|Item 28 (user button ROW 2 POS 1, leftmost bottom-row):
+    "item28-button-row2-pos1|button|Item 28 (user button ROW 2 POS 1, leftmost bottom-row):
     Press and HOLD ~1 s, release."
-    "item29-button-row2-pos2|Item 29 (user button ROW 2 POS 2):
+    "item29-button-row2-pos2|button|Item 29 (user button ROW 2 POS 2):
     Press and HOLD ~1 s, release."
-    "item30-button-row2-pos3|Item 30 (user button ROW 2 POS 3):
+    "item30-button-row2-pos3|button|Item 30 (user button ROW 2 POS 3):
     Press and HOLD ~1 s, release."
-    "item31-button-row2-pos4|Item 31 (user button ROW 2 POS 4):
+    "item31-button-row2-pos4|button|Item 31 (user button ROW 2 POS 4):
     Press and HOLD ~1 s, release."
-    "item32-button-row2-pos5|Item 32 (user button ROW 2 POS 5):
+    "item32-button-row2-pos5|button|Item 32 (user button ROW 2 POS 5):
     Press and HOLD ~1 s, release."
-    "item33-button-row2-pos6|Item 33 (user button ROW 2 POS 6):
+    "item33-button-row2-pos6|button|Item 33 (user button ROW 2 POS 6):
     Press and HOLD ~1 s, release."
-    "item34-button-row2-pos7|Item 34 (user button ROW 2 POS 7):
+    "item34-button-row2-pos7|button|Item 34 (user button ROW 2 POS 7):
     Press and HOLD ~1 s, release."
-    "item35-button-row2-pos8|Item 35 (user button ROW 2 POS 8):
+    "item35-button-row2-pos8|button|Item 35 (user button ROW 2 POS 8):
     Press and HOLD ~1 s, release."
-    "item36-button-row2-pos9|Item 36 (user button ROW 2 POS 9):
+    "item36-button-row2-pos9|button|Item 36 (user button ROW 2 POS 9):
     Press and HOLD ~1 s, release."
-    "item37-button-row2-pos10|Item 37 (user button ROW 2 POS 10):
+    "item37-button-row2-pos10|button|Item 37 (user button ROW 2 POS 10):
     Press and HOLD ~1 s, release."
-    "item38-button-row2-pos11|Item 38 (user button ROW 2 POS 11):
+    "item38-button-row2-pos11|button|Item 38 (user button ROW 2 POS 11):
     Press and HOLD ~1 s, release."
-    "item39-button-row2-pos12|Item 39 (user button ROW 2 POS 12):
+    "item39-button-row2-pos12|button|Item 39 (user button ROW 2 POS 12):
     Press and HOLD ~1 s, release."
-    "item40-button-row2-pos13|Item 40 (user button ROW 2 POS 13):
+    "item40-button-row2-pos13|button|Item 40 (user button ROW 2 POS 13):
     Press and HOLD ~1 s, release."
-    "item41-button-row2-pos14|Item 41 (user button ROW 2 POS 14, rightmost bottom-row):
+    "item41-button-row2-pos14|button|Item 41 (user button ROW 2 POS 14, rightmost bottom-row):
     Press and HOLD ~1 s, release."
 
     # --- Item 42: user-assignable SPDT (up/off/down) ---
-    "item42-userspdt-up|Item 42 (user-assignable SPDT, up direction):
+    "item42-userspdt-up|spdt-direction|Item 42 (user-assignable SPDT, up direction):
     Press the switch UP and HOLD ~1 s, release."
-    "item42-userspdt-down|Item 42 (user-assignable SPDT, down direction):
+    "item42-userspdt-down|spdt-direction|Item 42 (user-assignable SPDT, down direction):
     Press the switch DOWN and HOLD ~1 s, release."
 
     # --- Item 43: user-assignable hat switch (4 directions, all spring-return) ---
-    "item43-hat-up|Item 43 (hat switch, UP direction):
+    "item43-hat-up|hat-direction|Item 43 (hat switch, UP direction):
     Press the hat UP and HOLD ~1 s, release. The hat is spring-return."
-    "item43-hat-right|Item 43 (hat switch, RIGHT direction):
+    "item43-hat-right|hat-direction|Item 43 (hat switch, RIGHT direction):
     Press the hat RIGHT and HOLD ~1 s, release."
-    "item43-hat-down|Item 43 (hat switch, DOWN direction):
+    "item43-hat-down|hat-direction|Item 43 (hat switch, DOWN direction):
     Press the hat DOWN and HOLD ~1 s, release."
-    "item43-hat-left|Item 43 (hat switch, LEFT direction):
+    "item43-hat-left|hat-direction|Item 43 (hat switch, LEFT direction):
     Press the hat LEFT and HOLD ~1 s, release."
 )
 
@@ -511,9 +749,11 @@ skipped=0
 
 record_one() {
     local entry="$1"
-    local label description
+    local label type description
     label="${entry%%|*}"
-    description="${entry#*|}"
+    local rest="${entry#*|}"
+    type="${rest%%|*}"
+    description="${rest#*|}"
 
     while true; do
         local file path bin ans
@@ -523,7 +763,7 @@ record_one() {
 
         echo
         echo "===================================================================="
-        printf '  [%d] %s\n' "$idx" "$label"
+        printf '  [%d] %s  (type: %s)\n' "$idx" "$label" "$type"
         echo
         printf '  %s\n' "$description"
         echo
@@ -564,25 +804,40 @@ record_one() {
                 sudo rm -f "$bin"
 
                 echo "  -> saved $file"
-                report_capture "$path" "$BASELINE_PAYLOAD"
+                report_capture "$path" "$BASELINE_PAYLOAD" "$type" "$label"
 
-                # Final-state check: warn if the LAST report differs from baseline.
+                # Final-state check: warn if the LAST report differs from baseline
+                # (ignoring jitter on analog bytes).
                 local last_payload
                 last_payload=$(extract_payload "$path" '$')
                 if [[ "$last_payload" != "$BASELINE_PAYLOAD" ]]; then
-                    local changed
-                    changed=$(diff_payloads "$BASELINE_PAYLOAD" "$last_payload" | tr -s ' ')
-                    echo "  NOTE: end-of-capture state DIFFERS from baseline."
-                    echo "        Bytes still off-baseline: $changed"
-                    echo "        If this was a sweep / button test that should return"
-                    echo "        to rest, return the control to its rest position now"
-                    echo "        before continuing. Use 'r' to redo this capture."
-                    read -r -p "  [Enter]=accept  r=redo  s=skip&continue  q=quit  : " confirm
-                    case "${confirm:-}" in
-                        q|Q) exit 0 ;;
-                        r|R) rm -f "$path"; continue ;;
-                        s|S) rm -f "$path"; skipped=$((skipped+1)); idx=$((idx+1)); return ;;
-                    esac
+                    # Use python to apply jitter tolerance to the final-state diff.
+                    local off_rest
+                    off_rest=$(python3 -c '
+import sys
+last = sys.argv[1]; bl = sys.argv[2]; jitter = int(sys.argv[3])
+out = []
+for i in range(14):
+    a = int(last[2*i:2*i+2], 16); b = int(bl[2*i:2*i+2], 16)
+    if a != b:
+        if i < 7 and abs(a-b) <= jitter:
+            continue
+        out.append(str(i))
+print(" ".join(out))
+' "$last_payload" "$BASELINE_PAYLOAD" "${RD_JITTER:-2}")
+                    if [[ -n "$off_rest" ]]; then
+                        echo "  NOTE: end-of-capture state DIFFERS from baseline (after jitter filter)."
+                        echo "        Bytes still off-baseline: $off_rest"
+                        echo "        If this was a sweep / button test that should return"
+                        echo "        to rest, return the control to its rest position now"
+                        echo "        before continuing. Use 'r' to redo this capture."
+                        read -r -p "  [Enter]=accept  r=redo  s=skip&continue  q=quit  : " confirm
+                        case "${confirm:-}" in
+                            q|Q) exit 0 ;;
+                            r|R) rm -f "$path"; continue ;;
+                            s|S) rm -f "$path"; skipped=$((skipped+1)); idx=$((idx+1)); return ;;
+                        esac
+                    fi
                 fi
 
                 recorded=$((recorded+1))
@@ -593,14 +848,91 @@ record_one() {
     done
 }
 
+# Open the per-run summary TSV that report_capture appends to.
+export RD_SUMMARY="$OUTDIR/${FILE_PREFIX}summary.tsv"
+: > "$RD_SUMMARY"
+echo ">>> Per-action summary will be written to $RD_SUMMARY"
+
 for entry in "${ACTIONS[@]}"; do
     record_one "$entry"
 done
+
+# ---------------------------------------------------------------------------
+# Post-run human-readable summary
+# ---------------------------------------------------------------------------
+
+human_summary="$OUTDIR/${FILE_PREFIX}summary.txt"
+python3 -c '
+import sys
+tsv_path = sys.argv[1]
+out_path = sys.argv[2]
+binary_rows = []
+analog_rows = []
+for line in open(tsv_path):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 3:
+        continue
+    type_ = parts[0]; label = parts[1]; rest_kvs = parts[2:]
+    kv = {}
+    for p in rest_kvs:
+        if "=" in p:
+            k, v = p.split("=", 1); kv[k] = v
+    if type_ in ("button", "spdt-direction", "hat-direction"):
+        binary_rows.append((label, type_, kv))
+    elif type_.startswith("analog"):
+        analog_rows.append((label, type_, kv))
+
+with open(out_path, "w") as f:
+    f.write("RailDriver Phase 2 capture summary\n")
+    f.write("=" * 70 + "\n\n")
+
+    if binary_rows:
+        f.write("BINARY CONTROLS (buttons / SPDT / hat)\n")
+        f.write("-" * 70 + "\n")
+        header = "label".ljust(46) + " " + "byte".rjust(4) + " " + "bit".rjust(4) + " " + "mask".rjust(6) + " " + "flag".ljust(14) + "\n"
+        f.write(header)
+        for label, type_, kv in binary_rows:
+            row = (label.ljust(46) + " "
+                   + kv.get("byte","").rjust(4) + " "
+                   + kv.get("bit_index","").rjust(4) + " "
+                   + kv.get("bit_mask","").rjust(6) + " "
+                   + kv.get("flag","").ljust(14) + "\n")
+            f.write(row)
+        f.write("\n")
+
+    if analog_rows:
+        f.write("ANALOG CONTROLS\n")
+        f.write("-" * 70 + "\n")
+        header = ("label".ljust(46) + " "
+                  + "byte".rjust(4) + " "
+                  + "rest".rjust(5) + " "
+                  + "min".rjust(5) + " "
+                  + "max".rjust(5) + " "
+                  + "range".rjust(5) + " "
+                  + "flag".ljust(14) + "\n")
+        f.write(header)
+        for label, type_, kv in analog_rows:
+            row = (label.ljust(46) + " "
+                   + kv.get("byte","").rjust(4) + " "
+                   + kv.get("rest","").rjust(5) + " "
+                   + kv.get("min","").rjust(5) + " "
+                   + kv.get("max","").rjust(5) + " "
+                   + kv.get("range","").rjust(5) + " "
+                   + kv.get("flag","").ljust(14) + "\n")
+            f.write(row)
+        f.write("\n")
+
+    f.write(f"Total binary controls captured: {len(binary_rows)}\n")
+    f.write(f"Total analog controls captured: {len(analog_rows)}\n")
+print(f"Summary: {len(binary_rows)} binary + {len(analog_rows)} analog rows")
+' "$RD_SUMMARY" "$human_summary"
 
 echo
 echo "===================================================================="
 echo "DONE. Recorded=$recorded, skipped=$skipped, total actions=${#ACTIONS[@]}."
 echo "Baseline:    $OUTDIR/${FILE_PREFIX}000-baseline.log"
 echo "Action logs: $OUTDIR/${FILE_PREFIX}NNN-itemNN-*.log"
+echo "Summary:     $human_summary"
+echo "             $RD_SUMMARY  (machine-readable TSV)"
 total_files=$(ls -1 "$OUTDIR" 2>/dev/null | grep -cE "^${FILE_PREFIX}[0-9]+-item[0-9]+")
 echo "Action files written: $total_files"
