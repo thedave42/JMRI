@@ -355,26 +355,7 @@ reports:
 | `value_ranges_consistent` | `yes` if the per-byte `[min,max]` intervals overlap across all compared runs; otherwise `no`. (Used as a soft check for analog actions, since analog ranges can vary slightly with operator hand position.) |
 | `discrepancies` | If any of the above are `no`, a free-text description of which runs disagreed and how. Otherwise empty. |
 
-The cross-run script does not pick a "winner" between disagreeing runs and
-does not annotate any run as correct or incorrect. It only flags
-inconsistencies for human review.
-
-### 11.3 Constraints on the analysis script
-
-- The script must not reference, compare to, or be aware of any prior
-  claim about the report layout — including, but not limited to, the
-  byte-13 claim in `plan.md` §1, the `i >= 7` treatment in
-  `RailDriverMenuItem.java`, and the inventory-item-to-physical-position
-  mapping discussion in `control-inventory.md`.
-- The script must not generate prose conclusions, mappings to inventory
-  item numbers, or interpretive statements about what the data means.
-- The script's only inputs are `run-NNN/` directories produced by
-  `rd-record.sh` and command-line flags; it must not read `plan.md`,
-  `control-inventory.md`, or any source file under `java/`.
-- The script's only outputs are the per-run and cross-run files described
-  above.
-
-### 11.4 Command-line interface
+### 11.3 Command-line interface
 
 - `rd-analyze.sh` — with no arguments: scan
   `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md` and
