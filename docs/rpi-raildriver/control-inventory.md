@@ -4,7 +4,7 @@ This document records the physical controls present on the RailDriver
 Modern Desktop unit.
 
 Items marked `<user-assignable>` have no built-in label/function; the JMRI integration
-is free to map them to whatever DCC functionality the user wants.
+is free to map them to whatever DCC functionality the user wants.  The numbering is arbitrary and does not map to anything specific.
 
 ## Switches and buttons
 
