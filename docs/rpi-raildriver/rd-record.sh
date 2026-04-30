@@ -38,13 +38,26 @@
 #   q         quit immediately
 #
 # Output (under $RD_OUTDIR, default ~/rd-capture/):
-#   000-baseline.log
-#   100-item01-range-press-up-and-release.log
+#   <prefix-><000-baseline.log>
+#   <prefix-><NNN-itemNN-*.log>
 #   ... etc, in inventory order.
 #
 # Pre-flight:
 #   - Quit JMRI completely so it isn't holding the device.
 #   - sudo apt install -y xxd  (already present on most systems)
+#
+# Command-line options:
+#   -o PREFIX   Prepend PREFIX (followed by a "-" separator) to every
+#               output filename. Use this to produce multiple independent
+#               data sets in the same output directory across multiple
+#               runs of the script. Example:
+#                 rd-record.sh -o test1   ->  test1-000-baseline.log,
+#                                              test1-100-item01-range-up.log,
+#                                              ...
+#               PREFIX is sanitized to [a-zA-Z0-9_-]; other characters
+#               are stripped. Empty prefix (the default) preserves the
+#               original filenames "000-baseline.log", "100-...", etc.
+#   -h          Print this usage message and exit.
 #
 # Environment knobs:
 #   RD_HIDRAW    /dev/hidrawN node (default /dev/hidraw0)
@@ -59,6 +72,33 @@ set -uo pipefail
 DEV="${RD_HIDRAW:-/dev/hidraw0}"
 OUTDIR="${RD_OUTDIR:-${HOME}/rd-capture}"
 START="${RD_START:-100}"
+PREFIX=""
+
+usage() {
+    sed -n '2,/^$/p' "$0" | sed 's/^#//; s/^ //'
+    exit "${1:-0}"
+}
+
+while getopts ":o:h" opt; do
+    case "$opt" in
+        o) PREFIX="$OPTARG" ;;
+        h) usage 0 ;;
+        \?) echo "ERROR: unknown option -$OPTARG" >&2; usage 2 ;;
+        :)  echo "ERROR: option -$OPTARG requires an argument" >&2; usage 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+# Sanitize the prefix to safe filename characters.
+PREFIX=$(echo "$PREFIX" | tr -cd 'a-zA-Z0-9_-')
+
+# When non-empty, file_prefix is "<prefix>-"; when empty, it's "".
+# Used as a literal string in front of every output filename.
+if [[ -n "$PREFIX" ]]; then
+    FILE_PREFIX="${PREFIX}-"
+else
+    FILE_PREFIX=""
+fi
 
 mkdir -p "$OUTDIR"
 
@@ -69,6 +109,11 @@ fi
 
 echo ">>> Output directory : $OUTDIR"
 echo ">>> Device           : $DEV"
+if [[ -n "$PREFIX" ]]; then
+    echo ">>> Filename prefix  : $PREFIX (files will be named ${FILE_PREFIX}NNN-...)"
+else
+    echo ">>> Filename prefix  : (none)"
+fi
 echo ">>> sudo will be requested once for /dev/hidraw access"
 sudo -v || exit 1
 
@@ -185,7 +230,7 @@ stop_capture() {
 # ---------------------------------------------------------------------------
 
 establish_baseline() {
-    local baseline_log="$OUTDIR/000-baseline.log"
+    local baseline_log="$OUTDIR/${FILE_PREFIX}000-baseline.log"
     while true; do
         cat <<'BASELINE_PROMPT'
 
@@ -213,7 +258,7 @@ BASELINE_PROMPT
             exit 0
         fi
 
-        local bin="$OUTDIR/000-baseline.bin"
+        local bin="$OUTDIR/${FILE_PREFIX}000-baseline.bin"
         echo "  Recording baseline (1 second)..."
         sudo -n timeout 1 dd if="$DEV" of="$bin" bs=14 status=none 2>/dev/null || true
 
@@ -472,7 +517,7 @@ record_one() {
 
     while true; do
         local file path bin ans
-        file=$(printf '%03d-%s.log' "$idx" "$label")
+        file=$(printf '%s%03d-%s.log' "$FILE_PREFIX" "$idx" "$label")
         path="$OUTDIR/$file"
         bin="${path%.log}.bin"
 
@@ -555,7 +600,7 @@ done
 echo
 echo "===================================================================="
 echo "DONE. Recorded=$recorded, skipped=$skipped, total actions=${#ACTIONS[@]}."
-echo "Baseline:    $OUTDIR/000-baseline.log"
-echo "Action logs: $OUTDIR/NNN-itemNN-*.log"
-total_files=$(ls -1 "$OUTDIR" 2>/dev/null | grep -cE '^[0-9]+-item[0-9]+')
+echo "Baseline:    $OUTDIR/${FILE_PREFIX}000-baseline.log"
+echo "Action logs: $OUTDIR/${FILE_PREFIX}NNN-itemNN-*.log"
+total_files=$(ls -1 "$OUTDIR" 2>/dev/null | grep -cE "^${FILE_PREFIX}[0-9]+-item[0-9]+")
 echo "Action files written: $total_files"
