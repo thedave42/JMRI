@@ -18,8 +18,8 @@ whose explicit goal is to produce three data products from the device:
 2. For each physical position in the 28-button front-edge grid: the same
    byte-index, bit-mask, rest-value, and asserted-value data. The inventory
    does not define which corner is item 14 versus item 41, so the protocol's
-   output for these controls is keyed by physical position (`btn-top-01`,
-   `btn-bot-14`, etc.) unless a human later supplies an inventory-number
+   output for these controls is keyed by physical position (`btn-back-01`,
+   `btn-front-14`, etc.) unless a human later supplies an inventory-number
    convention.
 3. For every continuous analog control in `control-inventory.md`: the set of byte
    indices that change when the control is moved through its physical
@@ -59,7 +59,7 @@ Two bash scripts live under `docs/rpi-raildriver/`:
   is detailed in §7.
 - **`rd-analyze.sh`** — analysis script. Reads one or more `run-NNN/`
   directories produced by `rd-record.sh` and emits the per-run and cross-run
-  data products defined in §10. The analysis script is fully automatic; it
+  data products defined in §9. The analysis script is fully automatic; it
   does not prompt the operator and does not require the device to be
   attached.
 
@@ -134,7 +134,7 @@ per-action prompt:
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 00 | baseline-pre     | Do not touch the controller. Wait until the live counter shows ~300 reports captured (~3 s at 125 Hz), then press Enter. |
+| 00 | baseline-pre     | Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
 
 ### Phase 1 — named switches and buttons (16 actions)
 
@@ -168,21 +168,26 @@ those physical positions back to inventory item numbers requires a separate
 human-supplied numbering convention; `rd-analyze.sh` does not infer it.
 
 Convention used here:
-- Two rows: `top` and `bot` (`top` is the row physically further from the
-  operator; `bot` is the row closer to the operator's body).
+- Two rows: `back` and `front`. `back` is the row physically further from the
+  operator (slightly inset from the front edge); `front` is the row closer to
+  the operator (right at the front edge).
 - 14 columns per row, numbered `01` through `14` from left to right as the
   operator faces the controller.
-- Slug format: `btn-<row>-<col>` (e.g. `btn-top-01`, `btn-bot-14`).
+- Slug format: `btn-<row>-<col>` (e.g. `btn-back-01`, `btn-front-14`).
 
-| NN  | slug            | prompt |
-|-----|-----------------|--------|
-| 17  | btn-top-01      | Press only the **top-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
-| 18  | btn-top-02      | Press only the **top-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| …   | …               | … (top row, columns 3 through 14, identical pattern) |
-| 30  | btn-top-14      | Press only the **top-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
-| 31  | btn-bot-01      | Press only the **bottom-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
-| …   | …               | … (bottom row, columns 2 through 13, identical pattern) |
-| 44  | btn-bot-14      | Press only the **bottom-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
+| NN  | slug             | prompt |
+|-----|------------------|--------|
+| 17  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
+| 18  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| …   | …                | … (back row, columns 3 through 14, identical pattern) |
+| 30  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
+| 31  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
+| …   | …                | … (front row, columns 2 through 13, identical pattern) |
+| 44  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
+
+Implementer note: the table above abbreviates the middle 24 of 28 button
+prompts behind `…` for readability. `rd-record.sh` MUST emit all 28 prompts
+in full; do not copy the elided form into the script.
 
 ### Phase 3 — analog / multi-position sweeps (6 actions)
 
@@ -199,7 +204,7 @@ Convention used here:
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 51 | baseline-post    | Do not touch the controller. Wait until the live counter shows ~300 reports captured, then press Enter. |
+| 51 | baseline-post    | Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
 
 ## 6. Operator key bindings
 
@@ -230,18 +235,28 @@ pointer to the udev / `plugdev` setup in `plan.md` §4.4).
 For each action:
 
 ```sh
-cat "$DEVICE" > "$run_dir/$NN-$slug.bin" &
+stdbuf -o0 cat "$DEVICE" > "$run_dir/$NN-$slug.bin" &
 cat_pid=$!
 # … display live counter, wait for operator key …
 kill -TERM "$cat_pid" 2>/dev/null
 wait "$cat_pid" 2>/dev/null
+cat_rc=$?
+# cat_rc == 143 (128 + SIGTERM) is the expected controlled-stop result and
+# must be treated as success. Anything else (other than 0) is a real error.
 ```
 
-`SIGTERM` (not `SIGKILL`) gives `cat` a chance to exit normally and close its
-output file descriptor. The capture may still end with a trailing partial HID
-report depending on exactly when termination occurs; the analysis step must
-detect and report any trailing byte count that is not a complete 14-byte
-record.
+`stdbuf -o0` disables stdio block buffering on `cat`'s stdout, so each 14-byte
+HID report is written through to the `.bin` file as it arrives instead of
+sitting in a ~4 KiB libc buffer. Without `-o0`, both (a) the live counter
+would lag reality by up to several seconds and then jump, and (b) anything in
+the buffer at the moment we send `SIGTERM` would be lost when `cat` is killed
+(the default `SIGTERM` action is immediate termination; `cat` installs no
+handler that would flush). For analog sweeps, the lost buffer can include the
+mechanical extrema the protocol exists to capture.
+
+The capture may still end with a trailing partial HID report depending on
+exactly when termination interrupts a read; the analysis step must detect and
+report any trailing byte count that is not a complete 14-byte record.
 
 ### Live report counter
 
@@ -256,7 +271,10 @@ file every 250 ms and updates a single status line in place
 The counter helps the operator pace analog sweeps (a 5-second sweep should
 show ~600+ reports before pressing Enter). It uses simple integer division
 (`bytes / 14 = complete reports`); any remainder is displayed separately as
-partial bytes. No parsing of the binary is performed by the counter.
+partial bytes. No parsing of the binary is performed by the counter. The
+counter assumes `stdbuf -o0` is in effect for the capture command (see
+above); without it the file size lags real device traffic and the counter
+becomes useless for pacing.
 
 ### Hex view generation
 
@@ -267,10 +285,12 @@ final.
 ### Pre-flight checks at script start
 
 1. `[ -r "$DEVICE" ]` — fail with udev/plugdev guidance if not readable.
-2. `command -v xxd >/dev/null` — fail clearly if `xxd` is absent.
-3. The resolved device's `HID_ID` matches `0003:000005F3:000000D2` — fail
-   loudly if the operator passed `--device` for a non-RailDriver hidraw node
-   (prevents silently capturing the wrong device's bytes).
+2. `command -v xxd >/dev/null` and `command -v stdbuf >/dev/null` — fail
+   clearly if either is absent.
+3. When `--device` is supplied, the resolved device's `HID_ID` must match
+   `0003:000005F3:000000D2`; fail loudly if it does not (prevents silently
+   capturing the wrong device's bytes). This check is skipped under
+   auto-detect, where `HID_ID` is already the selection criterion.
 
 ### `manifest.txt`
 
@@ -307,16 +327,7 @@ Exploratory runs that are not cited as evidence can remain local and ignored.
 Reference runs used in issue/PR discussion should be attached or committed
 with their checksum file.
 
-## 9. Deliverables
-
-| Artifact | Notes |
-|----------|-------|
-| `docs/rpi-raildriver/capture-plan.md` | This document. |
-| `docs/rpi-raildriver/rd-record.sh`    | Implements §3–§7. Name matches the existing reference in `control-inventory.md` line 70. |
-| `docs/rpi-raildriver/rd-analyze.sh`   | Implements §10. Reads `run-NNN/` directories produced by `rd-record.sh`; writes per-run `analysis.md` (or `.csv`) and cross-run `cross-run-analysis.md`. Does not reference any prior claim. |
-| `.gitignore` entry for `docs/rpi-raildriver/captures/` | Recommended default for exploratory runs; reference evidence sets can still be committed, attached to an issue/PR, or archived with `SHA256SUMS`. |
-
-## 10. Analysis output specification
+## 9. Analysis output specification
 
 `rd-analyze.sh` reads one or more `run-NNN/` directories produced by
 `rd-record.sh` and emits two outputs: a per-run analysis and a cross-run
@@ -325,7 +336,7 @@ data shows. It does not reference, compare against, or verify any prior
 claim about the report layout, the parser's behaviour, or the inventory's
 labels.
 
-### 10.1 Per-run analysis
+### 9.1 Per-run analysis
 
 For a single run directory, the script processes each non-skipped action's
 `.bin` file together with that run's `00-baseline-pre.bin` and
@@ -339,6 +350,25 @@ For a single run directory, the script processes each non-skipped action's
    - the set of distinct baseline byte values;
    - the modal baseline value (most common value; lowest value wins ties);
    - the baseline minimum and maximum.
+
+   Missing or empty baselines:
+   - If both `00-baseline-pre.bin` and `51-baseline-post.bin` are missing,
+     skipped, or contain zero complete 14-byte reports, the script must
+     refuse to analyze the run, write a single-line `analysis.md` explaining
+     why, and exit non-zero.
+   - If exactly one baseline is usable, build the baseline model from that
+     one file and record `baseline_source: pre-only` or
+     `baseline_source: post-only` in `analysis.md`'s header so the reader
+     knows the model is single-sided.
+   - In both partial cases the script must not silently fall back to an
+     empty baseline (which would misclassify every observed value as
+     asserted).
+
+   The bit-mask tie-break rule above (lowest value wins) is arbitrary and
+   only matters when a byte's baseline distribution has more than one mode.
+   When that happens, `bit_mask` becomes informational rather than
+   definitive for that byte; `baseline_values`, `rest_values`, and
+   `asserted_values` remain the authoritative columns.
 3. For each action capture, identify changed byte indices: byte index `i`
    changed if any complete action report contains a value for byte `i` that
    is outside that byte's baseline value set.
@@ -390,7 +420,7 @@ Skipped actions appear in the table with `status=skipped` and empty data
 columns. Actions whose `.bin` is missing (e.g. interrupted mid-action)
 appear with `status=not-reached` and empty data columns.
 
-### 10.2 Cross-run analysis
+### 9.2 Cross-run analysis
 
 When multiple `run-NNN/` directories exist, the script also writes
 `docs/rpi-raildriver/captures/cross-run-analysis.md` (and `.csv`). For each
@@ -413,7 +443,7 @@ does not annotate any run as correct or incorrect. For analog extrema it does
 not reduce the data to a pass/fail boolean; it reports the per-run values and
 their spread for human review.
 
-### 10.3 Constraints on the analysis script
+### 9.3 Constraints on the analysis script
 
 - The script must not reference, compare to, or be aware of any prior
   claim about the report layout — including, but not limited to, the
@@ -428,7 +458,7 @@ their spread for human review.
 - The script's only outputs are the per-run and cross-run files described
   above.
 
-### 10.4 Command-line interface
+### 9.4 Command-line interface
 
 - `rd-analyze.sh` — with no arguments: scan
   `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md` and
@@ -439,3 +469,18 @@ their spread for human review.
 - `rd-analyze.sh --out <dir>` — override the default output paths
   (defaults: `<run-dir>/analysis.{md,csv}` per run; cross-run files under
   `docs/rpi-raildriver/captures/`).
+
+## 10. Deliverables
+
+| Artifact | Notes |
+|----------|-------|
+| `docs/rpi-raildriver/capture-plan.md` | This document. |
+| `docs/rpi-raildriver/rd-record.sh`    | Implements §3–§7. |
+| `docs/rpi-raildriver/rd-analyze.sh`   | Implements §9. Reads `run-NNN/` directories produced by `rd-record.sh`; writes per-run `analysis.md` / `analysis.csv` and cross-run `cross-run-analysis.md` / `cross-run-analysis.csv`. Does not reference any prior claim. |
+| `.gitignore` entry for `docs/rpi-raildriver/captures/` | Recommended default for exploratory runs; reference evidence sets can still be committed, attached to an issue/PR, or archived with `SHA256SUMS`. |
+
+This table lists source artifacts only. The per-run and cross-run output
+files (`analysis.md`, `analysis.csv`, `cross-run-analysis.md`,
+`cross-run-analysis.csv`, `manifest.txt`, `README.md`, `SHA256SUMS`,
+plus the raw `.bin` and `.hex` captures) are produced by the scripts at
+runtime and live under `docs/rpi-raildriver/captures/`.
