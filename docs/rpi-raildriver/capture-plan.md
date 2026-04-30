@@ -408,9 +408,6 @@ reports:
 | `extrema_spread` | For each changed byte, `min_spread=(max(run_mins)-min(run_mins))` and `max_spread=(max(run_maxes)-min(run_maxes))`. |
 | `discrepancies` | If any of the above are `no`, a free-text description of which runs disagreed and how. Otherwise empty. |
 
-<<<<<<< HEAD
-### 11.3 Command-line interface
-=======
 The cross-run script does not pick a "winner" between disagreeing runs and
 does not annotate any run as correct or incorrect. For analog extrema it does
 not reduce the data to a pass/fail boolean; it reports the per-run values and
@@ -421,8 +418,8 @@ their spread for human review.
 - The script must not reference, compare to, or be aware of any prior
   claim about the report layout — including, but not limited to, the
   byte-13 claim in `plan.md` §1, the `i >= 7` treatment in
-  `RailDriverMenuItem.java`, and the inventory-item-to-physical-position
-  mapping discussion in `control-inventory.md`.
+  `RailDriverMenuItem.java`, and any inventory-item-to-physical-position
+  mapping supplied outside the run directory.
 - The script must not generate prose conclusions, mappings to inventory
   item numbers, or interpretive statements about what the data means.
 - The script's only inputs are `run-NNN/` directories produced by
@@ -432,7 +429,6 @@ their spread for human review.
   above.
 
 ### 10.4 Command-line interface
->>>>>>> 68245981f5b (capture plan)
 
 - `rd-analyze.sh` — with no arguments: scan
   `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md` and
