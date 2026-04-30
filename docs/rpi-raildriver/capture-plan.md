@@ -1,23 +1,36 @@
 # RailDriver structured capture protocol
 
-> **Status:** Plan / approved, script not yet implemented.
+> **Status:** Plan / approved, scripts not yet implemented.
 > **Companion docs:** `control-inventory.md` (the authoritative list of physical
 > controls), `plan.md` (the umbrella RailDriver-on-Linux project plan).
-> **Companion script (to be written):** `rd-record.sh` — see §10.
+> **Companion scripts (to be written):** `rd-record.sh` (capture) and
+> `rd-analyze.sh` (analysis) — see §10.
 
 ## 1. Problem statement
 
 The existing captures under `docs/rpi-raildriver/test-data/` (five `xxd -c 14`
-streams, 2,046 reports total) prove the *shape* of the device's HID input
-report — 14 bytes per report, repeating, byte 13 constant `0x35` across every
-report observed. They do **not** prove which byte (or which bit, for the
-button bytes) corresponds to which physical control on the RailDriver Modern
-Desktop, because no record was kept of which control was being touched at
-which moment in the stream.
+streams, 2,046 reports total) record the device's 14-byte HID input report
+shape but do not pair any HID byte to any physical control, because no record
+was kept of which control was being touched at which moment in the stream.
 
-This document specifies a structured capture protocol whose explicit goal is
-to produce the byte-by-byte and bit-by-bit mapping from each labeled control
-in `control-inventory.md` to its position in the 14-byte input report.
+This document specifies a structured protocol — capture plus analysis —
+whose explicit goal is to produce two data products from the device:
+
+1. For every switch and button in `control-inventory.md`: the set of byte
+   indices in the 14-byte report that change when the control is asserted,
+   the bit mask of changes within each such byte, and the distinct byte
+   values observed at rest and while the control is asserted.
+2. For every analog control in `control-inventory.md`: the set of byte
+   indices that change when the control is moved through its physical
+   range, and the minimum and maximum byte values observed at each such
+   index.
+
+The protocol is designed to report *what the device does*. It is not
+designed to confirm or refute any prior claim about the report layout
+(including but not limited to the byte-13-is-constant claim in `plan.md` §1
+or the parser's `i >= 7` treatment in `RailDriverMenuItem.java`). Comparison
+of this protocol's output to any prior claim is a separate, manual,
+post-hoc human activity outside the scope of either script.
 
 ## 2. Scope
 
@@ -52,18 +65,23 @@ For every labeled control in `control-inventory.md`:
   per-control captures are sufficient to assign each control a unique
   byte/bit; combinations only matter if there are observed conflicts during
   analysis, in which case follow-up captures can be added.
-- **Analysis or interpretation.** This protocol is the capture phase only.
-  A separate `rd-analyze.sh` (future task; not in this plan) will diff
-  each per-action capture against the pre-baseline and emit a summary
-  table. The output of *this* protocol is the raw evidence; conclusions are
-  drawn separately so the evidence can be re-analysed if the analysis logic
-  ever changes.
 
 ## 3. Approach overview
 
-A single bash script, `docs/rpi-raildriver/rd-record.sh`, walks the operator
-through a **fixed, numbered list of 52 actions** in a stable order. For each
-action the script:
+Two bash scripts live under `docs/rpi-raildriver/`:
+
+- **`rd-record.sh`** — operator-facing capture script. Walks the operator
+  through the fixed, numbered list of 52 actions in §5 and produces one
+  `run-NNN/` directory of raw HID byte streams plus hex views, as described
+  in §4. Operator interaction is detailed in §6, and the capture mechanism
+  is detailed in §7.
+- **`rd-analyze.sh`** — analysis script. Reads one or more `run-NNN/`
+  directories produced by `rd-record.sh` and emits the per-run and cross-run
+  data products defined in §11. The analysis script is fully automatic; it
+  does not prompt the operator and does not require the device to be
+  attached.
+
+For each capture action, `rd-record.sh`:
 
 1. Prints the action's number, slug, and a one-line "what to do" prompt.
 2. Starts capturing the raw `/dev/hidraw0` byte stream into a per-action
@@ -293,6 +311,7 @@ are recorded so future maintainers can see why each choice was made.
 | 2 | Should hat-switch diagonals (UR / DR / DL / UL) be captured? | **No, deferred.** | The inventory says only one cardinal direction asserts at a time. v1 stays minimal; diagonals can be added as actions 13a–16a if any analysis surprise warrants it. |
 | 3 | Should the script display a live report counter during capture? | **Yes.** | Analog sweeps need pacing; a per-action byte count after the fact is too late. Cheap to implement; no extra dependencies. |
 | 4 | Should the script detect and recover from device-detach mid-capture? | **No, deferred.** | A yanked-cable mid-run is rare in practice. The operator can notice (counter stops advancing) and use `r` to redo. v1 does not need automated recovery; the existing `cat` exits cleanly on EOF and the `.bin` is preserved (just short). |
+| 5 | Is analysis of the captured data in scope for this protocol? | **Yes.** | An earlier draft of this document put analysis out of scope, which would have produced raw bytes without the byte/bit mapping the protocol exists to produce. The analysis is required to deliver the goal stated in §1; it is specified in §11 and delivered as `rd-analyze.sh` per §10. |
 
 ## 9. Why this protocol is sufficient
 
@@ -319,12 +338,109 @@ are recorded so future maintainers can see why each choice was made.
 
 | Artifact | Status | Notes |
 |----------|--------|-------|
-| `docs/rpi-raildriver/capture-plan.md` | **This document.** | Committed alongside the script. |
+| `docs/rpi-raildriver/capture-plan.md` | **This document.** | Committed alongside the scripts. |
 | `docs/rpi-raildriver/rd-record.sh`    | To be written. | Implements §3–§7 above. Name matches the existing reference in `control-inventory.md` line 70. |
-| `.gitignore` entry for `docs/rpi-raildriver/captures/` | To be written. | Recommended default; individual reference runs can still be committed manually. |
-| `docs/rpi-raildriver/rd-analyze.sh`   | **Out of scope** for this plan. | A future analysis script that diffs each per-action capture against the pre-baseline and emits the byte-by-bit mapping table. Mentioned only so the file names above make sense in context. |
+| `docs/rpi-raildriver/rd-analyze.sh`   | To be written. | Implements §11. Reads `run-NNN/` directories produced by `rd-record.sh`; writes per-run `analysis.md` (or `.csv`) and cross-run `cross-run-analysis.md`. Does not reference any prior claim. |
+| `.gitignore` entry for `docs/rpi-raildriver/captures/` | To be written. | Recommended default; individual reference runs and analysis outputs can still be committed manually. |
 
-After this document and the script land, an explicit follow-up task is to
-update `docs/rpi-raildriver/plan.md` §1 to soften the byte-13 claim once the
-first run's data confirms (or refutes) the "constant 0x35" hypothesis under
-this stricter protocol.
+## 11. Analysis output specification
+
+`rd-analyze.sh` reads one or more `run-NNN/` directories produced by
+`rd-record.sh` and emits two outputs: a per-run analysis and a cross-run
+summary. The analysis is purely descriptive: it reports what the captured
+data shows. It does not reference, compare against, or verify any prior
+claim about the report layout, the parser's behaviour, or the inventory's
+labels.
+
+### 11.1 Per-run analysis
+
+For a single run directory, the script processes each non-skipped action's
+`.bin` file together with that run's `00-baseline-pre.bin` as follows:
+
+1. Read all 14-byte HID reports from the action's `.bin`.
+2. Compute the byte-wise OR of the bitwise XOR of every report against a
+   representative baseline byte vector (e.g. the first report of
+   `00-baseline-pre.bin`). The result is a 14-byte "change mask" — bit `b`
+   of byte `i` is 1 iff some report in the action differed from baseline at
+   that bit.
+3. Identify the set of changed byte indices (those where the change mask is
+   non-zero).
+4. For each changed byte index, record:
+   - the bit mask (hex) of bits that changed during the action;
+   - the set of distinct byte values observed during the action;
+   - the minimum and maximum byte values observed during the action;
+   - the count of reports where that byte differed from baseline.
+
+Output: `run-NNN/analysis.md` — markdown table, one row per non-skipped
+action, with columns:
+
+| column | meaning |
+|--------|---------|
+| `action#` | The action's stable index, `00`..`51`. |
+| `slug` | The action's slug (e.g. `01-range-up`). |
+| `status` | `captured`, `skipped`, or `not-reached`. |
+| `report_count` | Number of HID reports in the action's `.bin`. |
+| `byte_indices_changed` | Comma-separated list of byte indices (0..13) whose value differed from baseline at any point during the action. Empty if no byte changed. |
+| `bit_masks` | For each changed byte, the bit mask of bits that changed, in the form `byte<i>=0x<hex>`; multiple entries comma-separated. |
+| `observed_values` | For each changed byte, the set of distinct byte values observed during the action, in the form `byte<i>={0x<hex>,0x<hex>,...}`. |
+| `min_max` | For each changed byte, `byte<i>=[min,max]` in hex. |
+
+A companion `run-NNN/analysis.csv` is also written with the same columns
+for programmatic consumption.
+
+The script does no inference about *which* control caused which bit/byte
+change. The slug is reported as captured; the operator's `slug → physical
+control` mapping is documented in §5 of this plan and in `README.md` of each
+run, both of which are produced earlier in the workflow.
+
+Skipped actions appear in the table with `status=skipped` and empty data
+columns. Actions whose `.bin` is missing (e.g. interrupted mid-action)
+appear with `status=not-reached` and empty data columns.
+
+### 11.2 Cross-run analysis
+
+When multiple `run-NNN/` directories exist, the script also writes
+`docs/rpi-raildriver/captures/cross-run-analysis.md` (and `.csv`). For each
+action present in any run, it compares per-run analyses across all runs and
+reports:
+
+| column | meaning |
+|--------|---------|
+| `action#` | The action's stable index. |
+| `slug` | The action's slug. |
+| `runs_compared` | Comma-separated list of run directory names included for this action (only runs that captured this action contribute). |
+| `byte_indices_consistent` | `yes` if `byte_indices_changed` is identical across all compared runs; otherwise `no`. |
+| `bit_masks_consistent` | `yes` if the per-byte bit masks are identical across all compared runs; otherwise `no`. |
+| `value_ranges_consistent` | `yes` if the per-byte `[min,max]` intervals overlap across all compared runs; otherwise `no`. (Used as a soft check for analog actions, since analog ranges can vary slightly with operator hand position.) |
+| `discrepancies` | If any of the above are `no`, a free-text description of which runs disagreed and how. Otherwise empty. |
+
+The cross-run script does not pick a "winner" between disagreeing runs and
+does not annotate any run as correct or incorrect. It only flags
+inconsistencies for human review.
+
+### 11.3 Constraints on the analysis script
+
+- The script must not reference, compare to, or be aware of any prior
+  claim about the report layout — including, but not limited to, the
+  byte-13 claim in `plan.md` §1, the `i >= 7` treatment in
+  `RailDriverMenuItem.java`, and the inventory-item-to-physical-position
+  mapping discussion in `control-inventory.md`.
+- The script must not generate prose conclusions, mappings to inventory
+  item numbers, or interpretive statements about what the data means.
+- The script's only inputs are `run-NNN/` directories produced by
+  `rd-record.sh` and command-line flags; it must not read `plan.md`,
+  `control-inventory.md`, or any source file under `java/`.
+- The script's only outputs are the per-run and cross-run files described
+  above.
+
+### 11.4 Command-line interface
+
+- `rd-analyze.sh` — with no arguments: scan
+  `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md` and
+  `analysis.csv`, and write the cross-run summary if more than one run
+  exists.
+- `rd-analyze.sh --run-dir <path>` — analyze only the named run directory;
+  no cross-run output.
+- `rd-analyze.sh --out <dir>` — override the default output paths
+  (defaults: `<run-dir>/analysis.{md,csv}` per run; cross-run files under
+  `docs/rpi-raildriver/captures/`).
