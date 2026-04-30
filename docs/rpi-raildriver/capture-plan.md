@@ -275,41 +275,7 @@ columns `#`, `slug`, `prompt`, `file`, `bytes`, `reports`, `status`. `status`
 is one of `captured`, `skipped`, `not-reached` (for actions after a `q`
 quit). Missing values appear as `—`.
 
-## 8. Design decisions
-
-The following decisions were resolved before authoring this document. They
-are recorded so future maintainers can see why each choice was made.
-
-| # | Question | Decision | Rationale |
-|---|----------|----------|-----------|
-| 1 | Should prompts use the inventory's item numbers (14..41) or neutral physical-position labels for the 28-button grid? | **Neutral position labels** (`btn-<row>-<col>`). | The inventory does not specify which corner is item 14 vs item 41, so building inventory numbers into the prompts would either invent a convention or confuse the operator. Neutral labels are unambiguous; the inventory-number mapping is an analysis-phase output. |
-| 2 | Should hat-switch diagonals (UR / DR / DL / UL) be captured? | **No, deferred.** | The inventory says only one cardinal direction asserts at a time. v1 stays minimal; diagonals can be added as actions 13a–16a if any analysis surprise warrants it. |
-| 3 | Should the script display a live report counter during capture? | **Yes.** | Analog sweeps need pacing; a per-action byte count after the fact is too late. Cheap to implement; no extra dependencies. |
-| 4 | Should the script detect and recover from device-detach mid-capture? | **No, deferred.** | A yanked-cable mid-run is rare in practice. The operator can notice (counter stops advancing) and use `r` to redo. v1 does not need automated recovery; the existing `cat` exits cleanly on EOF and the `.bin` is preserved (just short). |
-| 5 | Is analysis of the captured data in scope for this protocol? | **Yes.** | An earlier draft of this document put analysis out of scope, which would have produced raw bytes without the byte/bit mapping the protocol exists to produce. The analysis is required to deliver the goal stated in §1; it is specified in §11 and delivered as `rd-analyze.sh` per §10. |
-
-## 9. Why this protocol is sufficient
-
-- **Stable indices and slugs** make `diff run-001/05-alert.hex
-  run-002/05-alert.hex` a meaningful comparison and let operators re-run
-  individual actions with consistent file names.
-- **Pre- and post-baselines** bracket the run, so any device-state drift
-  during the run is visible in raw form rather than silently averaged into
-  the per-action data.
-- **Single-control captures** mean a byte-diff between two adjacent reports
-  inside one capture file isolates exactly the bits that respond to that one
-  control — no noise from simultaneous inputs.
-- **Hold-and-release windows** for buttons capture the sequence "rest /
-  asserted / rest", confirming both *which* bits assert and *that* they
-  release back to baseline.
-- **Multiple runs** in separate `run-NNN` directories let us check that the
-  byte/bit mapping is reproducible across runs and that the device has no
-  run-to-run quirks.
-- **Raw binary plus hex view** gives forensic accuracy (binary is the source
-  of truth) plus human-readable review (hex). Later analysis tooling can
-  re-render the binary in any other format without re-running the captures.
-
-## 10. Deliverables
+## 8. Deliverables
 
 | Artifact | Notes |
 |----------|-------|
