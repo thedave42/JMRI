@@ -606,38 +606,35 @@ ACTIONS=(
     "item07-horn-down|spdt-direction|Item 7 (Horn, SPDT momentary):
     Push the Horn lever DOWN and HOLD ~1 s, then release."
 
-    # --- Item 8: Reverser (3 detents) ---
+    # --- Item 8: Reverser (3 detents; min/max at outer detents) ---
     "item08-reverser-sweep|analog-positional|Item 8 (Reverser, 3 physical detents):
-    From baseline (NEUTRAL), perform this sweep:
-       Forward (pause ~1 s)
-    -> Neutral (pause ~1 s)
-    -> Reverse (pause ~1 s)
-    -> back to Neutral.
+    From baseline (NEUTRAL):
+       move firmly to FORWARD detent
+    -> move firmly to REVERSE detent
+    -> return to NEUTRAL.
     Press Enter when done."
 
-    # --- Item 9: Throttle / Dyn-Brake (continuous bipolar) ---
+    # --- Item 9: Throttle / Dyn-Brake (continuous bipolar; need both extremes) ---
     "item09-throttle-dynbrake-sweep|analog-bipolar|Item 9 (Throttle/Dyn-Brake, continuous bipolar):
-    From baseline (Idle, centre), perform this sweep:
-       Push DOWN to maximum throttle (pause ~1 s)
-    -> back to Idle (centre, pause ~1 s)
-    -> Pull UP to maximum dynamic brake (pause ~1 s)
-    -> back to Idle.
+    From baseline (Idle, centre):
+       push DOWN firmly to the physical end-stop (max throttle)
+    -> return to Idle (centre)
+    -> pull UP firmly to the physical end-stop (max dyn-brake)
+    -> return to Idle.
     Press Enter when done."
 
-    # --- Item 10: Auto Brake (continuous, 4 named positions) ---
+    # --- Item 10: Auto Brake (continuous; min/max at endpoints) ---
     "item10-autobrake-sweep|analog-positional|Item 10 (Auto Brake):
-    From baseline (Release), perform this sweep:
-       Move to SUP (pause ~1 s)
-    -> CS (pause ~1 s)
-    -> EMG (pause ~1 s)
-    -> back to Release.
+    From baseline (Release):
+       move firmly to EMG (the far end of travel)
+    -> return to Release.
     Press Enter when done."
 
     # --- Item 11a: Independent Brake lever (continuous) ---
     "item11a-indepbrake-lever-sweep|analog|Item 11a (Independent Brake LEVER ONLY -- not bail-off):
-    From baseline (Release), perform this sweep:
-       Move to FULL APPLY (pause ~1 s)
-    -> back to Release.
+    From baseline (Release):
+       push lever firmly to the physical end-stop (Full Apply)
+    -> return to Release.
     Do NOT engage the bail-off; that is the next test.
     Press Enter when done."
 
@@ -648,20 +645,18 @@ ACTIONS=(
     (The bail-off does not stay engaged on its own.)
     Press Enter when done."
 
-    # --- Item 12: Wiper (3-position switch) ---
+    # --- Item 12: Wiper (3-position; min/max at outer positions) ---
     "item12-wiper-sweep|analog-positional|Item 12 (Wiper, 3-position switch):
-    From baseline (Off), perform this sweep:
-       Move to SLOW (pause ~1 s)
-    -> FULL (pause ~1 s)
-    -> back to Off.
+    From baseline (Off):
+       rotate firmly to FULL (the far end of travel)
+    -> return to Off.
     Press Enter when done."
 
-    # --- Item 13: Lights (3-position switch) ---
+    # --- Item 13: Lights (3-position; min/max at outer positions) ---
     "item13-lights-sweep|analog-positional|Item 13 (Lights, 3-position switch):
-    From baseline (Off), perform this sweep:
-       Move to DIM (pause ~1 s)
-    -> FULL (pause ~1 s)
-    -> back to Off.
+    From baseline (Off):
+       rotate firmly to FULL (the far end of travel)
+    -> return to Off.
     Press Enter when done."
 
     # --- Items 14-41: 28 user-assignable buttons (2 x 14 layout) ---
