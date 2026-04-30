@@ -1,42 +1,58 @@
 #!/usr/bin/env bash
-# Phase 2: per-action RailDriver HID capture, advanced manually with Enter.
+# Phase 2: per-action RailDriver HID capture with baseline + diff verification.
 #
-# Captures one xxd -c 14 file per action in the inventory at
-# docs/rpi-raildriver/control-inventory.md. The action list below
-# follows the inventory's item numbering (1..43). For controls with
-# multiple distinct positions or directions, multiple captures are
-# performed (e.g. the Reverser has 3 detents -> 3 captures).
+# Workflow:
 #
-# For each action:
-#   1. Script prints the action label and starts recording immediately.
-#   2. You perform the action at your own pace (no time limit, no countdown).
-#   3. Press Enter ONCE when you are DONE with that action.
-#   4. The capture is saved to its own labelled file, and the script
-#      moves on to the next action.
+#   Step 0 -- BASELINE.
+#     The user is asked to place EVERY control at its named rest position
+#     (Reverser:Neutral, Throttle:Idle, Auto Brake:Release, Indep Brake:
+#     Release, Wiper:Off, Lights:Off; no buttons or switches held). The
+#     script then records ~1 s of /dev/hidraw0 traffic and verifies the
+#     reports during that window are all identical. The single payload
+#     is saved as 000-baseline.log.
 #
-# Single-character options at each Enter prompt:
-#   <empty>   accept and continue
+#     Once a baseline exists, every subsequent test's diff identifies
+#     which byte(s) the user moved -- so the script can verify that the
+#     user did the right action without needing to know the byte-to-
+#     control mapping ahead of time.
+#
+#   Step 1 -- per-action tests.
+#     For each action in the list, the script announces what to do,
+#     starts a continuous capture, waits for the user to press Enter,
+#     stops the capture, then:
+#       * extracts the FIRST and LAST 14-byte payloads from the capture
+#       * diffs each against the baseline
+#       * reports which bytes varied during the capture and what
+#         distinct values each saw
+#       * prompts the user to accept / redo / skip / quit
+#
+#     For multi-position controls the prompt asks for a sweep through
+#     every named position (returning to rest at the end). For SPDT
+#     switches and buttons the prompt asks for a single press+release.
+#     For the hat switch each direction is its own capture.
+#
+# Per-prompt options:
+#   <Enter>   accept and continue
 #   r         redo this action (capture again)
 #   s         skip this action (no file written)
 #   q         quit immediately
 #
-# Output filenames look like:
+# Output (under $RD_OUTDIR, default ~/rd-capture/):
+#   000-baseline.log
 #   100-item01-range-press-up-and-release.log
-#   101-item01-range-press-down-and-release.log
-#   102-item02-estop-press-up-and-release.log
-#   ...
+#   ... etc, in inventory order.
 #
 # Pre-flight:
 #   - Quit JMRI completely so it isn't holding the device.
+#   - sudo apt install -y xxd  (already present on most systems)
 #
 # Environment knobs:
-#   RD_HIDRAW    /dev/hidrawN node for the RailDriver (default /dev/hidraw0)
+#   RD_HIDRAW    /dev/hidrawN node (default /dev/hidraw0)
 #   RD_OUTDIR    output directory (default ~/rd-capture)
-#   RD_START     numeric prefix offset (default 100)
+#   RD_START     numeric prefix offset for action files (default 100)
 #
-# See issue #1 for the broader capture plan, and
-# docs/rpi-raildriver/control-inventory.md for the inventory this list
-# is derived from.
+# See issue #1 for the broader plan and
+# docs/rpi-raildriver/control-inventory.md for the inventory.
 
 set -uo pipefail
 
@@ -53,110 +69,396 @@ fi
 
 echo ">>> Output directory : $OUTDIR"
 echo ">>> Device           : $DEV"
-echo ">>> sudo will be requested once to read $DEV during recordings"
+echo ">>> sudo will be requested once for /dev/hidraw access"
 sudo -v || exit 1
 
-# Each entry is "label|long_description". The label is sanitized into
-# the filename. The long description is shown to the user before each
-# capture so they know what to do.
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Extract the 14-byte hex payload (28 lower-case hex chars, no spaces) from
+# the Nth line of an xxd -c 14 file. Args: <file> <line-spec, e.g. "1" or "$">
+extract_payload() {
+    local file="$1"
+    local line_spec="$2"
+    awk -v ln="$line_spec" '
+        BEGIN { target = (ln == "$") ? -1 : ln + 0 }
+        {
+            gsub(/^[0-9a-fA-F]+: */, "")
+            sub(/ +[^ ]+$/, "")
+            gsub(/ /, "")
+            if (target == -1) { last = tolower($0) }
+            else if (NR == target) { print tolower($0); exit }
+        }
+        END { if (target == -1 && last != "") print last }
+    ' "$file"
+}
+
+# Compare two 28-char hex payloads. Print, one per line, the byte indices
+# (0..13) that differ.
+diff_payloads() {
+    local a="$1" b="$2"
+    local i
+    for ((i = 0; i < 14; i++)); do
+        local ah="${a:$((i*2)):2}"
+        local bh="${b:$((i*2)):2}"
+        if [[ "$ah" != "$bh" ]]; then
+            printf '%d ' "$i"
+        fi
+    done
+    echo
+}
+
+# For a captured xxd file, report which byte positions varied at any point
+# in the file (compared to the baseline payload). For each varying byte,
+# list the distinct values seen.
+report_capture() {
+    local file="$1"
+    local baseline_payload="$2"
+
+    local n_reports
+    n_reports=$(wc -l < "$file")
+    echo "    reports captured       : $n_reports"
+
+    # Single python invocation. File path is passed as arg; nothing piped to
+    # stdin, so there is no collision with the python -c form.
+    python3 -c '
+import sys, re
+baseline = sys.argv[1]
+path = sys.argv[2]
+hex_re = re.compile(r"[0-9a-fA-F]{2}")
+seen = [set() for _ in range(14)]
+unique_payloads = set()
+for line in open(path):
+    try:
+        _, rest = line.split(":", 1)
+    except ValueError:
+        continue
+    hex_part = rest.split("  ")[0]
+    pairs = hex_re.findall(hex_part)
+    if len(pairs) < 14:
+        continue
+    payload = "".join(p.lower() for p in pairs[:14])
+    unique_payloads.add(payload)
+    for i in range(14):
+        seen[i].add(pairs[i].lower())
+print(f"    distinct payloads      : {len(unique_payloads)}")
+diffs = []
+for i, vals in enumerate(seen):
+    bv = baseline[2*i:2*i+2]
+    if any(v != bv for v in vals):
+        diffs.append((i, sorted(vals), bv))
+if not diffs:
+    print("    bytes that varied      : NONE -- the user may not have done anything")
+else:
+    print("    bytes that varied vs baseline:")
+    for i, vals, bv in diffs:
+        labelled = []
+        for v in vals:
+            if v == bv:
+                labelled.append(f"{v}(rest)")
+            else:
+                labelled.append(v)
+        print(f"      byte {i:>2} (rest={bv}): {chr(32).join(labelled)}  [{len(vals)} distinct]")
+' "$baseline_payload" "$file"
+}
+
+# Capture in the background until the user presses Enter, then stop.
+# Args: <bin output path>
+# Returns: pid of the background dd in the global capture_pid var.
+capture_pid=""
+start_capture() {
+    local bin="$1"
+    sudo -n dd if="$DEV" of="$bin" bs=14 status=none &
+    capture_pid=$!
+}
+stop_capture() {
+    if [[ -n "$capture_pid" ]] && kill -0 "$capture_pid" 2>/dev/null; then
+        sudo kill "$capture_pid" 2>/dev/null || true
+        wait "$capture_pid" 2>/dev/null || true
+    fi
+    capture_pid=""
+}
+
+# ---------------------------------------------------------------------------
+# Step 0 -- baseline
+# ---------------------------------------------------------------------------
+
+establish_baseline() {
+    local baseline_log="$OUTDIR/000-baseline.log"
+    while true; do
+        cat <<'BASELINE_PROMPT'
+
+====================================================================
+  STEP 0 -- BASELINE
+====================================================================
+
+  Place EVERY control at its rest position:
+
+    Reverser           -> Neutral (centre detent)
+    Throttle/Dyn-Brake -> Idle (centre)
+    Auto Brake         -> Release
+    Independent Brake  -> Release
+    Wiper              -> Off
+    Lights             -> Off
+    All buttons / SPDT switches -> not pressed, not held
+    Hat switch         -> at centre, not pressed in any direction
+
+  Once everything is at rest, press Enter. Recording starts on Enter
+  and runs for ~1 second to verify the report stays steady.
+BASELINE_PROMPT
+        read -r -p "  [Enter]=record baseline  q=quit  : " ans
+        if [[ "${ans:-}" =~ ^[qQ]$ ]]; then
+            echo "Quit."
+            exit 0
+        fi
+
+        local bin="$OUTDIR/000-baseline.bin"
+        echo "  Recording baseline (1 second)..."
+        sudo -n timeout 1 dd if="$DEV" of="$bin" bs=14 status=none 2>/dev/null || true
+
+        if [[ ! -s "$bin" ]]; then
+            sudo rm -f "$bin"
+            echo "  ERROR: no data captured. Is the device sending reports?"
+            echo "         Try wiggling a control briefly and press Enter again."
+            continue
+        fi
+
+        sudo chown "$USER:$USER" "$bin" 2>/dev/null || true
+        xxd -c 14 "$bin" > "$baseline_log"
+        sudo rm -f "$bin"
+
+        local n_unique baseline_payload
+        n_unique=$(awk '{
+            gsub(/^[0-9a-fA-F]+: */, "")
+            sub(/ +[^ ]+$/, "")
+            gsub(/ /, "")
+            print tolower($0)
+        }' "$baseline_log" | sort -u | wc -l)
+
+        if [[ "$n_unique" -ne 1 ]]; then
+            echo "  WARNING: $n_unique distinct payloads in the baseline window."
+            echo "           Something was moving. Holding everything STILL is required."
+            awk '{
+                gsub(/^[0-9a-fA-F]+: */, "")
+                sub(/ +[^ ]+$/, "")
+                gsub(/ /, "")
+                print tolower($0)
+            }' "$baseline_log" | sort | uniq -c | sort -rn | head -5 \
+                | awk '{printf "             seen %d time(s): %s\n", $1, $2}'
+            read -r -p "  [Enter]=retry  a=accept anyway (use most-frequent)  q=quit  : " ans2
+            case "${ans2:-}" in
+                q|Q) exit 0 ;;
+                a|A)
+                    baseline_payload=$(awk '{
+                        gsub(/^[0-9a-fA-F]+: */, "")
+                        sub(/ +[^ ]+$/, "")
+                        gsub(/ /, "")
+                        print tolower($0)
+                    }' "$baseline_log" | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+                    BASELINE_PAYLOAD="$baseline_payload"
+                    echo "  Accepted baseline payload: $baseline_payload"
+                    return
+                    ;;
+                *)
+                    rm -f "$baseline_log"
+                    continue
+                    ;;
+            esac
+        fi
+
+        baseline_payload=$(extract_payload "$baseline_log" 1)
+        BASELINE_PAYLOAD="$baseline_payload"
+        echo "  Baseline payload: $baseline_payload"
+        echo "  Saved to $baseline_log"
+        return
+    done
+}
+
+establish_baseline
+echo
+echo "===================================================================="
+echo "  Baseline established. Proceeding to per-action tests."
+echo "  Between each test, return all controls to baseline rest positions."
+echo "===================================================================="
+
+# ---------------------------------------------------------------------------
+# Action list. Each entry: "label|description"
+# ---------------------------------------------------------------------------
+
 ACTIONS=(
 
-    # ---- Item 1: Range (SPDT momentary, up/off/down) ----
-    "item01-range-press-up-and-release|Item 1 (Range, SPDT momentary): press the Range switch UP, hold for ~1 second, then release. Centre is rest."
-    "item01-range-press-down-and-release|Item 1 (Range, SPDT momentary): press the Range switch DOWN, hold for ~1 second, then release."
+    # --- Item 1: Range (SPDT momentary, up/off/down) ---
+    "item01-range-up|Item 1 (Range, SPDT momentary):
+    Press the Range switch UP and HOLD for ~1 second, then release.
+    The switch is spring-return; centre is rest."
 
-    # ---- Item 2: E-Stop (SPDT momentary, up/off/down) ----
-    "item02-estop-press-up-and-release|Item 2 (E-Stop, SPDT momentary): press the E-Stop switch UP, hold ~1 s, release."
-    "item02-estop-press-down-and-release|Item 2 (E-Stop, SPDT momentary): press the E-Stop switch DOWN, hold ~1 s, release."
+    "item01-range-down|Item 1 (Range, SPDT momentary):
+    Press the Range switch DOWN and HOLD for ~1 second, then release."
 
-    # ---- Item 3: Alert (button) ----
-    "item03-alert-press-and-release|Item 3 (Alert button): press the Alert button, hold ~1 s, release."
+    # --- Item 2: E-Stop (SPDT momentary) ---
+    "item02-estop-up|Item 2 (E-Stop, SPDT momentary):
+    Press the E-Stop switch UP and HOLD ~1 s, then release."
 
-    # ---- Item 4: Sand (button) ----
-    "item04-sand-press-and-release|Item 4 (Sand button): press the Sand button, hold ~1 s, release."
+    "item02-estop-down|Item 2 (E-Stop, SPDT momentary):
+    Press the E-Stop switch DOWN and HOLD ~1 s, then release."
 
-    # ---- Item 5: P (button; ASSUMED Pantograph) ----
-    "item05-p-press-and-release|Item 5 (P button, assumed Pantograph): press the P button, hold ~1 s, release."
+    # --- Items 3-6: simple buttons ---
+    "item03-alert|Item 3 (Alert button):
+    Press and HOLD the Alert button ~1 s, then release."
 
-    # ---- Item 6: Bell (button) ----
-    "item06-bell-press-and-release|Item 6 (Bell button): press the Bell button, hold ~1 s, release."
+    "item04-sand|Item 4 (Sand button):
+    Press and HOLD the Sand button ~1 s, then release."
 
-    # ---- Item 7: Horn (SPDT momentary, up/off/down) ----
-    "item07-horn-press-up-and-release|Item 7 (Horn, SPDT momentary): push the Horn lever UP, hold ~1 s, release."
-    "item07-horn-press-down-and-release|Item 7 (Horn, SPDT momentary): push the Horn lever DOWN, hold ~1 s, release."
+    "item05-p|Item 5 (P button, assumed Pantograph):
+    Press and HOLD the P button ~1 s, then release."
 
-    # ---- Item 8: Reverser (3-detent analog) ----
-    "item08-reverser-to-forward|Item 8 (Reverser): move the Reverser to the FORWARD detent and stop there."
-    "item08-reverser-to-neutral|Item 8 (Reverser): move the Reverser to the NEUTRAL (centre) detent and stop there."
-    "item08-reverser-to-reverse|Item 8 (Reverser): move the Reverser to the REVERSE detent and stop there."
+    "item06-bell|Item 6 (Bell button):
+    Press and HOLD the Bell button ~1 s, then release."
 
-    # ---- Item 9: Throttle / Dynamic Brake (continuous bipolar analog) ----
-    "item09-throttle-idle-to-max-and-back-to-idle|Item 9 (Throttle/Dyn-Brake): starting from idle (centre), push DOWN to maximum throttle, then return to idle. (Down = throttle.)"
-    "item09-dynbrake-idle-to-max-and-back-to-idle|Item 9 (Throttle/Dyn-Brake): starting from idle (centre), pull UP to maximum dynamic brake, then return to idle. (Up = dyn-brake.)"
+    # --- Item 7: Horn (SPDT momentary) ---
+    "item07-horn-up|Item 7 (Horn, SPDT momentary):
+    Push the Horn lever UP and HOLD ~1 s, then release."
 
-    # ---- Item 10: Auto Brake (continuous, named positions) ----
-    "item10-autobrake-to-release|Item 10 (Auto Brake): move the Auto Brake to the RELEASE position (no brake) and stop there."
-    "item10-autobrake-to-sup|Item 10 (Auto Brake): move the Auto Brake to the SUP position and stop there."
-    "item10-autobrake-to-cs|Item 10 (Auto Brake): move the Auto Brake to the CS position and stop there."
-    "item10-autobrake-to-emg|Item 10 (Auto Brake): move the Auto Brake to the EMG (Emergency) position and stop there."
+    "item07-horn-down|Item 7 (Horn, SPDT momentary):
+    Push the Horn lever DOWN and HOLD ~1 s, then release."
 
-    # ---- Item 11: Independent Brake (continuous + bail-off positions) ----
-    "item11-indepbrake-to-release|Item 11 (Independent Brake): move to the RELEASE position (no brake) and stop there."
-    "item11-indepbrake-to-full-apply|Item 11 (Independent Brake): move to the FULL APPLY position and stop there."
-    "item11-indepbrake-bailoff-on|Item 11 (Independent Brake): move to the BAIL-OFF ON position and stop there."
-    "item11-indepbrake-bailoff-off|Item 11 (Independent Brake): move to the BAIL-OFF OFF position and stop there."
+    # --- Item 8: Reverser (3 detents) ---
+    "item08-reverser-sweep|Item 8 (Reverser, 3 physical detents):
+    From baseline (NEUTRAL), perform this sweep:
+       Forward (pause ~1 s)
+    -> Neutral (pause ~1 s)
+    -> Reverse (pause ~1 s)
+    -> back to Neutral.
+    Press Enter when done."
 
-    # ---- Item 12: Wiper (3-position switch) ----
-    "item12-wiper-to-off|Item 12 (Wiper): set the Wiper switch to OFF and stop there."
-    "item12-wiper-to-slow|Item 12 (Wiper): set the Wiper switch to SLOW and stop there."
-    "item12-wiper-to-full|Item 12 (Wiper): set the Wiper switch to FULL and stop there."
+    # --- Item 9: Throttle / Dyn-Brake (continuous bipolar) ---
+    "item09-throttle-dynbrake-sweep|Item 9 (Throttle/Dyn-Brake, continuous bipolar):
+    From baseline (Idle, centre), perform this sweep:
+       Push DOWN to maximum throttle (pause ~1 s)
+    -> back to Idle (centre, pause ~1 s)
+    -> Pull UP to maximum dynamic brake (pause ~1 s)
+    -> back to Idle.
+    Press Enter when done."
 
-    # ---- Item 13: Lights (3-position switch) ----
-    "item13-lights-to-off|Item 13 (Lights): set the Lights switch to OFF and stop there."
-    "item13-lights-to-dim|Item 13 (Lights): set the Lights switch to DIM and stop there."
-    "item13-lights-to-full|Item 13 (Lights): set the Lights switch to FULL and stop there."
+    # --- Item 10: Auto Brake (continuous, 4 named positions) ---
+    "item10-autobrake-sweep|Item 10 (Auto Brake):
+    From baseline (Release), perform this sweep:
+       Move to SUP (pause ~1 s)
+    -> CS (pause ~1 s)
+    -> EMG (pause ~1 s)
+    -> back to Release.
+    Press Enter when done."
 
-    # ---- Items 14-41: 28 user-assignable buttons (2 x 14 layout) ----
-    # Row 1 = top row, left to right (closest to the player). Row 2 = bottom row, left to right.
-    "item14-button-row1-pos1-press-and-release|Item 14 (user-assignable button, ROW 1 POS 1, leftmost top-row): press, hold ~1 s, release."
-    "item15-button-row1-pos2-press-and-release|Item 15 (user-assignable button, ROW 1 POS 2): press, hold ~1 s, release."
-    "item16-button-row1-pos3-press-and-release|Item 16 (user-assignable button, ROW 1 POS 3): press, hold ~1 s, release."
-    "item17-button-row1-pos4-press-and-release|Item 17 (user-assignable button, ROW 1 POS 4): press, hold ~1 s, release."
-    "item18-button-row1-pos5-press-and-release|Item 18 (user-assignable button, ROW 1 POS 5): press, hold ~1 s, release."
-    "item19-button-row1-pos6-press-and-release|Item 19 (user-assignable button, ROW 1 POS 6): press, hold ~1 s, release."
-    "item20-button-row1-pos7-press-and-release|Item 20 (user-assignable button, ROW 1 POS 7): press, hold ~1 s, release."
-    "item21-button-row1-pos8-press-and-release|Item 21 (user-assignable button, ROW 1 POS 8): press, hold ~1 s, release."
-    "item22-button-row1-pos9-press-and-release|Item 22 (user-assignable button, ROW 1 POS 9): press, hold ~1 s, release."
-    "item23-button-row1-pos10-press-and-release|Item 23 (user-assignable button, ROW 1 POS 10): press, hold ~1 s, release."
-    "item24-button-row1-pos11-press-and-release|Item 24 (user-assignable button, ROW 1 POS 11): press, hold ~1 s, release."
-    "item25-button-row1-pos12-press-and-release|Item 25 (user-assignable button, ROW 1 POS 12): press, hold ~1 s, release."
-    "item26-button-row1-pos13-press-and-release|Item 26 (user-assignable button, ROW 1 POS 13): press, hold ~1 s, release."
-    "item27-button-row1-pos14-press-and-release|Item 27 (user-assignable button, ROW 1 POS 14, rightmost top-row): press, hold ~1 s, release."
-    "item28-button-row2-pos1-press-and-release|Item 28 (user-assignable button, ROW 2 POS 1, leftmost bottom-row): press, hold ~1 s, release."
-    "item29-button-row2-pos2-press-and-release|Item 29 (user-assignable button, ROW 2 POS 2): press, hold ~1 s, release."
-    "item30-button-row2-pos3-press-and-release|Item 30 (user-assignable button, ROW 2 POS 3): press, hold ~1 s, release."
-    "item31-button-row2-pos4-press-and-release|Item 31 (user-assignable button, ROW 2 POS 4): press, hold ~1 s, release."
-    "item32-button-row2-pos5-press-and-release|Item 32 (user-assignable button, ROW 2 POS 5): press, hold ~1 s, release."
-    "item33-button-row2-pos6-press-and-release|Item 33 (user-assignable button, ROW 2 POS 6): press, hold ~1 s, release."
-    "item34-button-row2-pos7-press-and-release|Item 34 (user-assignable button, ROW 2 POS 7): press, hold ~1 s, release."
-    "item35-button-row2-pos8-press-and-release|Item 35 (user-assignable button, ROW 2 POS 8): press, hold ~1 s, release."
-    "item36-button-row2-pos9-press-and-release|Item 36 (user-assignable button, ROW 2 POS 9): press, hold ~1 s, release."
-    "item37-button-row2-pos10-press-and-release|Item 37 (user-assignable button, ROW 2 POS 10): press, hold ~1 s, release."
-    "item38-button-row2-pos11-press-and-release|Item 38 (user-assignable button, ROW 2 POS 11): press, hold ~1 s, release."
-    "item39-button-row2-pos12-press-and-release|Item 39 (user-assignable button, ROW 2 POS 12): press, hold ~1 s, release."
-    "item40-button-row2-pos13-press-and-release|Item 40 (user-assignable button, ROW 2 POS 13): press, hold ~1 s, release."
-    "item41-button-row2-pos14-press-and-release|Item 41 (user-assignable button, ROW 2 POS 14, rightmost bottom-row): press, hold ~1 s, release."
+    # --- Item 11a: Independent Brake lever (continuous) ---
+    "item11a-indepbrake-lever-sweep|Item 11a (Independent Brake LEVER ONLY -- not bail-off):
+    From baseline (Release), perform this sweep:
+       Move to FULL APPLY (pause ~1 s)
+    -> back to Release.
+    Do NOT engage the bail-off; that is the next test.
+    Press Enter when done."
 
-    # ---- Item 42: user-assignable SPDT (up/off/down) ----
-    "item42-user-spdt-press-up-and-release|Item 42 (user-assignable SPDT): press the switch UP, hold ~1 s, release."
-    "item42-user-spdt-press-down-and-release|Item 42 (user-assignable SPDT): press the switch DOWN, hold ~1 s, release."
+    # --- Item 11b: Bail-off (spring-loaded, button-style) ---
+    "item11b-indepbrake-bailoff|Item 11b (Independent Brake BAIL-OFF only):
+    With the Independent Brake LEVER at Release (baseline),
+    engage the spring-loaded bail-off and HOLD ~1 s, then release.
+    (The bail-off does not stay engaged on its own.)
+    Press Enter when done."
 
-    # ---- Item 43: user-assignable hat switch (up/right/down/left) ----
-    "item43-hat-press-up-and-release|Item 43 (user-assignable hat switch): press the hat UP, hold ~1 s, release."
-    "item43-hat-press-right-and-release|Item 43 (user-assignable hat switch): press the hat RIGHT, hold ~1 s, release."
-    "item43-hat-press-down-and-release|Item 43 (user-assignable hat switch): press the hat DOWN, hold ~1 s, release."
-    "item43-hat-press-left-and-release|Item 43 (user-assignable hat switch): press the hat LEFT, hold ~1 s, release."
+    # --- Item 12: Wiper (3-position switch) ---
+    "item12-wiper-sweep|Item 12 (Wiper, 3-position switch):
+    From baseline (Off), perform this sweep:
+       Move to SLOW (pause ~1 s)
+    -> FULL (pause ~1 s)
+    -> back to Off.
+    Press Enter when done."
+
+    # --- Item 13: Lights (3-position switch) ---
+    "item13-lights-sweep|Item 13 (Lights, 3-position switch):
+    From baseline (Off), perform this sweep:
+       Move to DIM (pause ~1 s)
+    -> FULL (pause ~1 s)
+    -> back to Off.
+    Press Enter when done."
+
+    # --- Items 14-41: 28 user-assignable buttons (2 x 14 layout) ---
+    "item14-button-row1-pos1|Item 14 (user button ROW 1 POS 1, leftmost top-row):
+    Press and HOLD ~1 s, release."
+    "item15-button-row1-pos2|Item 15 (user button ROW 1 POS 2):
+    Press and HOLD ~1 s, release."
+    "item16-button-row1-pos3|Item 16 (user button ROW 1 POS 3):
+    Press and HOLD ~1 s, release."
+    "item17-button-row1-pos4|Item 17 (user button ROW 1 POS 4):
+    Press and HOLD ~1 s, release."
+    "item18-button-row1-pos5|Item 18 (user button ROW 1 POS 5):
+    Press and HOLD ~1 s, release."
+    "item19-button-row1-pos6|Item 19 (user button ROW 1 POS 6):
+    Press and HOLD ~1 s, release."
+    "item20-button-row1-pos7|Item 20 (user button ROW 1 POS 7):
+    Press and HOLD ~1 s, release."
+    "item21-button-row1-pos8|Item 21 (user button ROW 1 POS 8):
+    Press and HOLD ~1 s, release."
+    "item22-button-row1-pos9|Item 22 (user button ROW 1 POS 9):
+    Press and HOLD ~1 s, release."
+    "item23-button-row1-pos10|Item 23 (user button ROW 1 POS 10):
+    Press and HOLD ~1 s, release."
+    "item24-button-row1-pos11|Item 24 (user button ROW 1 POS 11):
+    Press and HOLD ~1 s, release."
+    "item25-button-row1-pos12|Item 25 (user button ROW 1 POS 12):
+    Press and HOLD ~1 s, release."
+    "item26-button-row1-pos13|Item 26 (user button ROW 1 POS 13):
+    Press and HOLD ~1 s, release."
+    "item27-button-row1-pos14|Item 27 (user button ROW 1 POS 14, rightmost top-row):
+    Press and HOLD ~1 s, release."
+    "item28-button-row2-pos1|Item 28 (user button ROW 2 POS 1, leftmost bottom-row):
+    Press and HOLD ~1 s, release."
+    "item29-button-row2-pos2|Item 29 (user button ROW 2 POS 2):
+    Press and HOLD ~1 s, release."
+    "item30-button-row2-pos3|Item 30 (user button ROW 2 POS 3):
+    Press and HOLD ~1 s, release."
+    "item31-button-row2-pos4|Item 31 (user button ROW 2 POS 4):
+    Press and HOLD ~1 s, release."
+    "item32-button-row2-pos5|Item 32 (user button ROW 2 POS 5):
+    Press and HOLD ~1 s, release."
+    "item33-button-row2-pos6|Item 33 (user button ROW 2 POS 6):
+    Press and HOLD ~1 s, release."
+    "item34-button-row2-pos7|Item 34 (user button ROW 2 POS 7):
+    Press and HOLD ~1 s, release."
+    "item35-button-row2-pos8|Item 35 (user button ROW 2 POS 8):
+    Press and HOLD ~1 s, release."
+    "item36-button-row2-pos9|Item 36 (user button ROW 2 POS 9):
+    Press and HOLD ~1 s, release."
+    "item37-button-row2-pos10|Item 37 (user button ROW 2 POS 10):
+    Press and HOLD ~1 s, release."
+    "item38-button-row2-pos11|Item 38 (user button ROW 2 POS 11):
+    Press and HOLD ~1 s, release."
+    "item39-button-row2-pos12|Item 39 (user button ROW 2 POS 12):
+    Press and HOLD ~1 s, release."
+    "item40-button-row2-pos13|Item 40 (user button ROW 2 POS 13):
+    Press and HOLD ~1 s, release."
+    "item41-button-row2-pos14|Item 41 (user button ROW 2 POS 14, rightmost bottom-row):
+    Press and HOLD ~1 s, release."
+
+    # --- Item 42: user-assignable SPDT (up/off/down) ---
+    "item42-userspdt-up|Item 42 (user-assignable SPDT, up direction):
+    Press the switch UP and HOLD ~1 s, release."
+    "item42-userspdt-down|Item 42 (user-assignable SPDT, down direction):
+    Press the switch DOWN and HOLD ~1 s, release."
+
+    # --- Item 43: user-assignable hat switch (4 directions, all spring-return) ---
+    "item43-hat-up|Item 43 (hat switch, UP direction):
+    Press the hat UP and HOLD ~1 s, release. The hat is spring-return."
+    "item43-hat-right|Item 43 (hat switch, RIGHT direction):
+    Press the hat RIGHT and HOLD ~1 s, release."
+    "item43-hat-down|Item 43 (hat switch, DOWN direction):
+    Press the hat DOWN and HOLD ~1 s, release."
+    "item43-hat-left|Item 43 (hat switch, LEFT direction):
+    Press the hat LEFT and HOLD ~1 s, release."
 )
+
+# ---------------------------------------------------------------------------
+# Step 1 -- per-action tests
+# ---------------------------------------------------------------------------
 
 idx=$START
 recorded=0
@@ -169,7 +471,7 @@ record_one() {
     description="${entry#*|}"
 
     while true; do
-        local file path bin pid ans
+        local file path bin ans
         file=$(printf '%03d-%s.log' "$idx" "$label")
         path="$OUTDIR/$file"
         bin="${path%.log}.bin"
@@ -180,13 +482,12 @@ record_one() {
         echo
         printf '  %s\n' "$description"
         echo
-        echo "  RECORDING. Press Enter when DONE.   [r]=redo  [s]=skip  [q]=quit"
+        echo "  RECORDING. Press Enter when DONE."
+        echo "  [r]=redo  [s]=skip  [q]=quit"
 
-        sudo dd if="$DEV" of="$bin" bs=14 status=none &
-        pid=$!
+        start_capture "$bin"
         IFS= read -r ans
-        sudo kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
+        stop_capture
 
         case "${ans:-}" in
             q|Q)
@@ -207,23 +508,39 @@ record_one() {
                 continue
                 ;;
             *)
-                if [[ -s "$bin" ]]; then
-                    sudo chown "$USER:$USER" "$bin" 2>/dev/null || true
-                    xxd -c 14 "$bin" > "$path"
+                if [[ ! -s "$bin" ]]; then
                     sudo rm -f "$bin"
-                    local n unique
-                    n=$(wc -l < "$path")
-                    unique=$(awk '{print $2,$3,$4,$5,$6,$7,$8}' "$path" 2>/dev/null | sort -u | wc -l)
-                    echo "  -> saved $file ($n reports, $unique unique payloads)"
-                    if [[ "$unique" -lt 2 ]]; then
-                        echo "     NOTE: only one payload in this file; the action may"
-                        echo "           not have produced any byte changes. Consider 'r' to redo."
-                    fi
-                    recorded=$((recorded+1))
-                else
-                    sudo rm -f "$bin"
-                    echo "  WARNING: no data captured (the device may be busy)."
+                    echo "  WARNING: no data captured. Device may be busy or"
+                    echo "           not emitting reports. Use 'r' to redo."
+                    continue
                 fi
+                sudo chown "$USER:$USER" "$bin" 2>/dev/null || true
+                xxd -c 14 "$bin" > "$path"
+                sudo rm -f "$bin"
+
+                echo "  -> saved $file"
+                report_capture "$path" "$BASELINE_PAYLOAD"
+
+                # Final-state check: warn if the LAST report differs from baseline.
+                local last_payload
+                last_payload=$(extract_payload "$path" '$')
+                if [[ "$last_payload" != "$BASELINE_PAYLOAD" ]]; then
+                    local changed
+                    changed=$(diff_payloads "$BASELINE_PAYLOAD" "$last_payload" | tr -s ' ')
+                    echo "  NOTE: end-of-capture state DIFFERS from baseline."
+                    echo "        Bytes still off-baseline: $changed"
+                    echo "        If this was a sweep / button test that should return"
+                    echo "        to rest, return the control to its rest position now"
+                    echo "        before continuing. Use 'r' to redo this capture."
+                    read -r -p "  [Enter]=accept  r=redo  s=skip&continue  q=quit  : " confirm
+                    case "${confirm:-}" in
+                        q|Q) exit 0 ;;
+                        r|R) rm -f "$path"; continue ;;
+                        s|S) rm -f "$path"; skipped=$((skipped+1)); idx=$((idx+1)); return ;;
+                    esac
+                fi
+
+                recorded=$((recorded+1))
                 idx=$((idx+1))
                 return
                 ;;
@@ -238,7 +555,7 @@ done
 echo
 echo "===================================================================="
 echo "DONE. Recorded=$recorded, skipped=$skipped, total actions=${#ACTIONS[@]}."
-echo "Files in $OUTDIR/ matching the inventory:"
-ls -1 "$OUTDIR" | grep -E '^[0-9]+-item[0-9]+' | head -10
-total_files=$(ls -1 "$OUTDIR" | grep -cE '^[0-9]+-item[0-9]+')
-test "$total_files" -gt 10 && echo "(... $total_files total, run \`ls $OUTDIR\` to see all)"
+echo "Baseline:    $OUTDIR/000-baseline.log"
+echo "Action logs: $OUTDIR/NNN-itemNN-*.log"
+total_files=$(ls -1 "$OUTDIR" 2>/dev/null | grep -cE '^[0-9]+-item[0-9]+')
+echo "Action files written: $total_files"
