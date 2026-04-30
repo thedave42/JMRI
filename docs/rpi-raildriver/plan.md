@@ -170,7 +170,7 @@ add(new jmri.util.usb.RailDriverMenuItem());     // <-- new, outside the try/cat
 
 The `RailDriverMenuItem()` no-arg constructor already pulls its label from `Bundle.getMessage("RdBuiltIn")`. The two entries coexist; users on Windows/macOS can still use the script if they prefer, and Linux users who hit the JInput-axis-invisibility wall can switch to the built-in Java path with a single menu click.
 
-We deliberately do **not** delete the script entry in this branch — that migration is deferred until a future release once the Java path has been in users' hands and any rough edges have been reported. (This was previously listed in §8 as an open decision; it's now a settled deferral.)
+We deliberately do **not** delete the script entry in this branch — that migration is deferred until a future release once the Java path has been in users' hands and any rough edges have been reported.
 
 ### 4.4 Permissions / udev
 
@@ -212,10 +212,9 @@ The existing help page (`help/en/html/hardware/raildriver/index.shtml`) describe
    The test will parse `xxd -c 14` text into raw 14-byte reports rather than introducing a separate binary fixture format.
 2. **No-device behaviour.** Verify that selecting the menu item with no RailDriver attached logs an info message and does not throw. With `setupHidServices` returning a non-null `hidServices` but `hidServices.getHidDevice(...)` returning `null` (no device matches VID/PID), the action listener at `RailDriverMenuItem.java:78–85` skips the `setupRailDriver()` block entirely and no further code runs, so this test exercises only the existing `protected void setupHidServices()` seam — no additional refactor needed.
 3. **LED-encoding test (no hardware required).** Assert that `setLEDs(String)` produces the expected 7-byte report buffer for representative inputs: digits ("123"), letters ("Pro"), decimal-point handling ("8.8.8."), shorter strings, and unsupported characters. The seven-segment encoding is non-trivial (see `RailDriverMenuItem.java` lines 357–401 plus the `SevenSegment[]` and `SevenSegmentAlpha[]` tables), called every time `setupRailDriver` succeeds (line 133), and currently has zero coverage. **Test seam required:** §5 Commit 3 makes `sendMessage(byte[], byte)` package-private and overridable. The test subclasses `RailDriverMenuItem` to capture the buffer instead of writing it, so no `HidDevice` is needed.
-4. ~~**Default-throttle-layout fall-through smoke test.**~~ **Dropped.** A previous revision proposed asserting that `setupRailDriver` brings up a throttle window when no default layout exists. That cannot be made hardware-independent without adding a `HidDevice` factory seam to §5 Commit 3 — the action listener at `RailDriverMenuItem.java:78–85` only invokes `setupRailDriver` after `hidServices.getHidDevice(...)` returns non-null, and `setupRailDriver` itself calls `setLEDs("Pro") → sendMessage → hidDevice.write` on its first line (line 133), which NPEs against a null device. Adding a full `HidDevice` injection seam exceeds the "no behavioural change" boundary set for Commit 3. Deferred to a follow-up issue covering the broader testability work (HidDevice abstraction, `setupRailDriver` extraction from the action listener, EDT-aware dispatch).
-5. **Existing constructor test stays.**
+4. **Existing constructor test stays.**
 
-We will not add an integration test that opens a real device; CI cannot guarantee one is plugged in.
+We will not add an integration test that opens a real device; CI cannot guarantee one is plugged in. A `HidDevice` factory seam (which would let us drive `setupRailDriver` end-to-end without hardware) is intentionally **not** introduced here; it is tracked in a follow-up issue alongside the broader testability work (HidDevice abstraction, `setupRailDriver` extraction from the action listener, EDT-aware dispatch).
 
 ### 4.6 Help / documentation
 
@@ -226,8 +225,6 @@ We will not add an integration test that opens a real device; CI cannot guarante
 ## 5. Detailed work breakdown
 
 The branch will land as a sequence of small, reviewable commits.
-
-> Plan revision marker: `2026-04-30-r8`. When commit messages reference a `§5 Commit N`, they refer to this revision. If a future revision renumbers commits, the marker bumps so historical references can still be traced (see also §7 risk on plan/code drift). Revision r8 superseded r7 with the following substantive changes: (1) corrected the `ant test-single -Dtest.includes=...` invocation to use the dotted fully-qualified class name (the path-style with `.java` form is rejected by `build.xml:908–911`); (2) reframed the §3 device-detach NPE bullet to note the listener is currently dormant, and added explicit non-goal entries for the polling-loop busy-spin and off-EDT Swing mutation, with matching §7 risk rows; (3) tightened §5 Commit 3 to be strictly mechanical (no behavioural changes, including no byte-13 fix and no F0 fix); (4) inverted the synthetic byte-13 test from "asserts no events" to "pins down the current behaviour of two events at indices 48/49"; (5) dropped the default-throttle smoke test from §4.5 (would require a `HidDevice` factory seam beyond Commit 3's scope); (6) made the axis-range assertion precise (closed `[1/256, 1.0]` for axes 0/2/3/4/5/6, closed `[2/256 − 1, 1.0]` for axis 1); (7) clarified §4.3 that the new menu label resolves from `jmri.util.usb.Bundle.RdBuiltIn`, not `apps.AppsBundle`; (8) added a §7 row for the unrehearseable macOS-signing path with a mitigation requiring `unzip -l` output in the Commit 1 message; (9) pinned the linux-aarch64 glibc bound at `GLIBC_2.31` (Debian 11 bullseye) with an `objdump -T` pre-commit gate; (10) added a `scripts/AppScriptTemplate:436–491` cite to §5 Commit 5's launcher claim.
 
 ### Commit 0 — Test-data fixtures (already merged on `rpi-raildriver` as `c21d79f5391`; **no action required for this branch**)
 - `docs/rpi-raildriver/test-data/hidraw-raildriver{,2,3,4,5}.log` — five `xxd -c 14`-formatted captures of the RailDriver Modern Desktop's HID input reports on a Pi 4 / aarch64 / Debian 13 host (2,046 reports / 680 unique payloads). These are the empirical basis for the byte-layout claims in §1 and the fixture pool for the unit tests in §5 Commit 4.
@@ -261,7 +258,7 @@ Concretely:
 ### Commit 4 — Tests
 - Extend `RailDriverMenuItemTest.java` per §4.5: byte-parser tests against committed fixtures (axis-range and per-bit-button assertions), the synthetic byte-13 pin-down test, the LED-encoding test (using the package-private `sendMessage` seam from §5 Commit 3), the no-device behaviour test, and the existing constructor test.
 - The fixtures under `docs/rpi-raildriver/test-data/hidraw-raildriver*.log` (already on the branch — see §5 Commit 0) provide the input report sequences. The test will parse the `xxd -c 14` text format directly so no separate binary blob is needed.
-- This commit adds **no new test seams** — it consumes only the seams introduced in §5 Commit 3 (`processReportDelta` + `sendMessage`) plus the pre-existing `protected setupHidServices` seam at `RailDriverMenuItem.java:89`. The previously listed "default-throttle-layout fall-through smoke test" was dropped (see §4.5 #4 for rationale); it would require a `HidDevice` factory seam that exceeds Commit 3's mechanical-only scope.
+- This commit adds **no new test seams** — it consumes only the seams introduced in §5 Commit 3 (`processReportDelta` + `sendMessage`) plus the pre-existing `protected setupHidServices` seam at `RailDriverMenuItem.java:89`.
 
 ### Commit 5 — udev rule sample file
 - Add `lib/linux/udev/99-jmri-raildriver.rules`.
@@ -278,7 +275,7 @@ Concretely:
 ### Commit 7 — Verification on Pi 4 (no commit; verification-only step)
 - Capture a `script.log` showing the menu item opening the device, the polling thread starting, and lever values arriving.
 - Capture a screenshot/log of operating a locomotive end-to-end against DCC++.
-- **Post the verification artifacts as comments on this issue (#1)**, not as a checked-in markdown file. This keeps the iteration surface in one place. Tag the comments with the plan revision marker from the §5 preamble so historical readers can correlate.
+- **Post the verification artifacts as comments on this issue (#1)**, not as a checked-in markdown file. This keeps the iteration surface in one place.
 
 ## 6. Verification / acceptance criteria
 
@@ -291,7 +288,7 @@ Concretely:
    - Pressing the horn lever toggles F2.
    - Pressing one of the 28 blue function buttons toggles a function `Fn` whose number is determined by HID bit position (look for `FUNCTION N value: ...` lines in the log to read the live mapping).
    - The 7-segment display lights up `Pro` after a successful open.
-2. ~~On x86_64 Linux (Ubuntu 22.04 or Debian 12), the same menu item works identically.~~ Not part of the in-branch acceptance criteria — the author has no x86_64 Linux test rig. To be community-verified before release.
+2. On x86_64 Linux (Ubuntu 22.04 or Debian 12+), the new built-in menu entry is expected to work identically. **Hardware-attached verification on x86_64 Linux is deferred to community testers** — the author has no x86_64 Linux test rig.
 3. On Windows and macOS:
    - Existing JInput script entry continues to work as it did before this branch.
    - The new built-in menu entry compiles and the Debug menu shows it.
@@ -317,17 +314,8 @@ Concretely:
 | **Off-EDT Swing mutation.** `firePropertyChange` is invoked from the polling thread (`RailDriverMenuItem.java:215, 226`), which dispatches into `propertyChange` and ultimately mutates Swing components and calls `setLEDs`/`setSpeedSetting`/`setFunction` from a non-EDT thread. Pre-existing Swing threading violation; preserved by §5 Commit 3's mechanical refactor. | Medium (intermittent; Swing is forgiving until it isn't) | Medium (intermittent UI glitches; potential repaint/listener-list races) | Documented as out-of-scope follow-up in §3; no in-branch fix. A future fix wraps event dispatch in `SwingUtilities.invokeLater`. |
 | Existing Windows/macOS users see no behavioural change but the new menu item appears confusing | Low | Low | Keep the existing script entry exactly as-is; new entry is clearly labelled "(built in)" |
 | `RailDriverMenuItem.java` has an inactive code path treating byte 13 as buttons | Negligible | None | No spurious events because byte 13 is constant in observed firmware; the §5 Commit 4 synthetic byte-13 test pins this behaviour down so a future refactor can't silently change it; do not refactor the parser in this branch |
-| Plan iteration in this issue and commit messages drift apart over time (renumbered commits, edited body, etc.) | Medium | Low | The §5 preamble carries a "plan revision marker"; commit messages reference §5 Commit N **of a specific marker**, so historical correlation is possible even after the issue body is rewritten. Marker bumps when commits are renumbered. |
 
-## 8. Decisions still to make
-
-- ~~Exact target version of `hid4java`~~ — **decided: 0.8.0** (verified to bundle `linux-aarch64/libhidapi.so` from Maven Central jar inspection).
-- ~~Whether to deprecate `MenuRailDriverThrottle` (script) in this release~~ — **decided: defer until next release** (see §4.3).
-- ~~Whether to add a CLI option / preference to silence a JInput-platform-mismatch warning at startup~~ — **dropped: no such warning exists.** Empirical check of `~/.jmri/log/messages.log` on the dev Pi 4 (with the locally built aarch64 JInput native present) shows only INFO-level `jinput.TreeModel` lines at startup; no WARN or ERROR. `TreeModel.loadSystem` does have a "platform support not available" log path, but it only fires when the JInput native fails to load — a condition the JInput-side fix (out of scope of this branch) addresses. Removing this from the open-questions list.
-
-_All decisions for this branch are now resolved. Future open questions will be tracked in follow-up issues, not here._
-
-## 9. References
+## 8. References
 
 - `java/src/jmri/util/usb/RailDriverMenuItem.java` — existing hid4java implementation
 - `java/src/apps/jmrit/DebugMenu.java` — menu wiring point
@@ -340,7 +328,7 @@ _All decisions for this branch are now resolved. Future open questions will be t
 - Upstream JMRI install guidance: <https://www.jmri.org/install/Linux.shtml>
 - JInput Linux plugin source: <https://github.com/jinput/jinput/blob/master/plugins/linux/src/main/java/net/java/games/input/LinuxNativeTypesMap.java> 
 
-## 10. Out-of-band housekeeping
+## 9. Out-of-band housekeeping
 
 These items live alongside this work but are intentionally not committed in this branch:
 
