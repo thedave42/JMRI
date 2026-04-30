@@ -1,10 +1,9 @@
 # RailDriver structured capture protocol
 
-> **Status:** Plan / approved, scripts not yet implemented.
 > **Companion docs:** `control-inventory.md` (the authoritative list of physical
 > controls), `plan.md` (the umbrella RailDriver-on-Linux project plan).
-> **Companion scripts (to be written):** `rd-record.sh` (capture) and
-> `rd-analyze.sh` (analysis) — see §10.
+> **Companion scripts:** `rd-record.sh` (capture) and `rd-analyze.sh`
+> (analysis) — see §10.
 
 ## 1. Problem statement
 
@@ -336,12 +335,12 @@ are recorded so future maintainers can see why each choice was made.
 
 ## 10. Deliverables
 
-| Artifact | Status | Notes |
-|----------|--------|-------|
-| `docs/rpi-raildriver/capture-plan.md` | **This document.** | Committed alongside the scripts. |
-| `docs/rpi-raildriver/rd-record.sh`    | To be written. | Implements §3–§7 above. Name matches the existing reference in `control-inventory.md` line 70. |
-| `docs/rpi-raildriver/rd-analyze.sh`   | To be written. | Implements §11. Reads `run-NNN/` directories produced by `rd-record.sh`; writes per-run `analysis.md` (or `.csv`) and cross-run `cross-run-analysis.md`. Does not reference any prior claim. |
-| `.gitignore` entry for `docs/rpi-raildriver/captures/` | To be written. | Recommended default; individual reference runs and analysis outputs can still be committed manually. |
+| Artifact | Notes |
+|----------|-------|
+| `docs/rpi-raildriver/capture-plan.md` | This document. |
+| `docs/rpi-raildriver/rd-record.sh`    | Implements §3–§7. Name matches the existing reference in `control-inventory.md` line 70. |
+| `docs/rpi-raildriver/rd-analyze.sh`   | Implements §11. Reads `run-NNN/` directories produced by `rd-record.sh`; writes per-run `analysis.md` (or `.csv`) and cross-run `cross-run-analysis.md`. Does not reference any prior claim. |
+| `.gitignore` entry for `docs/rpi-raildriver/captures/` | Recommended default; individual reference runs and analysis outputs can still be committed manually. |
 
 ## 11. Analysis output specification
 

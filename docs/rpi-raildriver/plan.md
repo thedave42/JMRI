@@ -1,7 +1,6 @@
 # RailDriver support on Raspberry Pi (aarch64 Linux)
 
 > **Branch:** `rpi-raildriver`
-> **Status:** Plan / not yet implemented
 > **Target platform:** Raspberry Pi 4, 64‑bit Raspberry Pi OS / Debian 12+, JMRI 5.15.x. Pi 5 is expected to work but is untested.
 > **Author:** Investigation & design distilled from empirical testing on a Raspberry Pi 4 / Debian 13 / aarch64 host
 > **Terminology:** Throughout this document, *the script* refers to `jython/RailDriver.py` (the Debug menu's existing entry). *The Jynstrument scripts* refers to the files under `jython/Jynstruments/ThrottleWindowToolBar/USBThrottle.jyn/`.
