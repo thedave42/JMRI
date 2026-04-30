@@ -43,23 +43,6 @@ For every labeled control in `control-inventory.md`:
   controller" captures so the resting byte pattern is documented and any
   drift between start and end of run is visible.
 
-### Out of scope
-
-- **Detent values.** The named positions on analog controls (Forward / Neutral
-  / Reverse on the reverser; idle on the throttle; SUP / CS / EMG on the auto
-  brake; bail-off on the independent brake; Off / Slow / Full on the wiper;
-  Off / Dim / Full on the lights) are calibration data that the user must set
-  in the final plugin. They are not needed to validate the report layout, and
-  capturing them here would couple this protocol to one operator's hand
-  position rather than the device's electrical behaviour.
-- **Hat-switch diagonals.** The inventory states only one cardinal direction
-  asserts at a time. Diagonals are not part of v1; they can be added later if
-  needed.
-- **Multi-control combinations** (e.g. holding two buttons at once). The
-  per-control captures are sufficient to assign each control a unique
-  byte/bit; combinations only matter if there are observed conflicts during
-  analysis, in which case follow-up captures can be added.
-
 ## 3. Approach overview
 
 Two bash scripts live under `docs/rpi-raildriver/`:
