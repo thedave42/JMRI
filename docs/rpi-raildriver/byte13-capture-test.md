@@ -200,3 +200,92 @@ them. The result-recording block in §7 above is the durable artefact.
   stake
 - `docs/rpi-raildriver/test-data/hidraw-raildriver*.log` — the existing
   captures that left this question open
+
+---
+
+## Result — 2026-05-01
+
+| Field | Value |
+|---|---|
+| Date | 2026-05-01 |
+| Branch / commit | `rpi-raildriver` @ `95f5ec978e7dc986cc9b2e46ed6c82180d31f788` |
+| Host | `Linux rpi-jmri 6.12.75+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.12.75-1+rpt1 (2026-03-11) aarch64` |
+| Distro | Debian GNU/Linux 13 (trixie) on Raspberry Pi 4, 64-bit |
+| Device | `lsusb`: `05f3:00d2 PI Engineering, Inc. RailDriver Modern Desktop`, attached as `/dev/hidraw0` |
+| Capture | `docs/rpi-raildriver/test-data/byte13-capture.raw` (and cleaned `byte13-capture.clean`); 2,323 reports |
+| JMRI running? | No (verified before capture) |
+
+### HID report descriptor
+
+```
+00000000: 050c 0901 a101 a102 0600 ff09 0115 0026  ...............&
+00000010: ff00 3500 46ff 0075 0895 0781 0205 0919  ..5.F..u........
+00000020: 0129 3815 0025 0135 0045 0175 0195 3881  .)8..%.5.E.u..8.
+00000030: 02c0 a102 0600 ff09 0275 0895 0815 0026  .........u.....&
+00000040: ff00 3500 46ff 0091 02c0 c0              ..5.F......
+```
+
+Decoded (input report, 14 bytes total):
+
+- Vendor-Defined usage page `0xFF00`, Usage `0x01`, Logical Min 0, Logical Max 255, Report Size 8 bits, **Report Count 7** → bytes 0..6 (the 7 analog axes — vendor-defined, which is exactly why Linux `hid-generic` does not surface them as `ABS_*` codes).
+- Button usage page (`0x09`), Usage Min = Button 1, **Usage Max = Button 56**, Logical Min/Max 0/1, Report Size 1 bit, **Report Count 56** → 56 bits packed as 7 bytes → bytes 7..13.
+
+There is no separate sentinel byte declared in the HID descriptor. Byte 13 corresponds to HID buttons 49..56 (or, in `RailDriverMenuItem.java`'s 0-indexed numbering, buttons 48..55).
+
+### Capture procedure (as run)
+
+`script -q -c 'xxd -c 14 /dev/hidraw0' byte13-capture.raw </dev/null` for ~3 minutes 24 seconds. Toggled in turn: every analog lever through its full range; every rotary detent on the wiper and lights selectors; every named momentary button (Bell, both Horn directions, Alerter, Sander, Pantograph, Gear up/down); a representative sample of the 28 numbered blue function buttons; every panel rocker / latching switch; everything else on the controller that has a fixed mechanical state.
+
+(`xxd` auto-coloured its output because `script` made stdout look like a tty; the cleaned file `byte13-capture.clean` was produced with `sed -E 's/\x1b\[[0-9;]*m//g; s/\r$//' byte13-capture.raw | grep -E '^[0-9a-f]+:'`.)
+
+### Analysis output
+
+```
+$ awk '{print substr($8,3,2)}' byte13-capture.clean | sort -u
+35
+
+$ awk '{print substr($8,3,2)}' byte13-capture.clean | sort | uniq -c
+   2323 35
+
+$ awk '{print $8}' byte13-capture.clean | sort | uniq -c | sort -rn
+   2255 0035
+     22 0135
+     16 0235
+     15 0835
+     15 0435
+```
+
+Distinct values seen in each byte:
+
+| Byte | Role | Distinct values | Notes |
+|---|---|---|---|
+| 0 | reverser (analog) | 20 | swept full forward → centre → full reverse |
+| 1 | throttle/dyn-brake (analog) | 32 | swept full throttle → centre → full dyn-brake |
+| 2 | auto brake (analog) | 32 | swept release → full apply |
+| 3 | indep brake (analog) | 30 | swept release → full apply |
+| 4 | bail-off (analog) | 18 | exercised |
+| 5 | wiper rotary (analog) | 14 | walked detents |
+| 6 | lights rotary (analog) | 14 | walked detents |
+| 7 | buttons 0..7 | 9 (`00, 01, 02, 04, 08, 10, 20, 40, 80`) | every bit fired in isolation |
+| 8 | buttons 8..15 | 9 | every bit fired in isolation |
+| 9 | buttons 16..23 | 9 | every bit fired in isolation |
+| 10 | buttons 24..31 | 10 (incl. `c0` = two bits at once) | every bit fired |
+| 11 | buttons 32..39 | 10 (incl. `03` = two bits at once) | every bit fired |
+| 12 | buttons 40..47 | 5 (`00, 01, 02, 04, 08`) | bits 0–3 fired (Pantograph / Bell / Horn-up / Horn-down) |
+| **13** | **buttons 48..55 / sentinel** | **1 (`35` only)** | **never changed across 2,323 reports** |
+
+Bytes 7..12 saw isolated single-bit activity for every bit in their range, plus byte 11 saw `0x03` (two simultaneous bits) and byte 10 saw `0xc0` (two simultaneous bits). So every button bit in range 0..47 demonstrably round-tripped through the capture pipeline. Byte 13 simply never moved.
+
+### Resolved interpretation: byte 13 is a constant sentinel (always `0x35`)
+
+The HID descriptor declares it as buttons 49..56, but the firmware on this controller never sets those bits regardless of physical state. The four bits that are always set (`0x35 = 0b00110101`, bits 0/2/4/5) likely correspond to phantom / unconnected button slots in the firmware (the Modern Desktop has fewer than 56 distinct buttons in hardware; the descriptor declares 56 because PI Engineering uses a common report layout across the RailDriver product family).
+
+The earlier "suspicious bit-count alignment" (4 bits set in `0x35` ↔ 4 latching switches in the "down" state at `jstest` time) was numerically coincidental.
+
+### Implications for `plan.md`
+
+- §1 #5 — drop the latching-switches hedge; record the resolved finding (byte 13 = sentinel; HID descriptor declares it as buttons 49..56 but firmware never sets them).
+- §6 — collapse the byte-13 risk row to a one-line "Resolved" entry pointing here.
+- §4.5 #0 — done; this file is the artefact.
+- §4.5 #1 byte-13 pin-down test — stays in place. It now serves as a regression detector that fires if a future firmware revision starts populating buttons 49..56.
+- §4.5 #1 byte-parser per-bit assertion — should pin down bytes 7..12 (events for `n ∈ [0, 47]`); byte 13 in the committed fixtures is genuinely sentinel and emits no events. The "for the committed fixtures specifically, byte 13 produces no events" sub-bullet is now the production contract on the captures, not a hedge.
