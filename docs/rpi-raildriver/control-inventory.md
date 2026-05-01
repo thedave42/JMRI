@@ -96,8 +96,9 @@ operator.
   used by JMRI; all 28 are user-assignable.
 - To the right of the button rows sit two additional controls:
   - #42 — a user-assignable SPDT momentary toggle (up/off/down).
-  - #43 — a four-direction hat switch (up/right/down/left; one
-    direction asserted at a time).
+  - #43 — a four-direction hat switch (up/right/down/left). Two adjacent
+    cardinal directions can be asserted simultaneously when the hat is
+    rolled toward a corner; the device has no separate diagonal bits.
 
 ## Switches and buttons
 
@@ -111,7 +112,7 @@ operator.
 | 6  | Bell               | Button                        | |
 | 7  | Horn               | SPDT momentary (up/off/down)  | |
 | 42 | `<user-assignable>` | SPDT momentary (up/off/down) | |
-| 43 | `<user-assignable>` | Hat switch (up/right/down/left) | Four directions; only one direction is asserted at a time. |
+| 43 | `<user-assignable>` | Hat switch (up/right/down/left) | Four cardinal directions in hardware. Two adjacent cardinal directions can be asserted simultaneously when the hat is rolled toward a corner; the device has no separate diagonal bits. |
 | 14–41 | `<user-assignable>` | 28 buttons in a 2 × 14 layout | The two rows along the front edge of the controller. |
 
 ## Analog / multi-position controls
