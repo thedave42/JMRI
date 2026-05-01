@@ -43,8 +43,7 @@ For every labeled control in `control-inventory.md`:
   capture per cardinal direction. Each individual button gets its own capture.
 - **Analog controls** — capture HID reports while the control is swept through
   its full physical range, briefly pausing at the mechanical extremes so the
-  minimum and maximum byte values are clearly visible. The independent brake
-  range and the two bail-off positions are captured separately.
+  minimum and maximum byte values are clearly visible.
 - **Pre- and post-run baselines** — bracket each pass with "do not touch the
   controller" captures so the resting byte pattern is documented and any
   drift between start and end of run is visible.
