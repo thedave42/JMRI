@@ -124,7 +124,7 @@ on 2026-05-01 with `docs/rpi-raildriver/hat-rate-probe.sh`).
     | LEFT      | 11   | 0x02 |
 
   These specific byte/bit values are restated here only for context. The
-  analysis script (§9.5) must not rely on them; it must rediscover the
+  analysis script (§9.4) must not rely on them; it must rediscover the
   mapping from each run's captured data.
 
 Each invocation of the script creates a **new run directory** so multiple
@@ -389,10 +389,19 @@ arithmetic, while leaving overall control flow in bash.
    ```
 
 3. After the rest-band-learning phase the helper watches each new report.
+   For each byte, the helper computes whether the byte's current value is
+   *out of band*. The test depends on byte index:
+   - **Bytes 0..6 (analog):** out of band iff `min(|value − v| for v in
+     rest_band[i]) > noise_tolerance`. This absorbs ±`noise_tolerance` LSB
+     ADC jitter that did not appear during the 1-second learning window
+     but routinely surfaces seconds later when fingers rest on a lever.
+   - **Bytes 7..13 (button bits):** out of band iff `value not in
+     rest_band[i]`. Button bits do not jitter; they are bit-exact.
+
    An **onset** is declared when `onset_threshold` consecutive reports
-   each contain at least one byte whose value is outside that byte's rest
-   band (default: 3 consecutive reports, ~260 ms at the measured ~11.5 Hz
-   report rate). The status line transitions to:
+   each contain at least one byte that is out of band by the byte-class
+   rule above (default: 3 consecutive reports, ~260 ms at the measured
+   ~11.5 Hz report rate). The status line transitions to:
 
    ```
    [01 range-up] capturing… 87 reports — waiting for action…           [r=redo s=skip q=quit]
@@ -438,7 +447,8 @@ defaults appropriate for the device's measured report rate of ~11.5 Hz
 |---|---|---|
 | `--target-baseline-reports N` | 60 | Number of complete reports to capture per baseline action before auto-accepting (~5 s at ~11.5 Hz). |
 | `--pre-action-window N` | 12 | Number of complete reports used to learn the rest band at the start of each non-baseline action (~1 s at ~11.5 Hz). |
-| `--onset-threshold N` | 3 | Number of consecutive out-of-rest-band reports required to declare onset (~260 ms at ~11.5 Hz). |
+| `--onset-threshold N` | 3 | Number of consecutive out-of-band reports required to declare onset (~260 ms at ~11.5 Hz). |
+| `--noise-tolerance N` | 1 | Absolute LSB tolerance applied to analog bytes (0..6) when testing out-of-band: byte `i` is out of band only if its distance to the nearest value in `rest_band[i]` exceeds `N`. Does not apply to button-bit bytes (7..13). |
 | `--settle-threshold N` | 10 | Number of consecutive stable reports required to declare settle after onset (~870 ms at ~11.5 Hz). |
 | `--max-action-time S` | 60 | Per-action time budget, in seconds, after which the capture is aborted and the operator is re-prompted. |
 
@@ -483,6 +493,7 @@ notes:                     <value of --notes, or empty>
 target_baseline_reports:   60
 pre_action_window:         12
 onset_threshold:           3
+noise_tolerance:           1
 settle_threshold:          10
 max_action_time:           60
 run_complete:              yes | no
@@ -683,7 +694,7 @@ reports:
 | `quality_flags` | Union of per-run `quality_flags` values that affect this action. Empty if none. |
 | `discrepancies` | If any of the above are `no`, a free-text description of which runs disagreed and how. Otherwise empty. |
 
-### 9.4 Mapping output
+### 9.3 Mapping output
 
 For each analyzed run, the script also writes `run-NNN/mapping.md` (and
 `mapping.csv`). This is the primary human-readable deliverable — the
@@ -726,7 +737,7 @@ from the captured data; the inventory supplies only the name and type.
 If an action was skipped or not reached, the corresponding mapping entry
 says `no data captured` rather than omitting the input.
 
-### 9.5 Constraints on the analysis script
+### 9.4 Constraints on the analysis script
 
 - The script must not reference, compare to, or be aware of any prior
   claim about the *byte layout* — including, but not limited to, the
@@ -734,7 +745,7 @@ says `no data captured` rather than omitting the input.
   `RailDriverMenuItem.java`, and any inventory-item-to-physical-position
   mapping supplied outside the run directory.
 - The script reads `docs/rpi-raildriver/control-inventory.md` to obtain
-  input names and types so it can produce the mapping output (§9.4). It
+  input names and types so it can produce the mapping output (§9.3). It
   must not use the inventory to make assumptions about which bytes
   correspond to which inputs — that is determined solely from the captured
   data.
@@ -744,7 +755,7 @@ says `no data captured` rather than omitting the input.
 - The script's only outputs are the per-run analysis files, mapping files,
   cross-run analysis files, and checksum files described above.
 
-### 9.6 Command-line interface
+### 9.5 Command-line interface
 
 - `rd-analyze.sh` — with no arguments: scan
   `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md`,
