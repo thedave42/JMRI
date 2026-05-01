@@ -479,6 +479,16 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      * {@inheritDoc}
      */
     @Override
+    public void hidDataReceived(HidServicesEvent event) {
+        // No-op. This class reads the device synchronously from its polling
+        // thread (see setupRailDriver) and does not consume listener-pushed
+        // data. Method required by hid4java 0.8.0's HidServicesListener.
+    }
+
+    /*
+     * {@inheritDoc}
+     */
+    @Override
     public void propertyChange(PropertyChangeEvent event) {
         // log.debug("{}", event);
         switch (event.getPropertyName()) {
@@ -526,6 +536,10 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 }
                 break;
             case "Value":
+                if (activeThrottleFrame == null) {
+                    // EDT race: polling-thread log line already fired; throttle dispatch will resume once the throttle frame is established
+                    return;
+                }
                 String oldValue = event.getOldValue().toString();
                 String newValue = event.getNewValue().toString();
                 DccThrottle throttle = activeThrottleFrame.getAddressPanel().getThrottle();
