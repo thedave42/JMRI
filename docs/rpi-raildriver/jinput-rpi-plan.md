@@ -28,10 +28,18 @@ backed by the locally-built `libjinput-linux64.so` already installed at
 `/home/pi/JMRI/lib/linux/aarch64/libjinput-linux64.so`.
 
 `LinuxEnvironmentPlugin` enumerates `/dev/input/event*` (evdev) and
-`/dev/input/js*` (legacy joystick); it only suppresses a js* duplicate of an
-event* device when the **names AND component lists match**
-(`LinuxEnvironmentPlugin.java:206-238`). For a device whose evdev profile and
-js profile differ, both controllers will appear.
+`/dev/input/js*` (legacy joystick); it only suppresses a js* duplicate of
+an event* device when the **names match AND component count matches AND
+component identifiers match in order** (`LinuxEnvironmentPlugin.java:213-232`).
+For this RailDriver, both nodes report the same name and 56 buttons each,
+but `LinuxJoystickDevice` numbers buttons sequentially as
+`Button._0..Button._55` (`LinuxEnvironmentPlugin.java:245+` — the
+`getButtonIdentifier(int)` switch), whereas `LinuxEventDevice` maps each
+evdev `BTN_*` code through `LinuxNativeTypesMap` (so `BTN_TRIGGER` →
+`Button.TRIGGER`, `BTN_THUMB` → `Button.THUMB`, etc.). Identifiers will
+not line up, dedupe will not trigger, and JMRI will see **two `PI
+Engineering RailDriver Modern Desktop` controllers** — both routed to the
+same driver file by `USBThrottle.formatDriverName()`.
 
 Component naming on Linux is also different from Windows. `LinuxComponent`
 (`LinuxComponent.java:50-53`) sets the component's name to
@@ -74,62 +82,91 @@ JInput discovered without us having to add code.
 
 ## 3. Success / failure criteria
 
-For the device on this Pi (`Bus=0003 Vendor=05f3 Product=00d2`), the kernel
-currently reports `EV=0x13` on `/dev/input/event4`, i.e. only `EV_SYN`,
-`EV_KEY`, `EV_MSC` — **no `EV_ABS` bit** — and a separate `js0` handler
-exists. This means the kernel HID-generic driver is not translating the
-RailDriver's analog levers into evdev absolute axes. There is therefore a
-real chance that JInput sees the device only as a button-bag.
+The kernel-side ground truth on this Pi has been measured (see §4): the
+RailDriver appears as `event4` (`EV=0x13` — `EV_SYN | EV_KEY | EV_MSC`, no
+`EV_ABS`) and `js0` (declared `0 axes ()` and `56 buttons`). Operating the
+analog levers produces **zero events** on either node; only the cab buttons
+fire. JInput's `LinuxEnvironmentPlugin` cannot read events that the kernel
+does not emit, so the analog levers are unreachable through the upstream
+JInput Linux stack on this kernel. The MVP test is therefore not asking
+"can JInput read the levers?" (the answer is already known to be no on this
+kernel), it is **independently confirming** that fact end-to-end through
+JMRI's USB plumbing, and verifying that the buttons work.
 
-* **Success — full:** JMRI's System Console emits `Component "<name>" value
-  changed to <float>` lines where `<name>` includes axis-style identifiers
-  (`x`, `y`, `z`, `rx`, `ry`, `rz`, `slider`, ...) or `Debug → USB Input
-  Control` shows `Component.Identifier.Axis` entries for the RailDriver,
-  AND moving each physical lever produces value changes on a corresponding
-  axis component. Buttons and switches also produce `"0"`..`"N"` events.
-* **Success — partial:** Only buttons/switches produce events; no axis
-  components are exposed by either the event4-backed or js0-backed
-  controller. Conclusion: JInput's `LinuxEnvironmentPlugin` cannot reach the
-  analog levers without additional kernel-side work, and the next-step
-  options listed in §6 apply.
-* **Failure:** No RailDriver controller appears in JMRI's USB controller list
-  at all. Conclusion: native library, JNI loading, device permissions, or
-  `LinuxEnvironmentPlugin` itself is broken on this build. Diagnose with §4
-  pre-flight checks before suspecting the device.
+* **Expected outcome (success):** JMRI's System Console emits one
+  `Component "<name>" value changed to <float>` line per cab-button press
+  and release for the selected RailDriver controller, with `<name>` being
+  the lowercase JInput identifier name (`"0"`..`"9"`, `Trigger`, `Thumb`,
+  `Top`, `Pinkie`, `Base 1`..`Base 6`, `A`/`B`/`C`/`X`/`Y`/`Z`, `Left
+  Thumb`/`Right Thumb`, etc. — matched against the constants in
+  `Component.java:283-502`). Operating any analog lever produces no events.
+  `Debug → USB Input Control` shows the RailDriver controller(s) with
+  button components only and zero axis components. This confirms the
+  Linux/JInput/JMRI plumbing works correctly and bounds the analog gap to
+  the kernel.
+* **Surprise outcome (full success):** Any axis-style component
+  (`Identifier.Axis.*`) appears in `Debug → USB Input Control` for the
+  RailDriver, or moving a lever produces a `Component "x"` (or similar)
+  value-changed line. This would contradict the §4 measurements and means
+  either the kernel HID profile changed since §4 or `libjinput-linux64.so`
+  is reading additional bytes that `evtest`/`jstest` ignore. Investigate.
+* **Failure:** No RailDriver controller appears in JMRI's USB controller
+  list at all, or the buttons do not produce events. Conclusion: native
+  library load, JNI binding, device permissions, or `LinuxEnvironmentPlugin`
+  itself is broken on this build. Re-run §4 pre-flight checks first; if
+  those still pass, the regression is in the Java side
+  (`libjinput-linux64.so`, `LinuxEnvironmentPlugin`, or JMRI's `TreeModel`).
 
-## 4. Pre-flight checks (before opening JMRI)
+## 4. Pre-flight checks — measured baseline
 
-Run from a shell on the Pi, in any order:
+Already executed on the target Pi. Recorded here as the ground truth the
+MVP measures itself against.
 
-1. `lsusb | grep -i raildriver` — confirm the device is enumerated by USB
-   (expect `ID 05f3:00d2 PI Engineering, Inc. RailDriver Modern Desktop`).
-2. `cat /proc/bus/input/devices` — locate the
-   `N: Name="PI Engineering RailDriver Modern Desktop"` block, record its
-   `Handlers=` line (expected: one `event*` and one `js*`) and its `EV=`
-   bitmask. `EV` bit `0x08` (`EV_ABS`) being absent means evdev exposes no
-   absolute axes.
-3. `id` — confirm the user that will run JMRI is in the `input` group.
-   `/dev/input/event*` and `/dev/input/js*` are owned `root:input` mode
-   `0660`; without group membership JInput will silently see fewer or zero
-   controllers.
-4. `evtest /dev/input/eventN` (use the N from step 2) — operate every lever,
-   button, and switch in turn. Record what kernel events fire (`EV_KEY`
-   codes, any `EV_ABS` codes, `EV_MSC` `MSC_SCAN` values). This establishes
-   the **kernel-visible** ground truth that JInput is bounded by.
-5. If the `joystick` package is installed, run `jstest /dev/input/jsN` and
-   operate the controls. If it is not installed, skip — do **not** rely on
-   `cat /dev/input/jsN | xxd`, which gives unmapped raw frames and is hard
-   to interpret.
-6. Confirm the locally-built native library is in place:
-   `ls -l /home/pi/JMRI/lib/linux/aarch64/libjinput-linux64.so` and
-   `file` it to verify it is `aarch64` ELF. Rebuild via
-   `/home/pi/jinput/build-and-install-to-jmri.sh` if missing or stale.
+| Check | Result |
+|---|---|
+| `lsusb` | `Bus 001 Device 006: ID 05f3:00d2 PI Engineering, Inc. RailDriver Modern Desktop` |
+| `/proc/bus/input/devices` block | `Name="PI Engineering RailDriver Modern Desktop"`, `Bus=0003 Vendor=05f3 Product=00d2 Version=0100`, `Handlers=event4 js0`, `EV=13` (= `EV_SYN | EV_KEY | EV_MSC`; **no `EV_ABS`**), `KEY=ffffffffffffff 0 0 0 0` (56 button bits) |
+| `id pi` | `groups=...,996(input),...` ✅ in `input` group |
+| Device node perms | `/dev/input/event4` and `/dev/input/js0` both `crw-rw---- root:input` (mode 0660). `/dev/hidraw0` is `crw-rw---- root:plugdev` (mode 0660) and `pi` is in `plugdev`. |
+| `evtest` | installed at `/usr/bin/evtest` |
+| `jstest` (`joystick` package) | installed at `/usr/bin/jstest` |
+| `libjinput-linux64.so` | `/home/pi/JMRI/lib/linux/aarch64/libjinput-linux64.so`, ELF aarch64, 67 488 bytes |
 
-The RailDriver must be plugged in **before** JMRI starts. JMRI's `TreeModel`
-(`TreeModel.java:255-280`) populates its controller list once during
-`loadSystem()`; the `USBThrottle` Jynstrument builds its popup menu once
-in `init()` (`USBThrottle.py:458-467`). A late hot-plug will not appear
-without restarting JMRI.
+### Live event capture results
+
+* **`evtest /dev/input/event4`** — declared support: 56 keys (`BTN_0..BTN_9`,
+  six unnamed codes 266-271, `BTN_LEFT..BTN_TASK`, eight unnamed codes
+  280-287, `BTN_TRIGGER..BTN_BASE6`, three unnamed codes 300-302, `BTN_DEAD`,
+  `BTN_SOUTH..BTN_TR`) plus `EV_MSC MSC_SCAN`. **No `EV_ABS` codes
+  declared.** Pressing cab buttons fires correct `MSC_SCAN` + `EV_KEY`
+  press/release pairs (e.g. `BTN_2`, `BTN_4`, `BTN_5`, `BTN_6` produced
+  scan codes 0x90003, 0x90005, 0x90006, 0x90007). **Sweeping the reverser,
+  throttle, auto-brake, and dynamic-brake levers full range produced zero
+  events of any kind.**
+* **`jstest --event /dev/input/js0`** — declared `0 axes ()` and 56 buttons.
+  Initial-state `type 129` snapshot (`JS_EVENT_INIT | JS_EVENT_BUTTON`)
+  shows buttons 16, 18, 20, 21 as `value 1` while all others are `value 0`
+  — these correspond to the latching switches that were physically in the
+  "on" position when jstest opened the device. Pressing cab buttons fires
+  correct `type 1` (button) events with press/release value pairs. **Moving
+  any analog lever produced zero `type 2` (axis) events.**
+
+### What this baseline implies
+
+The kernel HID-generic driver does not surface any analog data from this
+device on either evdev or the legacy joystick interface — the bytes in the
+HID input report that carry lever positions are not mapped to any kernel
+input code. JInput's `LinuxEnvironmentPlugin` therefore cannot read the
+analog levers regardless of which device node it picks. It will read the
+56 buttons cleanly. The remaining MVP work is to confirm that the
+JInput → JMRI → Jython chain transports those button events end-to-end and
+to record exactly which JInput identifier names the buttons land under.
+
+### Re-run trigger
+
+Re-execute §4 if any of the following change: kernel upgrade, USB
+re-plug into a different port, JMRI native library rebuild, addition of a
+udev rule for `05f3:00d2`, or installation of a vendor/quirk kernel module.
 
 ## 5. Driver implementation (the MVP)
 
@@ -178,25 +215,32 @@ specific controller object is printed. Output appears in JMRI's
 
 ## 6. Test procedure
 
-1. Complete §4 pre-flight checks.
+1. Re-run §4 only if a §4 re-run trigger has fired; otherwise the baseline
+   stands.
 2. Start JMRI fresh (DecoderPro, PanelPro — anything that loads a profile is
-   fine; the USB plumbing is profile-independent).
-3. Open `Debug → USB Input Control`. Expand every `PI Engineering RailDriver
-   Modern Desktop [...]` node. Record:
-   * How many top-level RailDriver controllers appear (1 or 2 — both are
-     plausible per `LinuxEnvironmentPlugin.java:206-238`).
-   * For each, its `Controller.Type` (`STICK`, `GAMEPAD`, `UNKNOWN`, ...).
+   fine; the USB plumbing is profile-independent). The RailDriver must be
+   plugged in **before** JMRI starts: `TreeModel`
+   (`TreeModel.java:255-280`) populates its controller list once during
+   `loadSystem()` and `USBThrottle` builds its popup menu once in `init()`
+   (`USBThrottle.py:458-467`).
+3. Open `Debug → USB Input Control`. Per §2 we expect **two** top-level
+   `PI Engineering RailDriver Modern Desktop [...]` controllers (one
+   evdev-backed, one js-backed) because identifier sets do not line up.
+   Expand each and record:
+   * Top-level node text (which includes `Controller.Type`).
    * The full list of components: name, identifier `toString()`, and the
      identifier class as displayed (Axis vs Button vs Key vs POV).
-   * Whether any axis component reacts to lever movement when you wiggle a
-     lever in this window.
+   * Axis count for each — per §4 baseline this should be **zero** on both,
+     but recording it confirms JInput agrees with the kernel.
+   * Wiggle each lever in this window — confirm no axis component appears
+     or moves (negative confirmation).
 4. Open `Help → System Console` and clear it.
 5. Open a throttle window (`Tools → Throttles → New Throttle`).
 6. Add the USB Throttle Jynstrument: drag `USBControl.png` from the
    `USBThrottle.jyn` Jynstrument list onto the throttle toolbar.
 7. Right-click the Jynstrument's icon. The popup menu should list every
-   controller `TreeModel` discovered (one entry per controller — there may be
-   two RailDriver entries; both will resolve to the same driver file).
+   controller `TreeModel` discovered. The two RailDriver entries will have
+   identical visible names; both will resolve to the same driver file.
 8. For each RailDriver entry in turn:
    a. Select it. Verify the System Console shows
       `Trying to import driver by name "PIEngineeringRailDriverModernDesktop.py" ...`
@@ -213,37 +257,46 @@ specific controller object is printed. Output appears in JMRI's
       pad, the zoom rocker, the range / gear toggle, the headlight rotary
       (if present).
    c. Tabulate every distinct `Component "<name>" value changed to <v>` line
-      that appears, against the physical control that produced it.
-9. Repeat step 8 for the second RailDriver entry, if `TreeModel` exposed two.
+      that appears, against the physical control that produced it. Per the
+      §4 baseline, expect button events only and zero events from the
+      analog levers.
 
 ## 7. Outcome interpretation
 
-Compare the table from step 8c against the kernel ground-truth from §4 step
-4 (`evtest`):
+Compare the table from step 8c against the §4 baseline:
 
-* If `evtest` showed only `EV_KEY` events for the levers and JMRI's console
-  shows the same buttons but no axis events, this is the expected
-  consequence of `EV=0x13`: the kernel does not surface lever positions, so
-  JInput cannot either. Result: **partial success** — buttons/switches read
-  fine, analog axes are unreachable through the current Linux JInput stack.
-* If `evtest` showed `EV_ABS` events for the levers, there is a kernel-side
-  axis path and JMRI/JInput should show them too; if it does not, the bug is
-  in `LinuxEventDevice` / `libjinput-linux64.so`, not the kernel.
-* If `jstest` (when available) showed axes that `evtest` did not, JInput
-  may be able to reach them through the js0-backed controller; that is why
-  step 8 must be repeated for every RailDriver entry exposed by `TreeModel`.
+* **Expected:** Both RailDriver entries emit button events for cab-button
+  presses and emit nothing for lever movement. The two entries will
+  emit *different identifier names* for the same physical button — the
+  evdev-backed entry uses the `Identifier.Button` constants that
+  `LinuxNativeTypesMap` chose for each `BTN_*` code (e.g.
+  `Trigger`/`Thumb`/`Top`/`Pinkie`/`A`/`B`/...), while the js-backed entry
+  uses sequential `"0"`..`"55"` (`getButtonIdentifier`). Recording both
+  mappings is the most useful artifact this MVP produces — it is the
+  reference table any future RailDriver Linux driver will need.
+* **Surprise — axis on either entry:** any axis component reacting to
+  lever movement contradicts the §4 baseline. Re-check kernel state with
+  `evtest` and `jstest` immediately, and treat as a §3 surprise outcome.
+* **No events at all from JMRI:** native library load, JNI binding, or
+  TreeModel polling is broken. Check the System Console for stack traces
+  on JMRI startup; verify `libjinput-linux64.so` actually got loaded
+  (`net.java.games.input.LinuxEnvironmentPlugin` log line).
 
 ## 8. Next-step options if analog axes are not reachable
 
 (Listed for context only — out of scope for this MVP, no implementation
-work happens here.)
+work happens here. Any of these would be its own follow-up plan.)
 
 * Add a kernel HID quirk / report-descriptor fixup for vendor `05f3`
   product `00d2` so the analog bytes are mapped to `ABS_*` codes by
-  `hid-input.c`. This is the smallest change with the broadest payoff.
+  `hid-input.c`. Smallest change with the broadest payoff because it lets
+  every userspace input consumer (JInput, SDL, browser Gamepad API, ...)
+  read the levers without further work.
 * Run a userspace daemon that opens `/dev/hidraw0`, parses RailDriver
   reports, and re-publishes them via `uinput` as a synthetic joystick that
-  JInput can then see normally.
+  JInput can then see normally. **`/dev/hidraw0` is already accessible to
+  the `pi` user via the `plugdev` group** (verified in §4), so this path
+  needs no privilege escalation beyond starting the daemon as `pi`.
 * Add an upstream-quality `HidRawEnvironmentPlugin` (or equivalent) to
   JInput itself so RailDriver-style devices can be read directly without a
   kernel quirk. Largest effort.
