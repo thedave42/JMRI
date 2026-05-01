@@ -407,10 +407,7 @@ with their checksum file.
 
 `rd-analyze.sh` reads one or more `run-NNN/` directories produced by
 `rd-record.sh` and emits two outputs: a per-run analysis and a cross-run
-summary. The analysis is purely descriptive: it reports what the captured
-data shows. It does not reference, compare against, or verify any prior
-claim about the report layout, the parser's behaviour, or the inventory's
-labels.
+summary.
 
 ### 9.1 Per-run analysis
 
@@ -554,11 +551,6 @@ reports:
 | `extrema_spread` | For each changed byte, `min_spread=(max(run_mins)-min(run_mins))` and `max_spread=(max(run_maxes)-min(run_maxes))`. |
 | `quality_flags` | Union of per-run `quality_flags` values that affect this action. Empty if none. |
 | `discrepancies` | If any of the above are `no`, a free-text description of which runs disagreed and how. Otherwise empty. |
-
-The cross-run script does not pick a "winner" between disagreeing runs and
-does not annotate any run as correct or incorrect. For analog extrema it does
-not reduce the data to a pass/fail boolean; it reports the per-run values and
-their spread for human review.
 
 ### 9.4 Mapping output
 
