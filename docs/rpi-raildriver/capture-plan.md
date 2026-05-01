@@ -23,9 +23,8 @@ whose explicit goal is to produce three data products from the device:
    convention.
 3. For every continuous analog or multi-position control in
    `control-inventory.md`: the set of byte indices that change when the
-   control is moved through its physical range, the minimum and maximum byte
-   values observed at each such index, and stable plateau values observed at
-   named detents or positions.
+   control is moved through its physical range, and the minimum and maximum
+   byte values observed at each such index.
 
 The protocol is designed to report *what the device does*. It is not
 designed to confirm or refute any prior claim about the report layout
@@ -43,10 +42,9 @@ For every labeled control in `control-inventory.md`:
   after. SPDT switches get one capture per direction. The hat switch gets one
   capture per cardinal direction. Each individual button gets its own capture.
 - **Analog controls** — capture HID reports while the control is swept through
-  its full physical range, briefly pausing at mechanical extremes and named
-  detents/positions so minimum, maximum, and plateau byte values are clearly
-  visible. The independent brake range and the two bail-off positions are
-  captured separately.
+  its full physical range, briefly pausing at the mechanical extremes so the
+  minimum and maximum byte values are clearly visible. The independent brake
+  range and the two bail-off positions are captured separately.
 - **Pre- and post-run baselines** — bracket each pass with "do not touch the
   controller" captures so the resting byte pattern is documented and any
   drift between start and end of run is visible.
@@ -233,14 +231,14 @@ belong to either bail-off position.
 
 | NN | slug              | prompt |
 |----|-------------------|--------|
-| 45 | reverser-sweep    | Move the **Reverser** slowly from Forward to Neutral to Reverse, pausing briefly at each detent, then return to Neutral and pause. Press Enter. |
-| 46 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to center/idle to full Dynamic Brake, pausing briefly at each extreme and at center, then return to center. Press Enter. |
-| 47 | auto-brake-sweep  | Move the **Auto Brake** slowly from RELEASED to SUP to CS to EMG, pausing briefly at each named position, then return to RELEASED and pause. Press Enter. |
+| 45 | reverser-sweep    | Move the **Reverser** slowly from full Forward to full Reverse, pausing briefly at each end, then return to Neutral. Press Enter. |
+| 46 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to full Dynamic Brake (passing through center), pausing briefly at each end, then return to center. Press Enter. |
+| 47 | auto-brake-sweep  | Move the **Auto Brake** slowly from fully RELEASED to EMG, pausing briefly at each end, then return to RELEASED. Press Enter. |
 | 48 | indep-brake-sweep | Move the **Independent Brake** through its brake range only, from release to full application, pausing briefly at each end, then return to release. Do not use either bail-off position during this capture. Press Enter. |
 | 49 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
 | 50 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
-| 51 | wiper-cycle       | Move the **Wiper** from Off to Slow to Full, pausing briefly at each named position, then return to Off and pause. Press Enter. |
-| 52 | lights-cycle      | Move the **Lights** from Off to Dim to Full, pausing briefly at each named position, then return to Off and pause. Press Enter. |
+| 51 | wiper-cycle       | Move the **Wiper** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
+| 52 | lights-cycle      | Move the **Lights** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
 
 ### Phase 4 — post-baseline (1 action)
 
@@ -476,14 +474,11 @@ For a single run directory, the script emits one row for every defined action
    - `bit_mask`: the OR of `(value XOR modal_baseline_value)` for every
      action value in `asserted_values`;
    - `min_max`: the minimum and maximum action values for that byte;
-   - `plateau_values`: values that appear in runs of at least 10 consecutive
-     complete reports for that byte;
    - `changed_report_count`: the count of complete action reports whose byte
      value is outside the effective rest value set.
 
-For analog / multi-position sweep actions, including Wiper, Lights, and the
-named detent captures, `min_max`, `observed_values`, and `plateau_values` are
-the primary data products. For switches, buttons, and hat directions,
+For analog / multi-position sweep actions, including Wiper and Lights,
+`min_max` and `observed_values` are the primary data products. For switches, buttons, and hat directions,
 `rest_values`, `asserted_values`, and `bit_mask` are the primary data
 products. The same columns are emitted for every action so the output remains
 machine-readable.
@@ -491,8 +486,8 @@ machine-readable.
 Output: `run-NNN/analysis.md` — header fields followed by a markdown table,
 one row per defined action. The header records
 `baseline_source: pre+post | pre-only | post-only`,
-`local_rest_window_reports: 50`, `min_changed_reports: 3`, and
-`plateau_min_run_reports: 10`. The table has columns:
+`local_rest_window_reports: 50`, and `min_changed_reports: 3`. The table has
+columns:
 
 | column | meaning |
 |--------|---------|
@@ -511,7 +506,6 @@ one row per defined action. The header records
 | `asserted_values` | For each changed byte, the action values that were not present in the effective rest value set. |
 | `observed_values` | For each changed byte, all distinct action values observed for that byte. |
 | `min_max` | For each changed byte, `byte<i>=[min,max]` in hex. |
-| `plateau_values` | For each changed byte, values that appeared in runs of at least 10 consecutive complete reports. |
 | `changed_report_count` | For each changed byte, the number of complete reports outside the effective rest value set. |
 | `quality_flags` | Comma-separated descriptive flags such as `insufficient-local-rest`, `byte<i>=local-rest-drift`, or `byte<i>=below-threshold-outlier:<count>`. Empty if none. |
 
@@ -543,17 +537,15 @@ reports:
 | `runs_compared` | Comma-separated list of run directory names included for this action (only runs that captured this action contribute). |
 | `byte_indices_consistent` | `yes` if `byte_indices_changed` is identical across all compared runs; otherwise `no`. |
 | `bit_masks_consistent` | `yes` if the per-byte bit masks are identical across all compared runs; otherwise `no`. |
-| `plateau_values_consistent` | `yes` if the per-byte plateau values are identical across all compared runs; otherwise `no`. |
 | `per_run_min_max` | For each changed byte, the `[min,max]` interval reported by each run. |
-| `per_run_plateau_values` | For each changed byte, the `plateau_values` reported by each run. |
 | `extrema_spread` | For each changed byte, `min_spread=(max(run_mins)-min(run_mins))` and `max_spread=(max(run_maxes)-min(run_maxes))`. |
 | `quality_flags` | Union of per-run `quality_flags` values that affect this action. Empty if none. |
 | `discrepancies` | If any of the above are `no`, a free-text description of which runs disagreed and how. Otherwise empty. |
 
 The cross-run script does not pick a "winner" between disagreeing runs and
-does not annotate any run as correct or incorrect. For analog extrema and
-plateaus it does not reduce the data to a pass/fail boolean; it reports the
-per-run values and their spread for human review.
+does not annotate any run as correct or incorrect. For analog extrema it does
+not reduce the data to a pass/fail boolean; it reports the per-run values and
+their spread for human review.
 
 ### 9.3 Constraints on the analysis script
 
