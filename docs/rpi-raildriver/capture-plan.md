@@ -54,8 +54,8 @@ For every labeled control in `control-inventory.md`:
 - **Switches and buttons** — capture HID reports while the control is held in
   each of its asserted states, with rest-state framing immediately before and
   after. SPDT switches get one capture per direction. The hat switch gets one
-  capture per direction (8 directions: 4 cardinal plus 4 diagonal). Each
-  individual button gets its own capture.
+  capture per cardinal direction (UP, RIGHT, DOWN, LEFT — see §3 *Established
+  device characteristics*). Each individual button gets its own capture.
 - **Analog controls** — capture HID reports while the control is swept through
   its full physical range so the minimum and maximum byte values are clearly
   visible.
@@ -68,7 +68,7 @@ For every labeled control in `control-inventory.md`:
 Two bash scripts live under `docs/rpi-raildriver/`:
 
 - **`rd-record.sh`** — operator-facing capture script. Walks the operator
-  through the fixed, numbered list of 58 actions in §5 and produces one
+  through the fixed, numbered list of 54 actions in §5 and produces one
   `run-NNN/` directory of raw HID byte streams plus hex views, as described
   in §4. Operator interaction is detailed in §6, and the capture mechanism
   is detailed in §7.
@@ -80,12 +80,13 @@ Two bash scripts live under `docs/rpi-raildriver/`:
 
 `rd-record.sh` runs each action in one of two modes:
 
-**Baseline actions (00 and 57):** the script prints positioning instructions
+**Baseline actions (00 and 53):** the script prints positioning instructions
 and waits for the operator to press `Enter` to start. It then captures a
-fixed number of complete HID reports (default 250, about 5 seconds at the
-device's nominal report rate), stops, and advances automatically.
+fixed number of complete HID reports (default 60, about 5 seconds at the
+device's measured report rate; see *Established device characteristics*
+below), stops, and advances automatically.
 
-**Non-baseline actions (01–56):** the script prints the action's prompt and
+**Non-baseline actions (01–52):** the script prints the action's prompt and
 starts capturing immediately. No key press is required to start. During the
 first portion of the capture the script learns the per-byte "rest band" of
 values from the unchanged report stream. It then watches the live stream
@@ -97,6 +98,34 @@ the script advances to the next action.
 In both modes the operator can interrupt the in-flight capture at any time
 with `r` (redo), `s` (skip), or `q` (quit). The detailed event grammar and
 timeouts are in §6 and §7.
+
+### Established device characteristics
+
+These facts have been measured empirically and are the basis for the
+parameter defaults in §7. The supporting capture is
+`docs/rpi-raildriver/test-data/hat-rate-capture.log` (481 reports captured
+on 2026-05-01 with `docs/rpi-raildriver/hat-rate-probe.sh`).
+
+- **HID report rate: ~11.5 Hz** (measured 11.52 Hz; ~88 ms inter-report
+  period). The device polls slowly. All time-budget defaults in this plan
+  are derived from this rate. This is *not* a buffering artifact; the probe
+  reads `/dev/hidraw0` directly with `os.read()` and excludes any pipeline
+  framing.
+- **Hat switch: 4-direction hardware with software diagonals.** The hat
+  reports four single bits (one per cardinal direction). Diagonals are
+  produced by two adjacent cardinal bits being asserted simultaneously when
+  the operator pushes the hat between two switches; there are no separate
+  bits for diagonals. Bit map established by the probe:
+    | Direction | Byte | Bit  |
+    |-----------|------|------|
+    | UP        | 10   | 0x40 |
+    | RIGHT     | 10   | 0x80 |
+    | DOWN      | 11   | 0x01 |
+    | LEFT      | 11   | 0x02 |
+
+  These specific byte/bit values are restated here only for context. The
+  analysis script (§9.5) must not rely on them; it must rediscover the
+  mapping from each run's captured data.
 
 Each invocation of the script creates a **new run directory** so multiple
 passes can be compared without overwriting each other. Action indices and
@@ -118,8 +147,8 @@ docs/rpi-raildriver/captures/
 │   ├── 01-range-up.bin
 │   ├── 01-range-up.hex
 │   ├── …
-│   ├── 57-baseline-post.bin
-│   ├── 57-baseline-post.hex
+│   ├── 53-baseline-post.bin
+│   ├── 53-baseline-post.hex
 │   ├── NN-<slug>.skipped         # zero-byte sentinel for skipped actions
 │   │                             # (no .bin or .hex)
 │   ├── SHA256SUMS                # checksums for retained run artifacts
@@ -144,16 +173,16 @@ mapping must retain enough material for another person to verify it: the raw
 `.bin` files, the generated `.hex` files, `manifest.txt`, `README.md`, the
 analysis outputs, and checksum files covering all retained artifacts.
 
-## 5. Action list (58 actions, fixed order)
+## 5. Action list (54 actions, fixed order)
 
-For actions 01–56, the script shows a shared framing instruction before the
+For actions 01–52, the script shows a shared framing instruction before the
 per-action prompt:
 
 > Wait briefly at the start of the capture so the script can learn the
 > resting state. Perform the requested action. Then return the control to
 > rest — the script will detect that and advance automatically.
 
-For actions 00 and 57, the script shows positioning instructions and waits
+For actions 00 and 53, the script shows positioning instructions and waits
 for the operator to press `Enter` to start. The capture then runs for about
 5 seconds and advances automatically.
 
@@ -163,7 +192,7 @@ for the operator to press `Enter` to start. The capture then runs for about
 |----|------------------|--------|
 | 00 | baseline-pre     | Set all analog controls to their baseline positions before starting the capture: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. When all controls are in position, press Enter to start. Do not touch the controller during the capture; it runs for about 5 seconds and advances automatically. |
 
-### Phase 1 — named switches and buttons (20 actions)
+### Phase 1 — named switches and buttons (16 actions)
 
 | NN | slug         | physical control                           | prompt |
 |----|--------------|--------------------------------------------|--------|
@@ -179,14 +208,16 @@ for the operator to press `Enter` to start. The capture then runs for about
 | 10 | horn-down    | Horn switch                                | Push the **Horn** switch DOWN and hold for ~1 second, then release. |
 | 11 | spdt42-up    | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) UP and hold for ~1 second, then release. |
 | 12 | spdt42-down  | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) DOWN and hold for ~1 second, then release. |
-| 13 | hat43-up     | hat switch (item 43)                       | Push the **hat switch** (item 43) UP and hold for ~1 second, then release. |
-| 14 | hat43-up-right | hat switch (item 43)                     | Push the **hat switch** (item 43) UP-RIGHT and hold for ~1 second, then release. |
-| 15 | hat43-right  | hat switch (item 43)                       | Push the **hat switch** (item 43) RIGHT and hold for ~1 second, then release. |
-| 16 | hat43-down-right | hat switch (item 43)                   | Push the **hat switch** (item 43) DOWN-RIGHT and hold for ~1 second, then release. |
-| 17 | hat43-down   | hat switch (item 43)                       | Push the **hat switch** (item 43) DOWN and hold for ~1 second, then release. |
-| 18 | hat43-down-left | hat switch (item 43)                    | Push the **hat switch** (item 43) DOWN-LEFT and hold for ~1 second, then release. |
-| 19 | hat43-left   | hat switch (item 43)                       | Push the **hat switch** (item 43) LEFT and hold for ~1 second, then release. |
-| 20 | hat43-up-left | hat switch (item 43)                      | Push the **hat switch** (item 43) UP-LEFT and hold for ~1 second, then release. |
+| 13 | hat43-up     | hat switch (item 43)                       | Push the **hat switch** (item 43) straight UP (cardinal only — not toward a corner) and hold for ~1 second, then release. |
+| 14 | hat43-right  | hat switch (item 43)                       | Push the **hat switch** (item 43) straight RIGHT (cardinal only — not toward a corner) and hold for ~1 second, then release. |
+| 15 | hat43-down   | hat switch (item 43)                       | Push the **hat switch** (item 43) straight DOWN (cardinal only — not toward a corner) and hold for ~1 second, then release. |
+| 16 | hat43-left   | hat switch (item 43)                       | Push the **hat switch** (item 43) straight LEFT (cardinal only — not toward a corner) and hold for ~1 second, then release. |
+
+The hat is 4-direction hardware (see §3 *Established device characteristics*).
+Diagonals are not separately captured: any diagonal is the simultaneous
+assertion of two adjacent cardinal bits, so the four cardinal captures fully
+characterise the hat. Operators must therefore push each cardinal cleanly,
+without rolling toward a neighbouring direction.
 
 ### Phase 2 — front-edge button grid, items 14..41 (28 actions)
 
@@ -211,41 +242,44 @@ Orientation diagram:
 ```
 operator faces the controller from below this diagram
 
-back row:  21 22 23 24 25 26 27 28 29 30 31 32 33 34
-front row: 35 36 37 38 39 40 41 42 43 44 45 46 47 48
+back row:  17 18 19 20 21 22 23 24 25 26 27 28 29 30
+front row: 31 32 33 34 35 36 37 38 39 40 41 42 43 44
            left --------------------------------> right
 ```
 
+(The numbers in this diagram are this protocol's action numbers, not
+inventory item numbers.)
+
 | NN  | slug             | prompt |
 |-----|------------------|--------|
-| 21  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. |
-| 22  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. |
-| 23  | btn-back-03      | Press only the **back-row, column 3** button (counting from the left). Hold for ~1 second, then release. |
-| 24  | btn-back-04      | Press only the **back-row, column 4** button (counting from the left). Hold for ~1 second, then release. |
-| 25  | btn-back-05      | Press only the **back-row, column 5** button (counting from the left). Hold for ~1 second, then release. |
-| 26  | btn-back-06      | Press only the **back-row, column 6** button (counting from the left). Hold for ~1 second, then release. |
-| 27  | btn-back-07      | Press only the **back-row, column 7** button (counting from the left). Hold for ~1 second, then release. |
-| 28  | btn-back-08      | Press only the **back-row, column 8** button (counting from the left). Hold for ~1 second, then release. |
-| 29  | btn-back-09      | Press only the **back-row, column 9** button (counting from the left). Hold for ~1 second, then release. |
-| 30  | btn-back-10      | Press only the **back-row, column 10** button (counting from the left). Hold for ~1 second, then release. |
-| 31  | btn-back-11      | Press only the **back-row, column 11** button (counting from the left). Hold for ~1 second, then release. |
-| 32  | btn-back-12      | Press only the **back-row, column 12** button (counting from the left). Hold for ~1 second, then release. |
-| 33  | btn-back-13      | Press only the **back-row, column 13** button (counting from the left). Hold for ~1 second, then release. |
-| 34  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. |
-| 35  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. |
-| 36  | btn-front-02     | Press only the **front-row, column 2** button (counting from the left). Hold for ~1 second, then release. |
-| 37  | btn-front-03     | Press only the **front-row, column 3** button (counting from the left). Hold for ~1 second, then release. |
-| 38  | btn-front-04     | Press only the **front-row, column 4** button (counting from the left). Hold for ~1 second, then release. |
-| 39  | btn-front-05     | Press only the **front-row, column 5** button (counting from the left). Hold for ~1 second, then release. |
-| 40  | btn-front-06     | Press only the **front-row, column 6** button (counting from the left). Hold for ~1 second, then release. |
-| 41  | btn-front-07     | Press only the **front-row, column 7** button (counting from the left). Hold for ~1 second, then release. |
-| 42  | btn-front-08     | Press only the **front-row, column 8** button (counting from the left). Hold for ~1 second, then release. |
-| 43  | btn-front-09     | Press only the **front-row, column 9** button (counting from the left). Hold for ~1 second, then release. |
-| 44  | btn-front-10     | Press only the **front-row, column 10** button (counting from the left). Hold for ~1 second, then release. |
-| 45  | btn-front-11     | Press only the **front-row, column 11** button (counting from the left). Hold for ~1 second, then release. |
-| 46  | btn-front-12     | Press only the **front-row, column 12** button (counting from the left). Hold for ~1 second, then release. |
-| 47  | btn-front-13     | Press only the **front-row, column 13** button (counting from the left). Hold for ~1 second, then release. |
-| 48  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. |
+| 17  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. |
+| 18  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. |
+| 19  | btn-back-03      | Press only the **back-row, column 3** button (counting from the left). Hold for ~1 second, then release. |
+| 20  | btn-back-04      | Press only the **back-row, column 4** button (counting from the left). Hold for ~1 second, then release. |
+| 21  | btn-back-05      | Press only the **back-row, column 5** button (counting from the left). Hold for ~1 second, then release. |
+| 22  | btn-back-06      | Press only the **back-row, column 6** button (counting from the left). Hold for ~1 second, then release. |
+| 23  | btn-back-07      | Press only the **back-row, column 7** button (counting from the left). Hold for ~1 second, then release. |
+| 24  | btn-back-08      | Press only the **back-row, column 8** button (counting from the left). Hold for ~1 second, then release. |
+| 25  | btn-back-09      | Press only the **back-row, column 9** button (counting from the left). Hold for ~1 second, then release. |
+| 26  | btn-back-10      | Press only the **back-row, column 10** button (counting from the left). Hold for ~1 second, then release. |
+| 27  | btn-back-11      | Press only the **back-row, column 11** button (counting from the left). Hold for ~1 second, then release. |
+| 28  | btn-back-12      | Press only the **back-row, column 12** button (counting from the left). Hold for ~1 second, then release. |
+| 29  | btn-back-13      | Press only the **back-row, column 13** button (counting from the left). Hold for ~1 second, then release. |
+| 30  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. |
+| 31  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. |
+| 32  | btn-front-02     | Press only the **front-row, column 2** button (counting from the left). Hold for ~1 second, then release. |
+| 33  | btn-front-03     | Press only the **front-row, column 3** button (counting from the left). Hold for ~1 second, then release. |
+| 34  | btn-front-04     | Press only the **front-row, column 4** button (counting from the left). Hold for ~1 second, then release. |
+| 35  | btn-front-05     | Press only the **front-row, column 5** button (counting from the left). Hold for ~1 second, then release. |
+| 36  | btn-front-06     | Press only the **front-row, column 6** button (counting from the left). Hold for ~1 second, then release. |
+| 37  | btn-front-07     | Press only the **front-row, column 7** button (counting from the left). Hold for ~1 second, then release. |
+| 38  | btn-front-08     | Press only the **front-row, column 8** button (counting from the left). Hold for ~1 second, then release. |
+| 39  | btn-front-09     | Press only the **front-row, column 9** button (counting from the left). Hold for ~1 second, then release. |
+| 40  | btn-front-10     | Press only the **front-row, column 10** button (counting from the left). Hold for ~1 second, then release. |
+| 41  | btn-front-11     | Press only the **front-row, column 11** button (counting from the left). Hold for ~1 second, then release. |
+| 42  | btn-front-12     | Press only the **front-row, column 12** button (counting from the left). Hold for ~1 second, then release. |
+| 43  | btn-front-13     | Press only the **front-row, column 13** button (counting from the left). Hold for ~1 second, then release. |
+| 44  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. |
 
 ### Phase 3 — analog / multi-position sweeps (8 actions)
 
@@ -254,26 +288,26 @@ separate actions.
 
 | NN | slug              | prompt |
 |----|-------------------|--------|
-| 49 | reverser-sweep    | Move the **Reverser** smoothly from full Forward to full Reverse, then return to full Forward. |
-| 50 | throttle-sweep    | Move the **Throttle / Dynamic Brake** smoothly from full Throttle to full Dynamic Brake, then return to full Throttle. |
-| 51 | auto-brake-sweep  | Move the **Auto Brake** smoothly from fully RELEASED to EMG, then return to RELEASED. |
-| 52 | indep-brake-sweep | Move the **Independent Brake** smoothly through its brake range only, from full release to full application, then return to full release. Do not use either bail-off position during this capture. |
-| 53 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. |
-| 54 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. |
-| 55 | wiper-cycle       | Move the **Wiper** smoothly through its full physical range and back. |
-| 56 | lights-cycle      | Move the **Lights** smoothly through its full physical range and back. |
+| 45 | reverser-sweep    | Move the **Reverser** smoothly from full Forward to full Reverse, then return to full Forward. |
+| 46 | throttle-sweep    | Move the **Throttle / Dynamic Brake** smoothly from full Throttle to full Dynamic Brake, then return to full Throttle. |
+| 47 | auto-brake-sweep  | Move the **Auto Brake** smoothly from fully RELEASED to EMG, then return to RELEASED. |
+| 48 | indep-brake-sweep | Move the **Independent Brake** smoothly through its brake range only, from full release to full application, then return to full release. Do not use either bail-off position during this capture. |
+| 49 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. |
+| 50 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. |
+| 51 | wiper-cycle       | Move the **Wiper** smoothly through its full physical range and back. |
+| 52 | lights-cycle      | Move the **Lights** smoothly through its full physical range and back. |
 
 ### Phase 4 — post-baseline (1 action)
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 57 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. When all controls are in position, press Enter to start. Do not touch the controller during the capture; it runs for about 5 seconds and advances automatically. |
+| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. When all controls are in position, press Enter to start. Do not touch the controller during the capture; it runs for about 5 seconds and advances automatically. |
 
 ## 6. Operator key bindings
 
 | Context | Key | Effect |
 |---|---|---|
-| Baseline pre-start prompt (actions 00, 57) | `Enter` | Start the baseline capture. |
+| Baseline pre-start prompt (actions 00, 53) | `Enter` | Start the baseline capture. |
 | Baseline pre-start prompt | `s` | Skip this baseline; write `NN-<slug>.skipped` sentinel; advance. |
 | Baseline pre-start prompt | `q` | Quit gracefully. Already-completed action files are preserved; the script writes `README.md`, records the run as incomplete in `manifest.txt`, marks later actions `not-reached`, and exits 0. |
 | Capture in progress (baseline or non-baseline) | `r` | Discard the in-flight capture (delete the partial `.bin`); redo the current action. |
@@ -322,7 +356,7 @@ state machine. The split puts the byte-by-byte stream processing in a
 language with non-blocking `select`/`read` and clean integer/byte
 arithmetic, while leaving overall control flow in bash.
 
-### Baseline action mode (00, 57)
+### Baseline action mode (00, 53)
 
 1. The script prints the action's positioning instructions and waits for
    the operator to press `Enter` (`s` and `q` are also accepted at this
@@ -335,19 +369,20 @@ arithmetic, while leaving overall control flow in bash.
    ```
 
 3. When `target_baseline_reports` complete reports have been written
-   (default: 250, about 5 seconds at the device's nominal report rate),
-   the helper stops, the script generates the hex view, accepts, and
-   advances.
+   (default: 60, about 5 seconds at the device's measured report rate of
+   ~11.5 Hz), the helper stops, the script generates the hex view, accepts,
+   and advances.
 4. `r`/`s`/`q` keys are honored throughout the capture and behave per §6.
 
-### Non-baseline action mode (01–56)
+### Non-baseline action mode (01–52)
 
 1. The script prints the framing instruction (§5) and the per-action
    prompt, then immediately starts the capture with no further key press.
 2. The helper accumulates the first `pre_action_window` complete reports
-   (default: 50, about 1 second) into the **rest band**: for each byte
-   index `0..13`, the set of distinct values seen during that window. The
-   live status line shows progress through the rest-band-learning phase:
+   (default: 12, about 1 second at the measured ~11.5 Hz report rate) into
+   the **rest band**: for each byte index `0..13`, the set of distinct
+   values seen during that window. The live status line shows progress
+   through the rest-band-learning phase:
 
    ```
    [01 range-up] learning rest band… 32/50 reports                     [r=redo s=skip q=quit]
@@ -356,8 +391,8 @@ arithmetic, while leaving overall control flow in bash.
 3. After the rest-band-learning phase the helper watches each new report.
    An **onset** is declared when `onset_threshold` consecutive reports
    each contain at least one byte whose value is outside that byte's rest
-   band (default: 3 consecutive reports, ~60 ms at the nominal report
-   rate). The status line transitions to:
+   band (default: 3 consecutive reports, ~260 ms at the measured ~11.5 Hz
+   report rate). The status line transitions to:
 
    ```
    [01 range-up] capturing… 87 reports — waiting for action…           [r=redo s=skip q=quit]
@@ -365,8 +400,8 @@ arithmetic, while leaving overall control flow in bash.
 
 4. After onset, the helper watches for **settle**: a window of
    `settle_threshold` consecutive reports during which each byte's value
-   is stable (per-byte max minus min ≤ 1 across the window) (default: 25
-   consecutive reports, ~0.5 seconds at the nominal report rate). The
+   is stable (per-byte max minus min ≤ 1 across the window) (default: 10
+   consecutive reports, ~870 ms at the measured ~11.5 Hz report rate). The
    status line shows:
 
    ```
@@ -396,14 +431,15 @@ prompt; there is no automatic skip.
 ### Tuning parameters
 
 All parameters are settable on the command line and have conservative
-defaults appropriate for the device's nominal report rate (~50 Hz):
+defaults appropriate for the device's measured report rate of ~11.5 Hz
+(see §3 *Established device characteristics*):
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--target-baseline-reports N` | 250 | Number of complete reports to capture per baseline action before auto-accepting. |
-| `--pre-action-window N` | 50 | Number of complete reports used to learn the rest band at the start of each non-baseline action. |
-| `--onset-threshold N` | 3 | Number of consecutive out-of-rest-band reports required to declare onset. |
-| `--settle-threshold N` | 25 | Number of consecutive stable reports required to declare settle after onset. |
+| `--target-baseline-reports N` | 60 | Number of complete reports to capture per baseline action before auto-accepting (~5 s at ~11.5 Hz). |
+| `--pre-action-window N` | 12 | Number of complete reports used to learn the rest band at the start of each non-baseline action (~1 s at ~11.5 Hz). |
+| `--onset-threshold N` | 3 | Number of consecutive out-of-rest-band reports required to declare onset (~260 ms at ~11.5 Hz). |
+| `--settle-threshold N` | 10 | Number of consecutive stable reports required to declare settle after onset (~870 ms at ~11.5 Hz). |
 | `--max-action-time S` | 60 | Per-action time budget, in seconds, after which the capture is aborted and the operator is re-prompted. |
 
 The defaults are starting points; expect to tune them after the first real
@@ -444,10 +480,10 @@ script_version:            <git SHA short, or "uncommitted">
 operator:                  <value of --operator, or "(not specified)">
 run_dir:                   run-NNN
 notes:                     <value of --notes, or empty>
-target_baseline_reports:   250
-pre_action_window:         50
+target_baseline_reports:   60
+pre_action_window:         12
 onset_threshold:           3
-settle_threshold:          25
+settle_threshold:          10
 max_action_time:           60
 run_complete:              yes | no
 ended_by:                  completed | operator-quit | signal
@@ -507,21 +543,21 @@ summary.
 ### 9.1 Per-run analysis
 
 For a single run directory, the script emits one row for every defined action
-`00`..`57`. It processes any captured `.bin` files together with that run's
-`00-baseline-pre.bin` and `57-baseline-post.bin` as follows:
+`00`..`53`. It processes any captured `.bin` files together with that run's
+`00-baseline-pre.bin` and `53-baseline-post.bin` as follows:
 
 1. Split each `.bin` into complete 14-byte reports. If a file length is not
    divisible by 14, ignore the trailing partial bytes for report analysis and
    record their count in `partial_trailing_bytes`.
 2. Build a global baseline model from all complete reports in
-   `00-baseline-pre.bin` and `57-baseline-post.bin`. For each byte index,
+   `00-baseline-pre.bin` and `53-baseline-post.bin`. For each byte index,
    record:
    - the set of distinct baseline byte values;
    - the modal baseline value (most common value; lowest value wins ties);
    - the baseline minimum and maximum.
 
    Missing or empty baselines:
-   - If both `00-baseline-pre.bin` and `57-baseline-post.bin` are missing,
+   - If both `00-baseline-pre.bin` and `53-baseline-post.bin` are missing,
      skipped, or contain zero complete 14-byte reports, the script must
      refuse to analyze the run, write a single-line `analysis.md` explaining
      why, and exit non-zero.
@@ -596,7 +632,7 @@ columns:
 
 | column | meaning |
 |--------|---------|
-| `action#` | The action's stable index, `00`..`57`. |
+| `action#` | The action's stable index, `00`..`53`. |
 | `slug` | The action's slug without its numeric prefix (e.g. `range-up`). |
 | `file_stem` | The expected file stem, `NN-<slug>` (e.g. `01-range-up`). |
 | `status` | `captured`, `skipped`, or `not-reached`. |
@@ -622,7 +658,7 @@ change. The slug is reported as captured; the operator's `slug → physical
 control` mapping is documented in §5 of this plan and in `README.md` of each
 run, both of which are produced earlier in the workflow.
 
-Baseline actions `00` and `57` appear in the table with `status=captured`
+Baseline actions `00` and `53` appear in the table with `status=captured`
 when their `.bin` files exist, but their change-specific data columns are
 empty. Skipped actions appear in the table with `status=skipped` and empty
 data columns. Actions whose `.bin` is missing (e.g. interrupted mid-action)
