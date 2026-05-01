@@ -57,8 +57,8 @@ For every labeled control in `control-inventory.md`:
   capture per direction (8 directions: 4 cardinal plus 4 diagonal). Each
   individual button gets its own capture.
 - **Analog controls** — capture HID reports while the control is swept through
-  its full physical range, briefly pausing at the mechanical extremes so the
-  minimum and maximum byte values are clearly visible.
+  its full physical range so the minimum and maximum byte values are clearly
+  visible.
 - **Pre- and post-run baselines** — bracket each pass with "do not touch the
   controller" captures so the resting byte pattern is documented and any
   drift between start and end of run is visible.
@@ -78,19 +78,25 @@ Two bash scripts live under `docs/rpi-raildriver/`:
   does not prompt the operator and does not require the device to be
   attached.
 
-For each capture action, `rd-record.sh`:
+`rd-record.sh` runs each action in one of two modes:
 
-1. Prints the action's number, slug, and a one-line "what to do" prompt.
-2. Starts capturing the raw `/dev/hidraw0` byte stream into a per-action
-   binary file in the background.
-3. Displays a live report counter so the operator can pace themselves.
-4. Waits for an operator key:
-   - `Enter` — accept this capture, generate hex view, advance.
-   - `r` then Enter — discard and redo the current action.
-   - `s` then Enter — skip this action; write a `.skipped` sentinel; advance.
-   - `q` then Enter — quit gracefully; previously-completed files are kept
-     and the run is marked incomplete.
-5. Stops the capture, runs `xxd -c 14` to produce a hex view, moves on.
+**Baseline actions (00 and 57):** the script prints positioning instructions
+and waits for the operator to press `Enter` to start. It then captures a
+fixed number of complete HID reports (default 250, about 5 seconds at the
+device's nominal report rate), stops, and advances automatically.
+
+**Non-baseline actions (01–56):** the script prints the action's prompt and
+starts capturing immediately. No key press is required to start. During the
+first portion of the capture the script learns the per-byte "rest band" of
+values from the unchanged report stream. It then watches the live stream
+and detects two events: an **onset** (the report stream leaves the rest
+band) followed by a **settle** (the report stream stops changing). When
+settle is detected the capture is stopped, the hex view is generated, and
+the script advances to the next action.
+
+In both modes the operator can interrupt the in-flight capture at any time
+with `r` (redo), `s` (skip), or `q` (quit). The detailed event grammar and
+timeouts are in §6 and §7.
 
 Each invocation of the script creates a **new run directory** so multiple
 passes can be compared without overwriting each other. Action indices and
@@ -105,7 +111,8 @@ docs/rpi-raildriver/captures/
 │   ├── manifest.txt              # ISO-8601 UTC timestamp, hostname,
 │   │                             # `uname -a`, resolved hidraw path,
 │   │                             # VID/PID (hex), script git SHA / version,
-│   │                             # operator name (optional, --operator flag)
+│   │                             # operator name (optional, --operator flag),
+│   │                             # detection-parameter values used for the run
 │   ├── 00-baseline-pre.bin       # raw HID byte stream, exact device output
 │   ├── 00-baseline-pre.hex       # `xxd -c 14` view of the .bin
 │   ├── 01-range-up.bin
@@ -142,40 +149,44 @@ analysis outputs, and checksum files covering all retained artifacts.
 For actions 01–56, the script shows a shared framing instruction before the
 per-action prompt:
 
-> Leave all controls at rest briefly after capture starts.
-> Perform the requested action. After releasing or returning the control to
-> rest, wait briefly before pressing Enter.
+> Wait briefly at the start of the capture so the script can learn the
+> resting state. Perform the requested action. Then return the control to
+> rest — the script will detect that and advance automatically.
+
+For actions 00 and 57, the script shows positioning instructions and waits
+for the operator to press `Enter` to start. The capture then runs for about
+5 seconds and advances automatically.
 
 ### Phase 0 — pre-baseline (1 action)
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
+| 00 | baseline-pre     | Set all analog controls to their baseline positions before starting the capture: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. When all controls are in position, press Enter to start. Do not touch the controller during the capture; it runs for about 5 seconds and advances automatically. |
 
 ### Phase 1 — named switches and buttons (20 actions)
 
 | NN | slug         | physical control                           | prompt |
 |----|--------------|--------------------------------------------|--------|
-| 01 | range-up     | Range switch                               | Push the **Range** switch UP and hold for ~1 second, then release. Press Enter. |
-| 02 | range-down   | Range switch                               | Push the **Range** switch DOWN and hold for ~1 second, then release. Press Enter. |
-| 03 | estop-up     | E-Stop switch                              | Push the **E-Stop** switch UP and hold for ~1 second, then release. Press Enter. |
-| 04 | estop-down   | E-Stop switch                              | Push the **E-Stop** switch DOWN and hold for ~1 second, then release. Press Enter. |
-| 05 | alert        | Alert button                               | Press the **Alert** button and hold for ~1 second, then release. Press Enter. |
-| 06 | sand         | Sand button                                | Press the **Sand** button and hold for ~1 second, then release. Press Enter. |
-| 07 | p-button     | P button (item 5)                          | Press the **P** button and hold for ~1 second, then release. Press Enter. |
-| 08 | bell         | Bell button                                | Press the **Bell** button and hold for ~1 second, then release. Press Enter. |
-| 09 | horn-up      | Horn switch                                | Push the **Horn** switch UP and hold for ~1 second, then release. Press Enter. |
-| 10 | horn-down    | Horn switch                                | Push the **Horn** switch DOWN and hold for ~1 second, then release. Press Enter. |
-| 11 | spdt42-up    | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) UP and hold for ~1 second, then release. Press Enter. |
-| 12 | spdt42-down  | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) DOWN and hold for ~1 second, then release. Press Enter. |
-| 13 | hat43-up     | hat switch (item 43)                       | Push the **hat switch** (item 43) UP and hold for ~1 second, then release. Press Enter. |
-| 14 | hat43-up-right | hat switch (item 43)                     | Push the **hat switch** (item 43) UP-RIGHT and hold for ~1 second, then release. Press Enter. |
-| 15 | hat43-right  | hat switch (item 43)                       | Push the **hat switch** (item 43) RIGHT and hold for ~1 second, then release. Press Enter. |
-| 16 | hat43-down-right | hat switch (item 43)                   | Push the **hat switch** (item 43) DOWN-RIGHT and hold for ~1 second, then release. Press Enter. |
-| 17 | hat43-down   | hat switch (item 43)                       | Push the **hat switch** (item 43) DOWN and hold for ~1 second, then release. Press Enter. |
-| 18 | hat43-down-left | hat switch (item 43)                    | Push the **hat switch** (item 43) DOWN-LEFT and hold for ~1 second, then release. Press Enter. |
-| 19 | hat43-left   | hat switch (item 43)                       | Push the **hat switch** (item 43) LEFT and hold for ~1 second, then release. Press Enter. |
-| 20 | hat43-up-left | hat switch (item 43)                      | Push the **hat switch** (item 43) UP-LEFT and hold for ~1 second, then release. Press Enter. |
+| 01 | range-up     | Range switch                               | Push the **Range** switch UP and hold for ~1 second, then release. |
+| 02 | range-down   | Range switch                               | Push the **Range** switch DOWN and hold for ~1 second, then release. |
+| 03 | estop-up     | E-Stop switch                              | Push the **E-Stop** switch UP and hold for ~1 second, then release. |
+| 04 | estop-down   | E-Stop switch                              | Push the **E-Stop** switch DOWN and hold for ~1 second, then release. |
+| 05 | alert        | Alert button                               | Press the **Alert** button and hold for ~1 second, then release. |
+| 06 | sand         | Sand button                                | Press the **Sand** button and hold for ~1 second, then release. |
+| 07 | p-button     | P button (item 5)                          | Press the **P** button and hold for ~1 second, then release. |
+| 08 | bell         | Bell button                                | Press the **Bell** button and hold for ~1 second, then release. |
+| 09 | horn-up      | Horn switch                                | Push the **Horn** switch UP and hold for ~1 second, then release. |
+| 10 | horn-down    | Horn switch                                | Push the **Horn** switch DOWN and hold for ~1 second, then release. |
+| 11 | spdt42-up    | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) UP and hold for ~1 second, then release. |
+| 12 | spdt42-down  | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) DOWN and hold for ~1 second, then release. |
+| 13 | hat43-up     | hat switch (item 43)                       | Push the **hat switch** (item 43) UP and hold for ~1 second, then release. |
+| 14 | hat43-up-right | hat switch (item 43)                     | Push the **hat switch** (item 43) UP-RIGHT and hold for ~1 second, then release. |
+| 15 | hat43-right  | hat switch (item 43)                       | Push the **hat switch** (item 43) RIGHT and hold for ~1 second, then release. |
+| 16 | hat43-down-right | hat switch (item 43)                   | Push the **hat switch** (item 43) DOWN-RIGHT and hold for ~1 second, then release. |
+| 17 | hat43-down   | hat switch (item 43)                       | Push the **hat switch** (item 43) DOWN and hold for ~1 second, then release. |
+| 18 | hat43-down-left | hat switch (item 43)                    | Push the **hat switch** (item 43) DOWN-LEFT and hold for ~1 second, then release. |
+| 19 | hat43-left   | hat switch (item 43)                       | Push the **hat switch** (item 43) LEFT and hold for ~1 second, then release. |
+| 20 | hat43-up-left | hat switch (item 43)                      | Push the **hat switch** (item 43) UP-LEFT and hold for ~1 second, then release. |
 
 ### Phase 2 — front-edge button grid, items 14..41 (28 actions)
 
@@ -207,34 +218,34 @@ front row: 35 36 37 38 39 40 41 42 43 44 45 46 47 48
 
 | NN  | slug             | prompt |
 |-----|------------------|--------|
-| 21  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
-| 22  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 23  | btn-back-03      | Press only the **back-row, column 3** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 24  | btn-back-04      | Press only the **back-row, column 4** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 25  | btn-back-05      | Press only the **back-row, column 5** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 26  | btn-back-06      | Press only the **back-row, column 6** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 27  | btn-back-07      | Press only the **back-row, column 7** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 28  | btn-back-08      | Press only the **back-row, column 8** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 29  | btn-back-09      | Press only the **back-row, column 9** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 30  | btn-back-10      | Press only the **back-row, column 10** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 31  | btn-back-11      | Press only the **back-row, column 11** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 32  | btn-back-12      | Press only the **back-row, column 12** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 33  | btn-back-13      | Press only the **back-row, column 13** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 34  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
-| 35  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
-| 36  | btn-front-02     | Press only the **front-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 37  | btn-front-03     | Press only the **front-row, column 3** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 38  | btn-front-04     | Press only the **front-row, column 4** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 39  | btn-front-05     | Press only the **front-row, column 5** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 40  | btn-front-06     | Press only the **front-row, column 6** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 41  | btn-front-07     | Press only the **front-row, column 7** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 42  | btn-front-08     | Press only the **front-row, column 8** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 43  | btn-front-09     | Press only the **front-row, column 9** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 44  | btn-front-10     | Press only the **front-row, column 10** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 45  | btn-front-11     | Press only the **front-row, column 11** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 46  | btn-front-12     | Press only the **front-row, column 12** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 47  | btn-front-13     | Press only the **front-row, column 13** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 48  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
+| 21  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. |
+| 22  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. |
+| 23  | btn-back-03      | Press only the **back-row, column 3** button (counting from the left). Hold for ~1 second, then release. |
+| 24  | btn-back-04      | Press only the **back-row, column 4** button (counting from the left). Hold for ~1 second, then release. |
+| 25  | btn-back-05      | Press only the **back-row, column 5** button (counting from the left). Hold for ~1 second, then release. |
+| 26  | btn-back-06      | Press only the **back-row, column 6** button (counting from the left). Hold for ~1 second, then release. |
+| 27  | btn-back-07      | Press only the **back-row, column 7** button (counting from the left). Hold for ~1 second, then release. |
+| 28  | btn-back-08      | Press only the **back-row, column 8** button (counting from the left). Hold for ~1 second, then release. |
+| 29  | btn-back-09      | Press only the **back-row, column 9** button (counting from the left). Hold for ~1 second, then release. |
+| 30  | btn-back-10      | Press only the **back-row, column 10** button (counting from the left). Hold for ~1 second, then release. |
+| 31  | btn-back-11      | Press only the **back-row, column 11** button (counting from the left). Hold for ~1 second, then release. |
+| 32  | btn-back-12      | Press only the **back-row, column 12** button (counting from the left). Hold for ~1 second, then release. |
+| 33  | btn-back-13      | Press only the **back-row, column 13** button (counting from the left). Hold for ~1 second, then release. |
+| 34  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. |
+| 35  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. |
+| 36  | btn-front-02     | Press only the **front-row, column 2** button (counting from the left). Hold for ~1 second, then release. |
+| 37  | btn-front-03     | Press only the **front-row, column 3** button (counting from the left). Hold for ~1 second, then release. |
+| 38  | btn-front-04     | Press only the **front-row, column 4** button (counting from the left). Hold for ~1 second, then release. |
+| 39  | btn-front-05     | Press only the **front-row, column 5** button (counting from the left). Hold for ~1 second, then release. |
+| 40  | btn-front-06     | Press only the **front-row, column 6** button (counting from the left). Hold for ~1 second, then release. |
+| 41  | btn-front-07     | Press only the **front-row, column 7** button (counting from the left). Hold for ~1 second, then release. |
+| 42  | btn-front-08     | Press only the **front-row, column 8** button (counting from the left). Hold for ~1 second, then release. |
+| 43  | btn-front-09     | Press only the **front-row, column 9** button (counting from the left). Hold for ~1 second, then release. |
+| 44  | btn-front-10     | Press only the **front-row, column 10** button (counting from the left). Hold for ~1 second, then release. |
+| 45  | btn-front-11     | Press only the **front-row, column 11** button (counting from the left). Hold for ~1 second, then release. |
+| 46  | btn-front-12     | Press only the **front-row, column 12** button (counting from the left). Hold for ~1 second, then release. |
+| 47  | btn-front-13     | Press only the **front-row, column 13** button (counting from the left). Hold for ~1 second, then release. |
+| 48  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. |
 
 ### Phase 3 — analog / multi-position sweeps (8 actions)
 
@@ -243,33 +254,36 @@ separate actions.
 
 | NN | slug              | prompt |
 |----|-------------------|--------|
-| 49 | reverser-sweep    | Move the **Reverser** slowly from full Forward to full Reverse, pausing briefly at each end, then return to full Forward. Press Enter. |
-| 50 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to full Dynamic Brake, pausing briefly at each end, then return to full Throttle. Press Enter. |
-| 51 | auto-brake-sweep  | Move the **Auto Brake** slowly from fully RELEASED to EMG, pausing briefly at each end, then return to RELEASED. Press Enter. |
-| 52 | indep-brake-sweep | Move the **Independent Brake** through its brake range only, from full release to full application, pausing briefly at each end, then return to full release. Do not use either bail-off position during this capture. Press Enter. |
-| 53 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
-| 54 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
-| 55 | wiper-cycle       | Move the **Wiper** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
-| 56 | lights-cycle      | Move the **Lights** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
+| 49 | reverser-sweep    | Move the **Reverser** smoothly from full Forward to full Reverse, then return to full Forward. |
+| 50 | throttle-sweep    | Move the **Throttle / Dynamic Brake** smoothly from full Throttle to full Dynamic Brake, then return to full Throttle. |
+| 51 | auto-brake-sweep  | Move the **Auto Brake** smoothly from fully RELEASED to EMG, then return to RELEASED. |
+| 52 | indep-brake-sweep | Move the **Independent Brake** smoothly through its brake range only, from full release to full application, then return to full release. Do not use either bail-off position during this capture. |
+| 53 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. |
+| 54 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. |
+| 55 | wiper-cycle       | Move the **Wiper** smoothly through its full physical range and back. |
+| 56 | lights-cycle      | Move the **Lights** smoothly through its full physical range and back. |
 
 ### Phase 4 — post-baseline (1 action)
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 57 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
+| 57 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. When all controls are in position, press Enter to start. Do not touch the controller during the capture; it runs for about 5 seconds and advances automatically. |
 
 ## 6. Operator key bindings
 
-Inside an action prompt, while capture is running:
+| Context | Key | Effect |
+|---|---|---|
+| Baseline pre-start prompt (actions 00, 57) | `Enter` | Start the baseline capture. |
+| Baseline pre-start prompt | `s` | Skip this baseline; write `NN-<slug>.skipped` sentinel; advance. |
+| Baseline pre-start prompt | `q` | Quit gracefully. Already-completed action files are preserved; the script writes `README.md`, records the run as incomplete in `manifest.txt`, marks later actions `not-reached`, and exits 0. |
+| Capture in progress (baseline or non-baseline) | `r` | Discard the in-flight capture (delete the partial `.bin`); redo the current action. |
+| Capture in progress | `s` | Discard the in-flight capture; write `NN-<slug>.skipped` sentinel; advance. |
+| Capture in progress | `q` | Same as the baseline `q` above. |
+| Timeout re-prompt (no onset detected, or no settle within budget) | `r` / `s` / `q` | Same as the corresponding capture-in-progress effect. |
 
-| Key             | Effect |
-|-----------------|--------|
-| `Enter`         | Accept this capture; generate hex view; advance to next action. |
-| `r` then `Enter` | Discard current capture (delete the partial `.bin`); redo current action. |
-| `s` then `Enter` | Skip this action; write a `NN-<slug>.skipped` sentinel; advance. |
-| `q` then `Enter` | Quit gracefully. Already-accepted action files are preserved. The script writes `README.md`, records the run as incomplete in `manifest.txt`, marks later actions `not-reached`, and exits 0. |
-
-Anything else the operator types is silently ignored.
+`Enter` has no effect during a non-baseline capture or at a timeout
+re-prompt; the script auto-advances on settle detection. Anything else the
+operator types is silently ignored.
 
 ## 7. Capture mechanism
 
@@ -285,66 +299,128 @@ exists but is not readable by the current user (with a pointer to the udev /
 diagnostic lists the matching `/dev/hidrawN` paths and tells the operator to
 rerun with `--device`.
 
-### Capture command
+### Capture process
 
-For each action:
+For each action, the script invokes a Python helper that opens
+`/dev/hidraw0` directly and writes complete 14-byte HID reports to the
+action's `.bin` file as they arrive. The helper owns the per-action
+lifecycle:
 
-```sh
-capture_file="$run_dir/$NN-$slug.bin"
-dd if="$DEVICE" of="$capture_file" bs=14 iflag=fullblock status=none &
-capture_pid=$!
-# … display live counter, wait for operator key …
-kill -TERM "$capture_pid" 2>/dev/null
-wait "$capture_pid" 2>/dev/null
-capture_rc=$?
-# capture_rc == 143 (128 + SIGTERM) is the expected controlled-stop result and
-# must be treated as success. Anything else (other than 0) is a real error:
-# print the exit code and a short diagnostic, keep any partial .bin that was
-# written, and re-display the action prompt with the redo/skip/quit options
-# so the operator can decide how to proceed.
-```
+- it reads the device with non-blocking I/O so it can simultaneously
+  monitor the operator's stdin for `r`, `s`, `q`, and (for baseline
+  actions) `Enter`;
+- it implements the termination logic for the action's mode (baseline or
+  non-baseline);
+- it returns control to the bash script with one of the outcomes
+  `accept`, `redo`, `skip`, `quit`, or `timeout`, plus the final byte and
+  report counts.
 
-The capture command uses `dd` rather than relying on `cat` plus `stdbuf`.
-GNU `cat` does not provide a portable report-flushing contract for this use,
-and `stdbuf` only controls stdio buffering for programs that use stdio in the
-relevant path. With `bs=14 iflag=fullblock`, `dd` writes complete report-sized
-blocks as they are read from hidraw and keeps the live counter close to the
-actual device stream. The script must install `INT`, `TERM`, and `EXIT` traps
-that terminate and reap the active capture process before writing `README.md`
-or exiting, so Ctrl-C cannot leave a background reader attached to the device.
+The bash script handles everything around the capture: arg parsing,
+prompts, run-directory creation, manifest/README/SHA256SUMS, and signal
+traps. The Python helper handles the live byte stream and the detection
+state machine. The split puts the byte-by-byte stream processing in a
+language with non-blocking `select`/`read` and clean integer/byte
+arithmetic, while leaving overall control flow in bash.
 
-The capture may still end with a trailing partial HID report depending on
-exactly when termination interrupts a read; the analysis step must detect and
-report any trailing byte count that is not a complete 14-byte record.
+### Baseline action mode (00, 57)
 
-### Live report counter
+1. The script prints the action's positioning instructions and waits for
+   the operator to press `Enter` (`s` and `q` are also accepted at this
+   prompt and behave per §6).
+2. On `Enter`, the helper starts capturing and updates a single live
+   status line:
 
-While capture is running, the script polls the size of the in-flight `.bin`
-file periodically and updates a single status line in place
-(`printf "\r…"`):
+   ```
+   [00 baseline-pre] baseline… 187/250 reports                         [r=redo s=skip q=quit]
+   ```
 
-```
-[03 estop-up] capturing… 187 reports (2618 bytes)   [Enter=accept r=redo s=skip q=quit]
-```
+3. When `target_baseline_reports` complete reports have been written
+   (default: 250, about 5 seconds at the device's nominal report rate),
+   the helper stops, the script generates the hex view, accepts, and
+   advances.
+4. `r`/`s`/`q` keys are honored throughout the capture and behave per §6.
 
-The counter helps the operator pace analog sweeps. It uses simple integer
-division (`bytes / 14 = complete reports`); any remainder is displayed
-separately as partial bytes. No parsing of the binary is performed by the
-counter.
+### Non-baseline action mode (01–56)
+
+1. The script prints the framing instruction (§5) and the per-action
+   prompt, then immediately starts the capture with no further key press.
+2. The helper accumulates the first `pre_action_window` complete reports
+   (default: 50, about 1 second) into the **rest band**: for each byte
+   index `0..13`, the set of distinct values seen during that window. The
+   live status line shows progress through the rest-band-learning phase:
+
+   ```
+   [01 range-up] learning rest band… 32/50 reports                     [r=redo s=skip q=quit]
+   ```
+
+3. After the rest-band-learning phase the helper watches each new report.
+   An **onset** is declared when `onset_threshold` consecutive reports
+   each contain at least one byte whose value is outside that byte's rest
+   band (default: 3 consecutive reports, ~60 ms at the nominal report
+   rate). The status line transitions to:
+
+   ```
+   [01 range-up] capturing… 87 reports — waiting for action…           [r=redo s=skip q=quit]
+   ```
+
+4. After onset, the helper watches for **settle**: a window of
+   `settle_threshold` consecutive reports during which each byte's value
+   is stable (per-byte max minus min ≤ 1 across the window) (default: 25
+   consecutive reports, ~0.5 seconds at the nominal report rate). The
+   status line shows:
+
+   ```
+   [01 range-up] capturing… 134 reports — onset at 102, waiting for rest…  [r=redo s=skip q=quit]
+   ```
+
+5. When settle is achieved, the helper stops, the script generates the
+   hex view, accepts, and advances.
+6. `r`/`s`/`q` keys are honored throughout the capture and behave per §6.
+
+### Timeouts
+
+The helper enforces a single per-action time budget,
+`max_action_time` (default: 60 seconds), measured from the start of the
+capture. If the budget elapses while either:
+
+- no onset has been detected, or
+- onset has been detected but settle has not,
+
+the helper stops the capture, discards the in-flight `.bin`, and the
+script prints a short diagnostic indicating which condition fired
+(`no input detected` or `action did not return to rest`) followed by a
+prompt with `r`/`s`/`q` only. The operator's choice determines the next
+step. Successive timeouts on the same action just re-display the same
+prompt; there is no automatic skip.
+
+### Tuning parameters
+
+All parameters are settable on the command line and have conservative
+defaults appropriate for the device's nominal report rate (~50 Hz):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--target-baseline-reports N` | 250 | Number of complete reports to capture per baseline action before auto-accepting. |
+| `--pre-action-window N` | 50 | Number of complete reports used to learn the rest band at the start of each non-baseline action. |
+| `--onset-threshold N` | 3 | Number of consecutive out-of-rest-band reports required to declare onset. |
+| `--settle-threshold N` | 25 | Number of consecutive stable reports required to declare settle after onset. |
+| `--max-action-time S` | 60 | Per-action time budget, in seconds, after which the capture is aborted and the operator is re-prompted. |
+
+The defaults are starting points; expect to tune them after the first real
+run. The values used for a run are recorded in `manifest.txt` so analysis
+output is interpretable in the context of the parameters that produced it.
 
 ### Hex view generation
 
 On accept: `xxd -c 14 "$run_dir/$NN-$slug.bin" > "$run_dir/$NN-$slug.hex"`.
-This is synchronous and runs after the capture process has been reaped, so the
+This is synchronous and runs after the capture has been stopped, so the
 `.bin` is final.
 
 ### Pre-flight checks at script start
 
 1. `[ -r "$DEVICE" ]` — fail with udev/plugdev guidance if not readable.
-2. `command -v xxd >/dev/null`, `command -v dd >/dev/null`, and
-   `dd if=/dev/null of=/dev/null bs=14 iflag=fullblock status=none count=0`
-   — fail clearly if `xxd` is absent or if the available `dd` does not
-   support the flags used by the capture command.
+2. `command -v xxd >/dev/null`, `command -v python3 >/dev/null` — fail
+   clearly if either tool is absent.
 3. Under auto-detect, exactly one RailDriver must match. Zero matches and
    multiple matches are both errors; multiple matches must be listed in the
    diagnostic.
@@ -355,32 +431,51 @@ This is synchronous and runs after the capture process has been reaped, so the
 
 ### `manifest.txt`
 
-Created **before** any captures and finalized after the last action, `q`, or a
-signal-triggered shutdown. Format:
+Created **before** any captures and finalized after the last action, `q`,
+or a signal-triggered shutdown. Format:
 
 ```
-captured_at:    2026-04-30T20:45:33Z
-hostname:       <hostname>
-uname:          <output of uname -a>
-device:         /dev/hidraw0
-hid_id:         0003:000005F3:000000D2
-script_version: <git SHA short, or "uncommitted">
-operator:       <value of --operator, or "(not specified)">
-run_dir:        run-NNN
-notes:          <value of --notes, or empty>
-run_complete:   yes | no
-ended_by:       completed | operator-quit | signal
-last_action:    <last action number reached, or empty>
+captured_at:               2026-04-30T20:45:33Z
+hostname:                  <hostname>
+uname:                     <output of uname -a>
+device:                    /dev/hidraw0
+hid_id:                    0003:000005F3:000000D2
+script_version:            <git SHA short, or "uncommitted">
+operator:                  <value of --operator, or "(not specified)">
+run_dir:                   run-NNN
+notes:                     <value of --notes, or empty>
+target_baseline_reports:   250
+pre_action_window:         50
+onset_threshold:           3
+settle_threshold:          25
+max_action_time:           60
+run_complete:              yes | no
+ended_by:                  completed | operator-quit | signal
+last_action:               <last action number reached, or empty>
 ```
 
 ### `README.md`
 
 Written **after** the last action (or on `q`). The header repeats
-`run_complete`, `ended_by`, and `last_action` from `manifest.txt`. The body is
-a markdown table with columns `#`, `slug`, `prompt`, `file`, `bytes`,
+`run_complete`, `ended_by`, and `last_action` from `manifest.txt`. The body
+is a markdown table with columns `#`, `slug`, `prompt`, `file`, `bytes`,
 `reports`, `partial_trailing_bytes`, and `status`. `status` is one of
 `captured`, `skipped`, or `not-reached` (for actions after a `q` quit or
 signal-triggered shutdown). Missing values appear as `—`.
+
+### Error handling
+
+If the Python helper exits abnormally (non-zero exit code other than the
+defined outcomes), the script prints the exit code and a short diagnostic,
+keeps any partial `.bin` that was written so far, and re-displays the
+action prompt with `r`/`s`/`q` so the operator can decide how to proceed.
+The script must install `INT`, `TERM`, and `EXIT` traps that terminate
+and reap the helper before writing `README.md` or exiting, so Ctrl-C
+cannot leave the helper attached to the device.
+
+The capture may still end with a trailing partial HID report depending on
+exactly when termination interrupts a read; the analysis step must detect
+and report any trailing byte count that is not a complete 14-byte record.
 
 ## 8. Evidence retention
 
