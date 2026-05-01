@@ -131,15 +131,15 @@ not independently re-checkable.
 For actions 01–52, the script shows a shared framing instruction before the
 per-action prompt:
 
-> Leave all controls at rest for about 0.5 seconds after capture starts.
+> Leave all controls at rest briefly after capture starts.
 > Perform the requested action. After releasing or returning the control to
-> rest, wait about 0.5 seconds before pressing Enter.
+> rest, wait briefly before pressing Enter.
 
 ### Phase 0 — pre-baseline (1 action)
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured, then press Enter. |
+| 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
 
 ### Phase 1 — named switches and buttons (16 actions)
 
@@ -243,7 +243,7 @@ belong to either bail-off position.
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured, then press Enter. |
+| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
 
 ## 6. Operator key bindings
 
@@ -307,17 +307,17 @@ report any trailing byte count that is not a complete 14-byte record.
 ### Live report counter
 
 While capture is running, the script polls the size of the in-flight `.bin`
-file every 250 ms and updates a single status line in place
+file periodically and updates a single status line in place
 (`printf "\r…"`):
 
 ```
 [03 estop-up] capturing… 187 reports (2618 bytes)   [Enter=accept r=redo s=skip q=quit]
 ```
 
-The counter helps the operator pace analog sweeps (a 5-second sweep should
-show ~600+ reports before pressing Enter). It uses simple integer division
-(`bytes / 14 = complete reports`); any remainder is displayed separately as
-partial bytes. No parsing of the binary is performed by the counter.
+The counter helps the operator pace analog sweeps. It uses simple integer
+division (`bytes / 14 = complete reports`); any remainder is displayed
+separately as partial bytes. No parsing of the binary is performed by the
+counter.
 
 ### Hex view generation
 
@@ -437,10 +437,12 @@ For a single run directory, the script emits one row for every defined action
 3. For each captured non-baseline action, build an action-local rest model
    from the framing that the operator captured at the start and end of the
    action:
-   - Use the first 50 complete reports and the last 50 complete reports as
-     the local rest windows. The windows must not overlap.
-   - If the action has fewer than 100 complete reports, set
-     `local_rest_usable=no`, add `insufficient-local-rest` to
+   - Use the leading and trailing complete reports as the local rest windows.
+     The window size and the minimum report count for local rest to be usable
+     are implementation details determined after the device's actual report
+     rate is known.
+   - If the action has too few complete reports for non-overlapping windows,
+     set `local_rest_usable=no`, add `insufficient-local-rest` to
      `quality_flags`, and use only the global baseline as the rest model.
    - If the leading and trailing local rest windows disagree for a byte
      (i.e. the set of distinct byte values observed in the leading window
@@ -453,11 +455,11 @@ For a single run directory, the script emits one row for every defined action
      the union of that byte's global baseline values and action-local rest
      values. When local rest is not usable, the effective rest value set is
      the global baseline value set.
-4. For each captured action, identify changed byte indices using a minimum
-   changed-report threshold. Byte index `i` changed if at least three
-   complete action reports contain a value for byte `i` outside the effective
-   rest value set. One or two outside-rest reports do not mark the byte as
-   changed; instead they are recorded in `quality_flags` as
+4. For each captured action, identify changed byte indices. Byte index `i`
+   changed if more than a trivial number of complete action reports contain a
+   value for byte `i` outside the effective rest value set. The exact
+   threshold is an implementation detail. Reports below the threshold do not
+   mark the byte as changed; instead they are recorded in `quality_flags` as
    `byte<i>=below-threshold-outlier:<count>`. This prevents a single noisy
    report from becoming a false button or switch mapping while still making
    the anomaly visible.
@@ -484,8 +486,7 @@ machine-readable.
 
 Output: `run-NNN/analysis.md` — header fields followed by a markdown table,
 one row per defined action. The header records
-`baseline_source: pre+post | pre-only | post-only`,
-`local_rest_window_reports: 50`, and `min_changed_reports: 3`. The table has
+`baseline_source: pre+post | pre-only | post-only`. The table has
 columns:
 
 | column | meaning |
@@ -497,7 +498,7 @@ columns:
 | `report_count` | Number of complete 14-byte HID reports in the action's `.bin`. |
 | `partial_trailing_bytes` | Number of ignored trailing bytes after the last complete 14-byte report. |
 | `local_rest_usable` | `yes` if the action had non-overlapping leading and trailing rest windows; otherwise `no`. Empty for baseline, skipped, and not-reached actions. |
-| `byte_indices_changed` | Comma-separated list of byte indices (0..13) whose values went outside the effective rest value set at least three times during the action. Empty if no byte changed. |
+| `byte_indices_changed` | Comma-separated list of byte indices (0..13) whose values went outside the effective rest value set more than a trivial number of times during the action. Empty if no byte changed. |
 | `bit_masks` | For each changed byte, the bit mask of bits that changed relative to that byte's modal baseline value, in the form `byte<i>=0x<hex>`; multiple entries comma-separated. |
 | `baseline_values` | For each changed byte, the global baseline value set, in the form `byte<i>={0x<hex>,0x<hex>,...}`. |
 | `local_rest_values` | For each changed byte, the action-local rest value set, in the form `byte<i>={0x<hex>,0x<hex>,...}`. |
