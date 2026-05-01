@@ -140,7 +140,7 @@ per-action prompt:
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 00 | baseline-pre     | Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
+| 00 | baseline-pre     | Set all analog controls to their rest positions: **Reverser** to Neutral, **Throttle / Dynamic Brake** to center/idle, **Auto Brake** to RELEASED, **Independent Brake** to release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
 
 ### Phase 1 — named switches and buttons (16 actions)
 
@@ -244,7 +244,7 @@ belong to either bail-off position.
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 53 | baseline-post    | Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
+| 53 | baseline-post    | Return all analog controls to the same rest positions used for the pre-baseline: **Reverser** Neutral, **Throttle** center, **Auto Brake** RELEASED, **Independent Brake** release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
 
 ## 6. Operator key bindings
 
