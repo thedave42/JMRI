@@ -79,3 +79,8 @@ RemoteSystemsTempFiles
 # OS junk files
 [Tt]humbs.db
 *.DS_Store
+
+# RailDriver capture runs (see docs/rpi-raildriver/capture-plan.md §4 / §8).
+# Exploratory runs are operator-specific and can be large. Reference runs
+# used as evidence should be archived or attached separately, not committed.
+docs/rpi-raildriver/captures/
