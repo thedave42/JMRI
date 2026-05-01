@@ -140,7 +140,7 @@ per-action prompt:
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 00 | baseline-pre     | Set all analog controls to their rest positions: **Reverser** to Neutral, **Throttle / Dynamic Brake** to center/idle, **Auto Brake** to RELEASED, **Independent Brake** to release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
+| 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
 
 ### Phase 1 — named switches and buttons (16 actions)
 
@@ -231,10 +231,10 @@ belong to either bail-off position.
 
 | NN | slug              | prompt |
 |----|-------------------|--------|
-| 45 | reverser-sweep    | Move the **Reverser** slowly from full Forward to full Reverse, pausing briefly at each end, then return to Neutral. Press Enter. |
-| 46 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to full Dynamic Brake (passing through center), pausing briefly at each end, then return to center. Press Enter. |
+| 45 | reverser-sweep    | Move the **Reverser** slowly from full Forward to full Reverse, pausing briefly at each end, then return to full Forward. Press Enter. |
+| 46 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to full Dynamic Brake, pausing briefly at each end, then return to full Throttle. Press Enter. |
 | 47 | auto-brake-sweep  | Move the **Auto Brake** slowly from fully RELEASED to EMG, pausing briefly at each end, then return to RELEASED. Press Enter. |
-| 48 | indep-brake-sweep | Move the **Independent Brake** through its brake range only, from release to full application, pausing briefly at each end, then return to release. Do not use either bail-off position during this capture. Press Enter. |
+| 48 | indep-brake-sweep | Move the **Independent Brake** through its brake range only, from full release to full application, pausing briefly at each end, then return to full release. Do not use either bail-off position during this capture. Press Enter. |
 | 49 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
 | 50 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
 | 51 | wiper-cycle       | Move the **Wiper** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
@@ -244,7 +244,7 @@ belong to either bail-off position.
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 53 | baseline-post    | Return all analog controls to the same rest positions used for the pre-baseline: **Reverser** Neutral, **Throttle** center, **Auto Brake** RELEASED, **Independent Brake** release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
+| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
 
 ## 6. Operator key bindings
 
