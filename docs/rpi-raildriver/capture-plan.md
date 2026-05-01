@@ -294,8 +294,8 @@ separate actions.
 | 48 | indep-brake-sweep | Move the **Independent Brake** smoothly through its brake range only, from full release to full application, then return to full release. Do not use either bail-off position during this capture. |
 | 49 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. |
 | 50 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. |
-| 51 | wiper-cycle       | Move the **Wiper** smoothly through its full physical range and back. |
-| 52 | lights-cycle      | Move the **Lights** smoothly through its full physical range and back. |
+| 51 | wiper-cycle       | Move the **Wiper** smoothly from Off to Full (passing through Slow), then return to Off. |
+| 52 | lights-cycle      | Move the **Lights** smoothly from Off to Full (passing through Dim), then return to Off. |
 
 ### Phase 4 — post-baseline (1 action)
 
@@ -604,9 +604,31 @@ For a single run directory, the script emits one row for every defined action
      `byte<i>=local-rest-drift`. The script still reports the descriptive
      data; it does not suppress the action.
    - When local rest is usable, the effective rest value set for a byte is
-     the union of that byte's global baseline values and action-local rest
-     values. When local rest is not usable, the effective rest value set is
-     the global baseline value set.
+     the union of that byte's global baseline values and the *filtered*
+     action-local rest values. The filter keeps a local-rest value `v` for
+     byte `i` only if `v` lies within `baseline_span(i)` LSB of some baseline
+     value for that byte, where `baseline_span(i)` is the difference between
+     the maximum and minimum global baseline values for byte `i`. This is
+     data-driven (no byte-layout assumption — §9.4) and handles two distinct
+     cases symmetrically:
+       - Stable channels (`baseline_span = 0`, e.g. button bytes whose
+         baseline value set is a singleton): the filter is exact. Asserted
+         values that leak into a local-rest window (for example, when
+         settle fired one report after a button release and the trailing
+         window picked up the last asserted report) are **not** absorbed
+         into the rest set, so the action is still classified correctly.
+       - Jittery channels (`baseline_span ≥ 1`, e.g. analog ADCs that drift
+         between baseline-pre and baseline-post): the filter tolerates
+         drift up to the same span beyond the baseline range, so genuine
+         drift observed in the local-rest windows is absorbed and not
+         misreported as asserted.
+
+     The drift quality flag (`byte<i>=local-rest-drift`) is still emitted
+     whenever local rest disagrees with global baseline; only the
+     effective-rest computation changes.
+
+     When local rest is not usable, the effective rest value set is the
+     global baseline value set.
 4. For each captured action, identify changed byte indices. Byte index `i`
    changed if more than a trivial number of complete action reports contain a
    value for byte `i` outside the effective rest value set. The exact
