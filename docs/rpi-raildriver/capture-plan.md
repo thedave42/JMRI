@@ -27,7 +27,9 @@ shape but do not pair any HID byte to any physical control, because no record
 was kept of which control was being touched at which moment in the stream.
 
 This document specifies a structured protocol — capture plus analysis —
-whose explicit goal is to produce three data products from the device:
+whose explicit goal is to produce a per-input mapping from the device that
+proves which byte in the 14-byte HID report corresponds to which physical
+control, and documents the observable states of each input:
 
 1. For every momentary switch, button, and hat direction in
    `control-inventory.md`: the set of byte indices in the 14-byte report
@@ -52,7 +54,8 @@ For every labeled control in `control-inventory.md`:
 - **Switches and buttons** — capture HID reports while the control is held in
   each of its asserted states, with rest-state framing immediately before and
   after. SPDT switches get one capture per direction. The hat switch gets one
-  capture per cardinal direction. Each individual button gets its own capture.
+  capture per direction (8 directions: 4 cardinal plus 4 diagonal). Each
+  individual button gets its own capture.
 - **Analog controls** — capture HID reports while the control is swept through
   its full physical range, briefly pausing at the mechanical extremes so the
   minimum and maximum byte values are clearly visible.
@@ -65,7 +68,7 @@ For every labeled control in `control-inventory.md`:
 Two bash scripts live under `docs/rpi-raildriver/`:
 
 - **`rd-record.sh`** — operator-facing capture script. Walks the operator
-  through the fixed, numbered list of 54 actions in §5 and produces one
+  through the fixed, numbered list of 58 actions in §5 and produces one
   `run-NNN/` directory of raw HID byte streams plus hex views, as described
   in §4. Operator interaction is detailed in §6, and the capture mechanism
   is detailed in §7.
@@ -108,8 +111,8 @@ docs/rpi-raildriver/captures/
 │   ├── 01-range-up.bin
 │   ├── 01-range-up.hex
 │   ├── …
-│   ├── 53-baseline-post.bin
-│   ├── 53-baseline-post.hex
+│   ├── 57-baseline-post.bin
+│   ├── 57-baseline-post.hex
 │   ├── NN-<slug>.skipped         # zero-byte sentinel for skipped actions
 │   │                             # (no .bin or .hex)
 │   ├── SHA256SUMS                # checksums for retained run artifacts
@@ -134,9 +137,9 @@ mapping must retain enough material for another person to verify it: the raw
 `.bin` files, the generated `.hex` files, `manifest.txt`, `README.md`, the
 analysis outputs, and checksum files covering all retained artifacts.
 
-## 5. Action list (54 actions, fixed order)
+## 5. Action list (58 actions, fixed order)
 
-For actions 01–52, the script shows a shared framing instruction before the
+For actions 01–56, the script shows a shared framing instruction before the
 per-action prompt:
 
 > Leave all controls at rest briefly after capture starts.
@@ -149,7 +152,7 @@ per-action prompt:
 |----|------------------|--------|
 | 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
 
-### Phase 1 — named switches and buttons (16 actions)
+### Phase 1 — named switches and buttons (20 actions)
 
 | NN | slug         | physical control                           | prompt |
 |----|--------------|--------------------------------------------|--------|
@@ -166,9 +169,13 @@ per-action prompt:
 | 11 | spdt42-up    | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) UP and hold for ~1 second, then release. Press Enter. |
 | 12 | spdt42-down  | user-assignable SPDT (item 42)             | Push the **user-assignable SPDT** (item 42) DOWN and hold for ~1 second, then release. Press Enter. |
 | 13 | hat43-up     | hat switch (item 43)                       | Push the **hat switch** (item 43) UP and hold for ~1 second, then release. Press Enter. |
-| 14 | hat43-right  | hat switch (item 43)                       | Push the **hat switch** (item 43) RIGHT and hold for ~1 second, then release. Press Enter. |
-| 15 | hat43-down   | hat switch (item 43)                       | Push the **hat switch** (item 43) DOWN and hold for ~1 second, then release. Press Enter. |
-| 16 | hat43-left   | hat switch (item 43)                       | Push the **hat switch** (item 43) LEFT and hold for ~1 second, then release. Press Enter. |
+| 14 | hat43-up-right | hat switch (item 43)                     | Push the **hat switch** (item 43) UP-RIGHT and hold for ~1 second, then release. Press Enter. |
+| 15 | hat43-right  | hat switch (item 43)                       | Push the **hat switch** (item 43) RIGHT and hold for ~1 second, then release. Press Enter. |
+| 16 | hat43-down-right | hat switch (item 43)                   | Push the **hat switch** (item 43) DOWN-RIGHT and hold for ~1 second, then release. Press Enter. |
+| 17 | hat43-down   | hat switch (item 43)                       | Push the **hat switch** (item 43) DOWN and hold for ~1 second, then release. Press Enter. |
+| 18 | hat43-down-left | hat switch (item 43)                    | Push the **hat switch** (item 43) DOWN-LEFT and hold for ~1 second, then release. Press Enter. |
+| 19 | hat43-left   | hat switch (item 43)                       | Push the **hat switch** (item 43) LEFT and hold for ~1 second, then release. Press Enter. |
+| 20 | hat43-up-left | hat switch (item 43)                      | Push the **hat switch** (item 43) UP-LEFT and hold for ~1 second, then release. Press Enter. |
 
 ### Phase 2 — front-edge button grid, items 14..41 (28 actions)
 
@@ -193,41 +200,41 @@ Orientation diagram:
 ```
 operator faces the controller from below this diagram
 
-back row:  17 18 19 20 21 22 23 24 25 26 27 28 29 30
-front row: 31 32 33 34 35 36 37 38 39 40 41 42 43 44
+back row:  21 22 23 24 25 26 27 28 29 30 31 32 33 34
+front row: 35 36 37 38 39 40 41 42 43 44 45 46 47 48
            left --------------------------------> right
 ```
 
 | NN  | slug             | prompt |
 |-----|------------------|--------|
-| 17  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
-| 18  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 19  | btn-back-03      | Press only the **back-row, column 3** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 20  | btn-back-04      | Press only the **back-row, column 4** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 21  | btn-back-05      | Press only the **back-row, column 5** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 22  | btn-back-06      | Press only the **back-row, column 6** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 23  | btn-back-07      | Press only the **back-row, column 7** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 24  | btn-back-08      | Press only the **back-row, column 8** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 25  | btn-back-09      | Press only the **back-row, column 9** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 26  | btn-back-10      | Press only the **back-row, column 10** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 27  | btn-back-11      | Press only the **back-row, column 11** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 28  | btn-back-12      | Press only the **back-row, column 12** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 29  | btn-back-13      | Press only the **back-row, column 13** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 30  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
-| 31  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
-| 32  | btn-front-02     | Press only the **front-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 33  | btn-front-03     | Press only the **front-row, column 3** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 34  | btn-front-04     | Press only the **front-row, column 4** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 35  | btn-front-05     | Press only the **front-row, column 5** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 36  | btn-front-06     | Press only the **front-row, column 6** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 37  | btn-front-07     | Press only the **front-row, column 7** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 38  | btn-front-08     | Press only the **front-row, column 8** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 39  | btn-front-09     | Press only the **front-row, column 9** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 40  | btn-front-10     | Press only the **front-row, column 10** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 41  | btn-front-11     | Press only the **front-row, column 11** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 42  | btn-front-12     | Press only the **front-row, column 12** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 43  | btn-front-13     | Press only the **front-row, column 13** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
-| 44  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
+| 21  | btn-back-01      | Press only the **back-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
+| 22  | btn-back-02      | Press only the **back-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 23  | btn-back-03      | Press only the **back-row, column 3** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 24  | btn-back-04      | Press only the **back-row, column 4** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 25  | btn-back-05      | Press only the **back-row, column 5** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 26  | btn-back-06      | Press only the **back-row, column 6** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 27  | btn-back-07      | Press only the **back-row, column 7** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 28  | btn-back-08      | Press only the **back-row, column 8** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 29  | btn-back-09      | Press only the **back-row, column 9** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 30  | btn-back-10      | Press only the **back-row, column 10** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 31  | btn-back-11      | Press only the **back-row, column 11** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 32  | btn-back-12      | Press only the **back-row, column 12** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 33  | btn-back-13      | Press only the **back-row, column 13** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 34  | btn-back-14      | Press only the **back-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
+| 35  | btn-front-01     | Press only the **front-row, leftmost** button (column 1). Hold for ~1 second, then release. Press Enter. |
+| 36  | btn-front-02     | Press only the **front-row, column 2** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 37  | btn-front-03     | Press only the **front-row, column 3** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 38  | btn-front-04     | Press only the **front-row, column 4** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 39  | btn-front-05     | Press only the **front-row, column 5** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 40  | btn-front-06     | Press only the **front-row, column 6** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 41  | btn-front-07     | Press only the **front-row, column 7** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 42  | btn-front-08     | Press only the **front-row, column 8** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 43  | btn-front-09     | Press only the **front-row, column 9** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 44  | btn-front-10     | Press only the **front-row, column 10** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 45  | btn-front-11     | Press only the **front-row, column 11** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 46  | btn-front-12     | Press only the **front-row, column 12** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 47  | btn-front-13     | Press only the **front-row, column 13** button (counting from the left). Hold for ~1 second, then release. Press Enter. |
+| 48  | btn-front-14     | Press only the **front-row, rightmost** button (column 14). Hold for ~1 second, then release. Press Enter. |
 
 ### Phase 3 — analog / multi-position sweeps (8 actions)
 
@@ -236,20 +243,20 @@ separate actions.
 
 | NN | slug              | prompt |
 |----|-------------------|--------|
-| 45 | reverser-sweep    | Move the **Reverser** slowly from full Forward to full Reverse, pausing briefly at each end, then return to full Forward. Press Enter. |
-| 46 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to full Dynamic Brake, pausing briefly at each end, then return to full Throttle. Press Enter. |
-| 47 | auto-brake-sweep  | Move the **Auto Brake** slowly from fully RELEASED to EMG, pausing briefly at each end, then return to RELEASED. Press Enter. |
-| 48 | indep-brake-sweep | Move the **Independent Brake** through its brake range only, from full release to full application, pausing briefly at each end, then return to full release. Do not use either bail-off position during this capture. Press Enter. |
-| 49 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
-| 50 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
-| 51 | wiper-cycle       | Move the **Wiper** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
-| 52 | lights-cycle      | Move the **Lights** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
+| 49 | reverser-sweep    | Move the **Reverser** slowly from full Forward to full Reverse, pausing briefly at each end, then return to full Forward. Press Enter. |
+| 50 | throttle-sweep    | Move the **Throttle / Dynamic Brake** slowly from full Throttle to full Dynamic Brake, pausing briefly at each end, then return to full Throttle. Press Enter. |
+| 51 | auto-brake-sweep  | Move the **Auto Brake** slowly from fully RELEASED to EMG, pausing briefly at each end, then return to RELEASED. Press Enter. |
+| 52 | indep-brake-sweep | Move the **Independent Brake** through its brake range only, from full release to full application, pausing briefly at each end, then return to full release. Do not use either bail-off position during this capture. Press Enter. |
+| 53 | bailoff-1         | Move the **Independent Brake bail-off** control to the first bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
+| 54 | bailoff-2         | Move the **Independent Brake bail-off** control to the second / farthest bail-off position, hold for ~1 second, then release back to rest. Press Enter. |
+| 55 | wiper-cycle       | Move the **Wiper** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
+| 56 | lights-cycle      | Move the **Lights** slowly through its full physical range and back, pausing briefly at the mechanical extremes. Press Enter. |
 
 ### Phase 4 — post-baseline (1 action)
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
+| 57 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait several seconds until the live counter stabilizes, then press Enter. |
 
 ## 6. Operator key bindings
 
@@ -408,21 +415,21 @@ labels.
 ### 9.1 Per-run analysis
 
 For a single run directory, the script emits one row for every defined action
-`00`..`53`. It processes any captured `.bin` files together with that run's
-`00-baseline-pre.bin` and `53-baseline-post.bin` as follows:
+`00`..`57`. It processes any captured `.bin` files together with that run's
+`00-baseline-pre.bin` and `57-baseline-post.bin` as follows:
 
 1. Split each `.bin` into complete 14-byte reports. If a file length is not
    divisible by 14, ignore the trailing partial bytes for report analysis and
    record their count in `partial_trailing_bytes`.
 2. Build a global baseline model from all complete reports in
-   `00-baseline-pre.bin` and `53-baseline-post.bin`. For each byte index,
+   `00-baseline-pre.bin` and `57-baseline-post.bin`. For each byte index,
    record:
    - the set of distinct baseline byte values;
    - the modal baseline value (most common value; lowest value wins ties);
    - the baseline minimum and maximum.
 
    Missing or empty baselines:
-   - If both `00-baseline-pre.bin` and `53-baseline-post.bin` are missing,
+   - If both `00-baseline-pre.bin` and `57-baseline-post.bin` are missing,
      skipped, or contain zero complete 14-byte reports, the script must
      refuse to analyze the run, write a single-line `analysis.md` explaining
      why, and exit non-zero.
@@ -497,7 +504,7 @@ columns:
 
 | column | meaning |
 |--------|---------|
-| `action#` | The action's stable index, `00`..`53`. |
+| `action#` | The action's stable index, `00`..`57`. |
 | `slug` | The action's slug without its numeric prefix (e.g. `range-up`). |
 | `file_stem` | The expected file stem, `NN-<slug>` (e.g. `01-range-up`). |
 | `status` | `captured`, `skipped`, or `not-reached`. |
@@ -523,7 +530,7 @@ change. The slug is reported as captured; the operator's `slug → physical
 control` mapping is documented in §5 of this plan and in `README.md` of each
 run, both of which are produced earlier in the workflow.
 
-Baseline actions `00` and `53` appear in the table with `status=captured`
+Baseline actions `00` and `57` appear in the table with `status=captured`
 when their `.bin` files exist, but their change-specific data columns are
 empty. Skipped actions appear in the table with `status=skipped` and empty
 data columns. Actions whose `.bin` is missing (e.g. interrupted mid-action)
@@ -553,38 +560,87 @@ does not annotate any run as correct or incorrect. For analog extrema it does
 not reduce the data to a pass/fail boolean; it reports the per-run values and
 their spread for human review.
 
-### 9.3 Constraints on the analysis script
+### 9.4 Mapping output
+
+For each analyzed run, the script also writes `run-NNN/mapping.md` (and
+`mapping.csv`). This is the primary human-readable deliverable — the
+document that proves which byte corresponds to which input and records
+the observed states.
+
+The script reads `control-inventory.md` to obtain the input name and type
+for each control, then joins that with the per-action analysis data using
+the slug-to-inventory correspondence defined in §5. Each inventory input
+gets one section in the mapping, containing:
+
+**For buttons and switches (including hat directions):**
+
+| field | meaning |
+|-------|---------|
+| `input` | Control name from the inventory (e.g. `Bell`, `Range`, `Hat switch (item 43)`). |
+| `inventory_item` | Item number from the inventory, or physical position for the button grid. |
+| `type` | Control type from the inventory (e.g. `Button`, `SPDT momentary`, `Hat switch`). |
+| `state` | The asserted state captured (e.g. `pressed`, `up`, `down`, `up-right`). |
+| `byte_index` | The byte index (0..13) that changed. If multiple bytes changed, one row per byte. |
+| `rest_value` | The byte value at rest (hex). |
+| `asserted_value` | The byte value when asserted (hex). |
+| `bit_mask` | The bits that differ between rest and asserted (hex). |
+
+**For analog controls:**
+
+| field | meaning |
+|-------|---------|
+| `input` | Control name from the inventory (e.g. `Reverser`, `Throttle / Dynamic Brake`). |
+| `inventory_item` | Item number from the inventory. |
+| `type` | Control type from the inventory. |
+| `byte_index` | The byte index (0..13) that changed. If multiple bytes changed, one row per byte. |
+| `min_value` | The minimum byte value observed across the sweep (hex). |
+| `max_value` | The maximum byte value observed across the sweep (hex). |
+
+The mapping document is ordered by inventory item number, with the
+button grid ordered by physical position. Each entry is derived entirely
+from the captured data; the inventory supplies only the name and type.
+
+If an action was skipped or not reached, the corresponding mapping entry
+says `no data captured` rather than omitting the input.
+
+### 9.5 Constraints on the analysis script
 
 - The script must not reference, compare to, or be aware of any prior
-  claim about the report layout — including, but not limited to, the
+  claim about the *byte layout* — including, but not limited to, the
   byte-13 claim in `plan.md` §1, the `i >= 7` treatment in
   `RailDriverMenuItem.java`, and any inventory-item-to-physical-position
   mapping supplied outside the run directory.
-- The script must not generate prose conclusions, mappings to inventory
-  item numbers, or interpretive statements about what the data means.
-- The script's only inputs are `run-NNN/` directories produced by
-  `rd-record.sh` and command-line flags; it must not read `plan.md`,
-  `control-inventory.md`, or any source file under `java/`.
-- The script's only outputs are the per-run analysis files, cross-run analysis
-  files, and checksum files described above.
+- The script reads `docs/rpi-raildriver/control-inventory.md` to obtain
+  input names and types so it can produce the mapping output (§9.4). It
+  must not use the inventory to make assumptions about which bytes
+  correspond to which inputs — that is determined solely from the captured
+  data.
+- The script must not generate prose conclusions or interpretive statements
+  about what the data means beyond the structured mapping.
+- The script must not read `plan.md` or any source file under `java/`.
+- The script's only outputs are the per-run analysis files, mapping files,
+  cross-run analysis files, and checksum files described above.
 
-### 9.4 Command-line interface
+### 9.6 Command-line interface
 
 - `rd-analyze.sh` — with no arguments: scan
-  `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md` and
-  `analysis.csv`, and write the cross-run summary if more than one run
-  exists.
+  `docs/rpi-raildriver/captures/run-*/`, write each one's `analysis.md`,
+  `analysis.csv`, `mapping.md`, and `mapping.csv`, and write the cross-run
+  summary if more than one run exists.
 - `rd-analyze.sh --run-dir <path>` — analyze only the named run directory;
   no cross-run output.
 - `rd-analyze.sh --out <dir>` — write outputs under `<dir>` instead of next
   to the captures. Per-run output is written to
-  `<dir>/<run-basename>/analysis.md` and
-  `<dir>/<run-basename>/analysis.csv`; for example, analyzing
+  `<dir>/<run-basename>/analysis.md`,
+  `<dir>/<run-basename>/analysis.csv`,
+  `<dir>/<run-basename>/mapping.md`, and
+  `<dir>/<run-basename>/mapping.csv`; for example, analyzing
   `docs/rpi-raildriver/captures/run-001` writes
-  `<dir>/run-001/analysis.{md,csv}`. Cross-run output is written to
+  `<dir>/run-001/analysis.{md,csv}` and `<dir>/run-001/mapping.{md,csv}`. Cross-run output is written to
   `<dir>/cross-run-analysis.md` and `<dir>/cross-run-analysis.csv`.
   Without `--out`, per-run output defaults to
-  `<run-dir>/analysis.{md,csv}` and cross-run output defaults to
+  `<run-dir>/analysis.{md,csv}` and `<run-dir>/mapping.{md,csv}`, and
+  cross-run output defaults to
   `docs/rpi-raildriver/captures/cross-run-analysis.{md,csv}`.
 
 ## 10. Deliverables
@@ -593,11 +649,12 @@ their spread for human review.
 |----------|-------|
 | `docs/rpi-raildriver/capture-plan.md` | This document. |
 | `docs/rpi-raildriver/rd-record.sh`    | Implements §3–§7. |
-| `docs/rpi-raildriver/rd-analyze.sh`   | Implements §9. Reads `run-NNN/` directories produced by `rd-record.sh`; writes per-run `analysis.md` / `analysis.csv` and cross-run `cross-run-analysis.md` / `cross-run-analysis.csv`. Does not reference any prior claim. |
+| `docs/rpi-raildriver/rd-analyze.sh`   | Implements §9. Reads `run-NNN/` directories produced by `rd-record.sh` and `control-inventory.md`; writes per-run `analysis.md` / `analysis.csv`, `mapping.md` / `mapping.csv`, and cross-run `cross-run-analysis.md` / `cross-run-analysis.csv`. Does not reference any prior claim about the byte layout. |
 | `.gitignore` entry for `docs/rpi-raildriver/captures/` | Recommended default for exploratory runs; reference evidence sets can still be committed, attached to an issue/PR, or archived with `SHA256SUMS`. |
 
 This table lists source artifacts only. The per-run and cross-run output
-files (`analysis.md`, `analysis.csv`, `cross-run-analysis.md`,
+files (`analysis.md`, `analysis.csv`, `mapping.md`, `mapping.csv`,
+`cross-run-analysis.md`,
 `cross-run-analysis.csv`, `manifest.txt`, `README.md`, `SHA256SUMS` files,
 plus the raw `.bin` and `.hex` captures) are produced by the scripts at
 runtime and live under `docs/rpi-raildriver/captures/`.
