@@ -1,5 +1,24 @@
 # RailDriver structured capture protocol
 
+**Original Prompt**
+>  I'd like to capture data from the device, but do it in a much more structured way.  One that both proves empirically
+   which byte in the report layout corresponds to which input on the Raildriver controller, and that documents the
+  different possible states of each input on the controller. The file @docs/rpi-raildriver/control-inventory.md
+  contains a list of all of the labeled inputs on the Raildriver controller as well as what type of input each is.
+  For buttons and switches we need to capture information about what happens when they are activated - i.e. pressing a
+   button, pushing a spdt switch up or down, or pushing a hat switch in one of 8 directions.  For analog controls we
+  need to understand the minimum and maximum values through their range.  We do not need to know the values of the
+  stop points e.g. we don't need to know the idle position of the throttle, or the neutral position of the reverser.
+  Those values will need to be dynamically configured as part of a calibration process in the final implementation of
+  the plugin so the user can position the analog control apprpropriately and save the value of its position.  They are
+   not needed to empirically validate the input report layout.  Create a plan that allows me to capture this data
+  input by input.  Use the information in control-inventory.md to define the list of inputs. Create a script that
+  prompts me with an action to perform, has an unlimited amount of time for me to perform that action, and that will
+  continue to the next prompt (or redo the current capture) when the right key is press.  e.g. Press and release the
+  bell button for 1 second, and press Enter when done, or (r) to redo. The script should let me run it multiple times
+  and capture separate sets of data from each run so that I can review and compare them.  Present the plan to me and
+  wait for my feedback before proceeding.
+
 ## 1. Problem statement
 
 The existing captures under `docs/rpi-raildriver/test-data/` (five `xxd -c 14`
@@ -25,13 +44,6 @@ whose explicit goal is to produce three data products from the device:
    `control-inventory.md`: the set of byte indices that change when the
    control is moved through its physical range, and the minimum and maximum
    byte values observed at each such index.
-
-The protocol is designed to report *what the device does*. It is not
-designed to confirm or refute any prior claim about the report layout
-(including but not limited to the byte-13-is-constant claim in `plan.md` §1
-or the parser's `i >= 7` treatment in `RailDriverMenuItem.java`). Comparison
-of this protocol's output to any prior claim is a separate, manual,
-post-hoc human activity outside the scope of either script.
 
 ## 2. Scope
 
@@ -121,10 +133,6 @@ operator-specific and can be large. Any run cited as evidence for a published
 mapping must retain enough material for another person to verify it: the raw
 `.bin` files, the generated `.hex` files, `manifest.txt`, `README.md`, the
 analysis outputs, and checksum files covering all retained artifacts.
-
-That evidence set can be committed, attached to an issue/PR, or archived
-elsewhere, but analysis output alone is not sufficient evidence because it is
-not independently re-checkable.
 
 ## 5. Action list (54 actions, fixed order)
 
@@ -224,9 +232,7 @@ front row: 31 32 33 34 35 36 37 38 39 40 41 42 43 44
 ### Phase 3 — analog / multi-position sweeps (8 actions)
 
 The independent brake sweep and the two bail-off positions are captured as
-separate actions. A combined capture would show that some bytes changed, but
-would not prove which bytes belong to the brake range versus which bytes
-belong to either bail-off position.
+separate actions.
 
 | NN | slug              | prompt |
 |----|-------------------|--------|
