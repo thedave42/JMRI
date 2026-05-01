@@ -139,7 +139,7 @@ per-action prompt:
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
+| 00 | baseline-pre     | Set all analog controls to their baseline positions: **Reverser** to full Forward, **Throttle / Dynamic Brake** to full Throttle, **Auto Brake** to fully RELEASED, **Independent Brake** to full release (no bail-off), **Wiper** to Off, **Lights** to Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured, then press Enter. |
 
 ### Phase 1 — named switches and buttons (16 actions)
 
@@ -243,7 +243,7 @@ belong to either bail-off position.
 
 | NN | slug             | prompt |
 |----|------------------|--------|
-| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured (~3 s at 125 Hz), then press Enter. |
+| 53 | baseline-post    | Return all analog controls to the same baseline positions used for the pre-baseline: **Reverser** full Forward, **Throttle** full Throttle, **Auto Brake** fully RELEASED, **Independent Brake** full release (no bail-off), **Wiper** Off, **Lights** Off. Do not touch the controller. Wait until the live counter shows at least ~375 reports captured, then press Enter. |
 
 ## 6. Operator key bindings
 
