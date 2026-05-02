@@ -221,13 +221,63 @@ XML schema bumps to `version="2"`. The new `<semiRealistic>` subtree is added at
 
 Schema migration: existing files (`version="1"`) load cleanly because the loader's existing tolerance for missing elements treats `<semiRealistic>` as absent ⇒ defaults (= disabled, which is the bring-up-era fallback ⇒ no behaviour change for legacy files). The `version` attribute exists so a later schema-3 change can branch cleanly.
 
+### 2.6 Throttle-toolbar mode toggle (Jynstrument)
+
+The Settings window's `Enable semi-realistic mode` checkbox is the authoritative toggle, but burying it inside a tabbed dialog opened from the Debug menu is too much friction for a setting an operator might flip multiple times per session (e.g. switching between yard-switching mode and over-the-road mode). A second, faster path lives directly on the throttle window's toolbar.
+
+JMRI ships a documented extension framework called **Jynstruments** [[`jython/Jynstruments/README`](../../jython/Jynstruments/README)] for exactly this purpose. A `.jyn` folder containing a Jython class extending `jmri.jmrit.jython.Jynstrument` (which itself extends `JPanel`) can be installed onto the throttle window's toolbar; JMRI calls its `init()` and adds the panel as a toolbar item. The framework supports right-click popup menus and persists installed Jynstruments in the throttle layout XML. ~12 Jynstruments ship with JMRI today, all between 35-110 lines of Jython.
+
+#### What the Jynstrument exposes
+
+A single toolbar button:
+- **Icon** — green when semi-realistic mode is ON, grey when OFF. Two PNGs ship with the `.jyn` folder.
+- **Click** — toggles `settings.enabled`. Persists to disk immediately and notifies the engine + Settings window so all three stay coherent.
+- **Right-click** — popup with one item: `Settings...` → opens the unified Settings frame to the Settings tab (same `RailDriverSettingsAction` used by the Debug menu).
+- **Tooltip** — `RailDriver semi-realistic throttle: ON / OFF (last edited HH:MM)`.
+
+Scope is intentionally narrow: the Jynstrument is the mode-toggle UI, not a full RailDriver control panel. The Debug menu remains the entry point for first-time attach; everything else (calibration, advanced settings) goes through the Settings window.
+
+#### Java-side support
+
+`RailDriverMenuItem` gains four small public methods to support the Jynstrument (and any future toolbar / status surface):
+
+```java
+public boolean isSemiRealisticEnabled();
+public void setSemiRealisticEnabled(boolean enabled);   // toggles in memory + persists XML + notifies engine + fires PCS
+public void addSettingsListener(PropertyChangeListener l);
+public void removeSettingsListener(PropertyChangeListener l);
+```
+
+The PCS event name is `"semiRealisticEnabled"` with the new boolean as `newValue`. The Settings window also fires this on Save / Apply so the Jynstrument's icon updates instantly when the operator toggles the checkbox there. The Jynstrument fires the same event when its button is clicked so the Settings window's checkbox tracks too. (Standard observer pattern; no risk of feedback loops because PCS doesn't fire when old equals new.)
+
+#### Bootstrap / install
+
+The `.jyn` folder ships in JMRI's standard tree at `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/`. To avoid forcing the operator to drag-and-drop on first use, `RailDriverMenuItem.attachThrottleWindow()` auto-installs it after a successful bind:
+
+```java
+// In attachThrottleWindow, after binding succeeds:
+String jynPath = FileUtil.getProgramPath()
+    + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn";
+if (!isAlreadyInstalled(throttleWindow, "RailDriverModeToggle")) {
+    throttleWindow.ynstrument(jynPath);
+}
+```
+
+`isAlreadyInstalled` walks the toolbar's components and checks each `Jynstrument` instance's class name. The auto-install is idempotent across multiple `attachThrottleWindow()` calls, and the throttle layout XML's `<Jynstrument>` save/restore (existing JMRI behaviour, already in `ThrottleWindow.java:800-865`) means the toggle persists if the operator saves their layout.
+
+If the operator opens a *plain* throttle window (not via Debug → RailDriver), no auto-install fires — but in that case `attachThrottleWindow()` hasn't run either, so RailDriver isn't bound to that window and the toggle would have nothing to toggle. The two paths are coherent: the Jynstrument only appears on a throttle window that has RailDriver attached.
+
+#### Why a Jynstrument and not a JMRI core change
+
+JMRI's `ThrottleWindow` has no Java SPI for adding toolbar buttons or menu items. We considered three alternatives — direct core modification (rejected: couples a USB device to general-purpose throttle code), adding a generic extension hook upstream (viable but requires a JMRI-core PR with separate review timeline), and reflection-based runtime injection (rejected: brittle). The Jynstrument framework is the existing supported path; using it keeps every change inside our own files.
+
 ## 3. Implementation stages
 
 Each stage is independently buildable, installable, and testable on a real DCC loco. Acceptance criteria are listed for each.
 
-### 3.1 Stage 1 — Ramp engine + bypass switch + unified Settings window
+### 3.1 Stage 1 — Ramp engine + bypass switch + unified Settings window + toolbar mode toggle
 
-**Goal:** verify the ramp scheduler works end-to-end without any brake/load complexity. The throttle lever sets a target; the loco walks toward it at constant base delay. Also closes out the parent §3 / §6 off-EDT-mutation latent issue by routing every Swing-touching call (in both the new engine path AND the existing direct-dispatch path) through `SwingUtilities.invokeLater`. Replaces the standalone calibration window from the existing RailDriver bring-up with the unified two-tab Settings window described in §2.4.
+**Goal:** verify the ramp scheduler works end-to-end without any brake/load complexity. The throttle lever sets a target; the loco walks toward it at constant base delay. Also closes out the parent §3 / §6 off-EDT-mutation latent issue by routing every Swing-touching call (in both the new engine path AND the existing direct-dispatch path) through `SwingUtilities.invokeLater`. Replaces the standalone calibration window from the existing RailDriver bring-up with the unified two-tab Settings window described in §2.4. Ships the throttle-toolbar mode toggle Jynstrument from §2.6.
 
 **New / modified / deleted files:**
 
@@ -238,6 +288,8 @@ Each stage is independently buildable, installable, and testable on a real DCC l
 - `java/src/jmri/util/usb/RailDriverSettingsAction.java` — `AbstractAction` opening the unified frame. Calls `RailDriverMenuItem.ensureDeviceAndPolling()` before showing the window (same precondition the existing calibration action enforces today).
 - `java/src/jmri/util/usb/SemiRealisticSettingsPanel.java` — the Settings tab. Implements the `isDirty / addDirtyChangeListener / validateAndApplyTo / resetToFile` contract from §2.4. Disables fields based on the `enabled` checkbox and the Decoder-brake mode dropdown.
 - `java/src/jmri/util/usb/CalibrationTabPanel.java` — the Calibration tab. Created by extracting the entire visual-bar UI body from the existing `RailDriverCalibrationFrame` (everything in the current `buildHeader` / `buildSections` / per-axis `build*Section` / capture-row helpers) into a `JPanel` subclass, dropping the bottom Save / Reset-all / Cancel row (those move to the frame), and implementing the same `isDirty` contract. Capture-button and per-section "Reset to defaults" presses now flip dirty.
+- `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/RailDriverModeToggle.py` — the Jynstrument from §2.6. ~80 lines of Jython following the pattern of existing `Light.jyn` / `Direction.jyn`. Implements `init()`, `quit()`, `getExpectedContextClassName()` (returns `"jmri.jmrit.throttle.ThrottleWindow"`), creates a single `JButton` showing the on/off icon, registers a Java `PropertyChangeListener` on `RailDriverMenuItem` for the `"semiRealisticEnabled"` event, and builds a one-item `JPopupMenu` with `Settings...` invoking `RailDriverSettingsAction`.
+- `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/icons/raildriver-on.png` and `raildriver-off.png` — two 24×24 (or whatever size matches existing toolbar icons; check `resources/icons/throttles/*.png` for the convention) icons in the Jynstrument folder.
 
 *Modified:*
 - `java/src/jmri/util/usb/RailDriverCalibration.java` — bump schema to `"2"`, add `<semiRealistic>` subtree population/build, hold a `SemiRealisticSettings` field.
@@ -245,6 +297,8 @@ Each stage is independently buildable, installable, and testable on a real DCC l
    1. Instantiate the engine in `attachThrottleWindow`; route `dispatchValueEvent` Axis 1 dispatch through the engine when `settings.enabled`.
    2. **Wrap every Swing-touching call in `dispatchValueEvent` in `SwingUtilities.invokeLater`** — this fixes the pre-existing off-EDT mutation per §2.2's threading contract. Affects: Axis 0 `throttle.setIsForward`; Axis 1 `throttle.setSpeedSetting` + `setLEDs` (when `setLEDs` reaches Swing — verify; if it only touches `HidDevice` it can stay on the worker); Axis 6 `throttle.setFunction`; the inner-switch's `addressPanel.selectRosterEntry` / `dispatchAddress` / `setRosterSelectedIndex` / `throttleWindow.nextThrottleFrame` / `previousThrottleFrame` / `throttle.setSpeedSetting` / `throttle.setFunction` / `throttle.getFunctionMomentary` / `throttle.getFunctions`. The decision logic (which case matched, what value to compute) stays on the polling thread; only the final mutator/getter call against a Swing-backed object goes through `invokeLater`.
    3. `reloadCalibration()` already covers the calibration reload; extend it to also notify the engine of new semi-realistic settings (or add a sibling `reloadSemiRealisticSettings()` if the engine needs distinct hooks — implementation detail).
+   4. Add `isSemiRealisticEnabled()`, `setSemiRealisticEnabled(boolean)`, `addSettingsListener(PropertyChangeListener)`, `removeSettingsListener(PropertyChangeListener)` per §2.6. `setSemiRealisticEnabled` mutates the working calibration's `<semiRealistic><enabled>` field, persists the calibration XML, calls `reloadCalibration()`, and fires `"semiRealisticEnabled"` on a dedicated `PropertyChangeSupport`.
+   5. Auto-install the Jynstrument at the end of `attachThrottleWindow`'s success path, idempotent across repeat calls. Helper `private static boolean hasJynstrumentInstalled(ThrottleWindow tw, String classNameSuffix)` walks `tw.getJMenuBar()`'s parent's components — actually walks the `JToolBar` reachable via `tw`'s component tree — checking each `Jynstrument` instance's class name.
 - `java/src/apps/jmrit/DebugMenu.java` — replace the `new jmri.util.usb.RailDriverCalibrationAction()` line with `new jmri.util.usb.RailDriverSettingsAction()`.
 - `java/src/jmri/util/usb/Bundle.properties` — replace `RdCalibrate = RailDriver Calibration...` with `RdSettings = RailDriver Settings...`. (The new action and frame title reference `RdSettings`.)
 
@@ -268,6 +322,8 @@ Each stage is independently buildable, installable, and testable on a real DCC l
 11. The `activeThrottleFrame` NPE invariant from the existing RailDriver bring-up still holds.
 12. **Code audit:** every method call in `RailDriverMenuItem.dispatchValueEvent` (and any helpers it calls) that mutates a Swing component, or calls a JMRI throttle/address-panel API that is documented as EDT-only, is wrapped in `SwingUtilities.invokeLater`. Verified by `grep` against the listed call sites and by a 5-minute live lever-sweep session in both modes producing no visible UI corruption.
 13. Pre-existing XML files (schema `version="1"`) load cleanly into the new window — semi-realistic fields populate from defaults (disabled), calibration fields load as before; saving from the unified window produces a `version="2"` file.
+14. The toolbar mode-toggle Jynstrument auto-installs on first `Debug → RailDriver Throttle (built in)` click. The icon shows the current `enabled` state. Clicking it flips the state, persists to disk, and the Settings tab's `Enable semi-realistic mode` checkbox tracks the new value (and vice versa). Right-clicking the icon shows a `Settings...` item that opens the unified Settings frame.
+15. The Jynstrument is idempotent on repeat attaches — opening the throttle, closing it, and re-opening via the Debug menu does NOT add a second copy of the toggle to the toolbar.
 
 ### 3.2 Stage 2 — Scenario picker
 
@@ -359,6 +415,7 @@ Dyn brake doesn't use trainline air, so it stacks orthogonally with `airLinePerc
 Per stage, listed in §3. Total across stages 1–7:
 
 - 7 new Java files (`SemiRealisticThrottleEngine`, `SemiRealisticSettings`, `LoadScenario` enum, `RailDriverSettingsAction`, `RailDriverSettingsFrame`, `SemiRealisticSettingsPanel`, `CalibrationTabPanel`).
+- 1 new Jynstrument (`RailDriverModeToggle.jyn` — Jython script + 2 icons).
 - 2 deleted Java files (`RailDriverCalibrationFrame`, `RailDriverCalibrationAction`) — replaced by the unified Settings frame.
 - ~4 modified files (`RailDriverCalibration`, `RailDriverMenuItem`, `DebugMenu`, `Bundle.properties`).
 - New per-profile XML subtree (schema bumped to version `"2"`).
@@ -368,16 +425,16 @@ Per stage, listed in §3. Total across stages 1–7:
 
 These are not yet resolved; please decide before stage 1 starts.
 
-1. **Mode toggle location.** Settings tab only (proposed), or also a quick toggle button on the JMRI throttle window?
-2. **`maxBrakeUnderPower`** — derive as `maxBrake - 0.20` per EngineDriver (proposed), or expose as a separate user setting?
-3. **Bail-off semantics.** The existing RailDriver bring-up doesn't dispatch byte-4 transitions to anything functional. Stage 4 makes byte 4 a binary "bail-off pressed" flag using the calibrated `bailoffThreshold()`. Is that the desired semantic (latched while the byte is above the threshold), or do we want a one-shot pulse on the rising edge?
-4. **Defaults for the new settings.** Match EngineDriver's defaults exactly (proposed: 300 / 800 / 2 / 7 / 70 / `Light engine`), or pre-tune for the typical small-railroad operator (e.g. `Local freight` default scenario)?
+1. **`maxBrakeUnderPower`** — derive as `maxBrake - 0.20` per EngineDriver (proposed), or expose as a separate user setting?
+2. **Bail-off semantics.** The existing RailDriver bring-up doesn't dispatch byte-4 transitions to anything functional. Stage 4 makes byte 4 a binary "bail-off pressed" flag using the calibrated `bailoffThreshold()`. Is that the desired semantic (latched while the byte is above the threshold), or do we want a one-shot pulse on the rising edge?
+3. **Defaults for the new settings.** Match EngineDriver's defaults exactly (proposed: 300 / 800 / 2 / 7 / 70 / `Light engine`), or pre-tune for the typical small-railroad operator (e.g. `Local freight` default scenario)?
 
 ### Resolved decisions
 
 - **EDT discipline (decided 2026-05-02): Option B with worker-thread-math mitigation.** Every Swing-touching call from a non-EDT thread — both the new ramp dispatch AND the existing direct-dispatch path — is wrapped in `SwingUtilities.invokeLater`. The mitigation: the engine worker thread does all the speed-step math locally, then hands the final `int next` value to the EDT for application. This keeps ramp cadence governed by the `ScheduledExecutorService` (precise timing) and only the value-application bounces through the event queue (Swing consistency). Closes the parent §3 / §6 off-EDT latent issue. See §2.2 for the threading contract and §3.1 for the wrapping deliverables.
 - **UI surface (decided 2026-05-02): one unified `RailDriver Settings...` window with two tabs (Settings + Calibration), plus a new Apply button alongside Save and Cancel.** Replaces the standalone `RailDriver Calibration...` entry that ships with the existing RailDriver bring-up. See §2.4 for layout, dirty-tracking model, and Save/Apply/Cancel behaviour. Implementation is part of stage 1 (§3.1).
 - **Framing (decided 2026-05-02): this is a standalone feature, not a fourth phase of the RailDriver bring-up work.** Stages are numbered 1–7 within this document and don't extend the phase-1/2/3 numbering of the predecessor plans.
+- **Mode-toggle UI on the throttle window (decided 2026-05-02): Jynstrument-based toolbar button.** Adds a single icon to the throttle window's toolbar via JMRI's existing Jynstruments framework — no JMRI core modifications needed. Click toggles the mode + persists; right-click → `Settings...`. The Settings tab's `Enable semi-realistic mode` checkbox remains the authoritative toggle and stays in sync via PCS. Auto-installed by `RailDriverMenuItem.attachThrottleWindow()`. See §2.6 for full design.
 
 ## 7. Known limitations accepted in this feature
 
