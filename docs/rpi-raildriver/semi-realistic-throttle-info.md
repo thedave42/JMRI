@@ -713,7 +713,7 @@ but not 1:1.
 | Direction lever (FORWARD / NEUTRAL / REVERSE — only changeable at speed 0) | **Reverser (#8, byte 0)** | We already calibrate Forward / Neutral / Reverse detents. The "speed 0 only" interlock would have to be enforced JMRI-side. |
 | Stop button (4 modes) | **E-Stop SPDT switch (#2, slots 36/37)** | Currently does `setSpeedSetting(-1)`; in the semi-realistic context this would map to "E-Stop" mode, with maybe one of the front-edge buttons mapped to the gentler `THROTTLE_STOP_BRAKE_FULL` mode. |
 | ESU decoder-brake functions (F4/F5/F6 with thresholds) | Pure DCC-side, no physical control needed | Brake-percent computed from RailDriver's Independent Brake position; same threshold-driven F-function dispatch logic carries over. |
-| Air on/off button | No physical control — software-only | Either an in-app toggle or one of the user-assignable buttons. |
+| Air on/off button | **Likely not needed at all on the RailDriver.** | EngineDriver only has *one* brake slider, so the Air toggle exists to let the operator suppress the simulated air-line dynamics derived from that slider. We have *two* independent physical levers — Auto Brake (the trainline / air handle) and Independent Brake (the loco-only mechanical brake). An operator who doesn't want air dynamics just keeps the Auto Brake at Released and uses only the Independent Brake. The toggle was compensating for ED's single-slider limitation; with separate levers it's redundant. |
 
 ### 9.1 Implementation hints for adapting the model
 
@@ -774,8 +774,15 @@ every input change" pattern is straightforward with either one.
    as a per-loco JMRI preference (a "scenario / consist mass" setting),
    or assign one of the front-edge buttons to "step load up / down" so
    the operator can dial it in without a separate UI window.
-4. **No Air on/off button.** Same — either a JMRI preference or a
-   front-edge button.
+4. **No Air on/off button — and we likely don't need one.** EngineDriver
+   has the toggle because its single brake slider has to do double duty
+   (mechanical brake *and* derived air-line pressure); the toggle lets
+   the operator opt out of the air half of that. We have two real
+   levers — the Auto Brake *is* the air-line handle, the Independent
+   Brake *is* the loco-only mechanical brake — so an operator who
+   doesn't want air dynamics simply leaves the Auto Brake at Released
+   and only uses the Independent Brake. The toggle is solving a problem
+   we don't have.
 5. **Stop modes.** The RailDriver E-Stop is a full E-Stop today; we
    have plenty of buttons available to add a "throttle to zero, brake
    full" softer-stop button if we want it.
