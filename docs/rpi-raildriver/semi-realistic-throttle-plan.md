@@ -106,9 +106,25 @@ The contract:
 
 - `targetSpeed` / `targetAcceleration` / `current` are accessed under a single `synchronized` block on the engine instance to keep the polling-thread `recompute` and the worker's `rampTask` coherent. Each access is a few field reads/writes; contention is negligible.
 
-### 2.3 Bypass-mode wiring
+### 2.3 Bypass-mode wiring and mode-switch handover
 
-When `enabled == false`, `engine.recompute()` is a no-op and `dispatchValueEvent` falls back to the phase-3 direct `setSpeedSetting` / `setIsForward` / `setFunction(0, ...)` path. **No behavioural change for users who don't opt in.** The mode is per-profile, persisted alongside the rest of the calibration; default OFF.
+When `enabled == false`, `engine.recompute()` is a no-op and `dispatchValueEvent` falls back to the bring-up-era direct `setSpeedSetting` / `setIsForward` / `setFunction(0, ...)` path. **No behavioural change for users who don't opt in.** The mode is per-profile, persisted alongside the rest of the calibration; default OFF.
+
+#### Mode-switch handover at speed
+
+The operator can flip the mode toggle at any time, including while the loco is moving. The engine's response:
+
+- **OFF → ON:** at the moment the toggle flips, the engine reads `throttle.getSpeedSetting()` once (on the EDT) and writes that value to `engine.current` (on the worker thread, under the engine's `synchronized` block). It then runs `recompute()` to derive the new `targetSpeed` / `targetAcceleration` from current lever and brake positions. If the lever's calibrated value implies a different target than the loco's current speed, the engine ramps smoothly from `current` toward `target` on the configured Δt. **No speed snap.** The loco's perceived speed is continuous across the toggle.
+
+- **ON → OFF:** at the moment the toggle flips, the engine cancels its in-flight `rampTask`, stops the scheduler, and `dispatchValueEvent` reverts to the direct path. The very next byte change on any axis writes the lever-derived value via `setSpeedSetting()` directly. **If the lever is far from the engine's last `current`, the loco will snap to the lever-derived speed on the next dispatch.** Operators are expected to either move the lever to match the loco's current speed before flipping OFF, or to accept the snap as the cost of switching to direct control mid-motion.
+
+Implementation: `RailDriverMenuItem.setSemiRealisticEnabled(boolean enabled)` (the public API used by both the Settings tab and the Jynstrument toggle, per §2.6) wraps the toggle in two phases:
+1. Compute new state on whichever thread called the setter (could be EDT — Settings tab — or could be the Jynstrument's button click thread which is also EDT).
+2. If transitioning OFF → ON: read `throttle.getSpeedSetting()` on the EDT, post a `Runnable` to the engine that sets `engine.current` and calls `recompute()` under `synchronized`.
+3. If transitioning ON → OFF: post a `Runnable` to the engine that cancels `rampTask` and shuts down the scheduler executor.
+4. Persist the new state to XML and fire the `"semiRealisticEnabled"` PropertyChange so all observers (Jynstrument icon, Settings tab checkbox, etc.) update.
+
+Repeated rapid toggles are safe — each transition is idempotent and serialised through the engine's `synchronized` block.
 
 ### 2.4 Unified Settings window
 
@@ -146,6 +162,7 @@ Window layout (top-down):
 - **Speed step:** numeric, default 2.
 - **Brake steps:** numeric, default 7.
 - **Maximum brake percent:** numeric, default 70.
+- **Maximum brake under power percent:** numeric, default 50 (= EngineDriver's `maxBrake − 0.20`). The "throttle is fighting brake" softer-curve constant per [research §3.5].
 - **Decoder-brake mode:** dropdown `None` / `ESU` (and ESU-only sub-fields when ESU is selected — F-numbers + thresholds).
 - **Reset to defaults** button (settings-tab-scoped — restores only the semi-realistic fields to their EngineDriver defaults; does not touch calibration values).
 
@@ -208,6 +225,7 @@ XML schema bumps to `version="2"`. The new `<semiRealistic>` subtree is added at
         <speedStep>2</speedStep>
         <brakeSteps>7</brakeSteps>
         <maxBrakePercent>70</maxBrakePercent>
+        <maxBrakeUnderPowerPercent>50</maxBrakeUnderPowerPercent>
         <decoderBrakeMode>none</decoderBrakeMode>
         <esuLowFunction>4</esuLowFunction>
         <esuMidFunction>5</esuMidFunction>
@@ -383,12 +401,17 @@ Dyn brake doesn't use trainline air, so it stacks orthogonally with `airLinePerc
 
 **Goal:** [research §5] direction can only change at speed 0.
 
-**Modified:** `dispatchValueEvent` Axis 0 case to suppress `setIsForward(...)` when `engine.currentSpeed > 0` (when in semi-realistic mode). E-Stop SPDT keeps `setSpeedSetting(-1)`. Reverser to NEUTRAL at any speed forces a coast-down per [research §3.3].
+**Modified:** `dispatchValueEvent` Axis 0 case to suppress `setIsForward(...)` when `settings.enabled && engine.current > 0`. E-Stop SPDT keeps `setSpeedSetting(-1)`. Reverser to NEUTRAL at any speed forces a coast-down per [research §3.3].
+
+The interlock consults `engine.current` (the engine's view of what the decoder was last commanded to) rather than `throttle.getSpeedSetting()`. The two are nearly identical in semi-realistic mode — `engine.current` is the value that was just `invokeLater`'d into `setSpeedSetting()` on the previous tick — but `engine.current` is a `volatile` field on the engine, readable from the polling thread without crossing the EDT. The `settings.enabled` guard ensures the field is only consulted while the engine is actively maintaining it (per the §2.3 handover contract: `engine.current` is set on OFF→ON and continuously updated thereafter; in OFF mode it is not consulted).
+
+**Pending-direction-change behaviour: byte-edge-triggered, not retried on stop.** When the operator moves the reverser lever during deceleration, the dispatch suppresses the direction change at the moment the byte changes. Once the loco reaches `current == 0`, the dispatch does NOT retroactively apply the held lever position — the operator must nudge the reverser lever again (any byte change re-evaluates the interlock) to actually flip the direction. This matches prototype behaviour: on a real locomotive the engineer holds the reverser handle in the new position while waiting for speed=0, then either the handle physically engages or the engineer moves it the rest of the way once the train is stopped. We don't add engine-side state for "pending direction change because that's not how the prototype works.
 
 **Acceptance:**
 1. Loco at speed > 0 + reverser moved to opposite direction: direction does NOT flip; an INFO log line records the suppression. Direction lever change with loco at speed 0 still works.
-2. Reverser to NEUTRAL at any speed: loco coasts to a stop on the deceleration curve regardless of throttle/brake levers (per [research §3.3]).
-3. E-Stop SPDT at any speed: loco hard-stops via `setSpeedSetting(-1)`. Same as the existing RailDriver bring-up behaviour.
+2. Loco decelerating + reverser already moved to opposite direction (held there during the ramp-down): direction still does NOT flip when `current` reaches 0. Operator must release-and-re-move the reverser to trigger the byte-edge-driven direction change. Documented as expected behaviour, not a bug.
+3. Reverser to NEUTRAL at any speed: loco coasts to a stop on the deceleration curve regardless of throttle/brake levers (per [research §3.3]).
+4. E-Stop SPDT at any speed: loco hard-stops via `setSpeedSetting(-1)`. Same as the existing RailDriver bring-up behaviour.
 
 ### 3.7 Stage 7 — ESU decoder-brake passthrough (optional)
 
@@ -425,9 +448,20 @@ Per stage, listed in §3. Total across stages 1–7:
 
 These are not yet resolved; please decide before stage 1 starts.
 
-1. **`maxBrakeUnderPower`** — derive as `maxBrake - 0.20` per EngineDriver (proposed), or expose as a separate user setting?
-2. **Bail-off semantics.** The existing RailDriver bring-up doesn't dispatch byte-4 transitions to anything functional. Stage 4 makes byte 4 a binary "bail-off pressed" flag using the calibrated `bailoffThreshold()`. Is that the desired semantic (latched while the byte is above the threshold), or do we want a one-shot pulse on the rising edge?
-3. **Defaults for the new settings.** Match EngineDriver's defaults exactly (proposed: 300 / 800 / 2 / 7 / 70 / `Light engine`), or pre-tune for the typical small-railroad operator (e.g. `Local freight` default scenario)?
+1. **Settings-field validation ranges.** Proposed:
+   | Field | Min | Max |
+   |---|---|---|
+   | Acceleration delay (ms) | 50 | 5000 |
+   | Deceleration delay (ms) | 50 | 5000 |
+   | Speed step | 1 | 16 |
+   | Brake steps | 2 | 16 |
+   | Maximum brake percent | 10 | 100 |
+   | Maximum brake under power percent | 0 | (must be ≤ Maximum brake percent) |
+   | Custom scenario multiplier | 0.5 | 50.0 |
+   | ESU thresholds | 1 | 100 (and must be in monotonically increasing order) |
+   | ESU function numbers | 0 | 28 |
+
+2. **Jynstrument behaviour when not attached.** If the operator manually drag-and-drops the `.jyn` folder onto a throttle window that does NOT have RailDriver bound (i.e. wasn't opened via the Debug menu), what does the toggle do? Proposed: the icon greys out and the tooltip says "RailDriver not attached"; clicking it is a no-op. Alternative: clicking it triggers `ensureDeviceAndPolling()` + `attachThrottleWindow()` first, effectively turning the toggle into an "Attach + enable" button. The auto-install path means this scenario only happens when the operator has gone out of their way to install the Jynstrument manually — niche enough that no-op may be the right answer.
 
 ### Resolved decisions
 
@@ -435,6 +469,12 @@ These are not yet resolved; please decide before stage 1 starts.
 - **UI surface (decided 2026-05-02): one unified `RailDriver Settings...` window with two tabs (Settings + Calibration), plus a new Apply button alongside Save and Cancel.** Replaces the standalone `RailDriver Calibration...` entry that ships with the existing RailDriver bring-up. See §2.4 for layout, dirty-tracking model, and Save/Apply/Cancel behaviour. Implementation is part of stage 1 (§3.1).
 - **Framing (decided 2026-05-02): this is a standalone feature, not a fourth phase of the RailDriver bring-up work.** Stages are numbered 1–7 within this document and don't extend the phase-1/2/3 numbering of the predecessor plans.
 - **Mode-toggle UI on the throttle window (decided 2026-05-02): Jynstrument-based toolbar button.** Adds a single icon to the throttle window's toolbar via JMRI's existing Jynstruments framework — no JMRI core modifications needed. Click toggles the mode + persists; right-click → `Settings...`. The Settings tab's `Enable semi-realistic mode` checkbox remains the authoritative toggle and stays in sync via PCS. Auto-installed by `RailDriverMenuItem.attachThrottleWindow()`. See §2.6 for full design.
+- **`maxBrakeUnderPower` (decided 2026-05-02): user-configurable setting with EngineDriver default.** Exposed as the `Maximum brake under power percent` field on the Settings tab; defaults to 50 (= EngineDriver's `maxBrake − 0.20`). Persisted as `<maxBrakeUnderPowerPercent>` in the v2 calibration XML.
+- **Settings defaults (decided 2026-05-02): match EngineDriver exactly, but expose every value as a user-configurable Settings-tab field.** Defaults are `accelerationDelayMs=300`, `decelerationDelayMs=800`, `speedStep=2`, `brakeSteps=7`, `maxBrakePercent=70`, `maxBrakeUnderPowerPercent=50`, `scenario=Light engine`, ESU-mode thresholds 30/60/98 on F4/F5/F6. The operator can tune any of these without restarting JMRI; the engine picks up changes via the existing Save/Apply reload flow.
+- **Bail-off semantics (decided 2026-05-02): latched while the byte is above the calibrated threshold.** Stage 4 sets `engine.bailoffPressed = true` whenever the byte 4 value exceeds `bailoffThreshold()` and `false` otherwise. The engine treats the air line as 100 % regardless of Auto Brake lever position while `bailoffPressed` is true. No edge detection / no one-shot pulse — direct level-triggered semantics that match how a real bail-off handle behaves on the prototype.
+- **Mode-switch handover at speed (decided 2026-05-02).** OFF → ON adopts the loco's current `throttle.getSpeedSetting()` as the engine's starting `current`, then ramps smoothly toward the lever-derived target. ON → OFF cancels the ramp scheduler and the next byte-change writes the lever-derived value directly via `setSpeedSetting()` — the loco may snap if the lever is far from the engine's last commanded speed. Operators are expected to either align the lever before flipping OFF or to accept the snap. See §2.3 for the implementation contract.
+- **Reverser-interlock speed source (decided 2026-05-02): `engine.current`, gated by `settings.enabled`.** The polling-thread Axis 0 dispatch reads `engine.current` (volatile, no EDT crossing) and suppresses `setIsForward()` when `settings.enabled && engine.current > 0`. The `settings.enabled` guard ensures the field is only consulted while the engine maintains it (per the §2.3 handover contract). See §3.6 for stage details.
+- **Pending direction change at stop (decided 2026-05-02): not retried on engine.current = 0.** When the operator moves the reverser during deceleration the dispatch suppresses the direction change at byte-change time and does NOT retroactively apply the lever's held position when the loco eventually stops. The operator must nudge the reverser to trigger another byte change. Matches prototype operator behaviour (engineer holds the handle in position then moves it the rest of the way at stop). See §3.6 acceptance bullet 2.
 
 ## 7. Known limitations accepted in this feature
 
