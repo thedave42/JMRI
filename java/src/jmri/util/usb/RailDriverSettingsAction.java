@@ -4,26 +4,28 @@ import java.awt.event.ActionEvent;
 import javax.swing.AbstractAction;
 
 /**
- * Action that opens a {@link RailDriverCalibrationFrame} for the user to
- * record per-position byte values for each analog control on the
- * RailDriver Modern Desktop.
- *
- * @author the Dave (phase 3)
+ * Action that opens the unified {@link RailDriverSettingsFrame}, hosting
+ * both the semi-realistic-throttle settings tab and the per-detent
+ * calibration tab.
+ * <p>
+ * Replaces the predecessor {@code RailDriverCalibrationAction} from the
+ * RailDriver bring-up phase. See {@code docs/rpi-raildriver/semi-realistic-throttle-plan.md}
+ * §2.4 / §3.1.
  */
-public class RailDriverCalibrationAction extends AbstractAction {
+public class RailDriverSettingsAction extends AbstractAction {
 
-    public RailDriverCalibrationAction(String s) {
+    public RailDriverSettingsAction(String s) {
         super(s);
     }
 
-    public RailDriverCalibrationAction() {
-        super(Bundle.getMessage("RdCalibrate"));
+    public RailDriverSettingsAction() {
+        super(Bundle.getMessage("RdSettings"));
     }
 
     @Override
     public void actionPerformed(ActionEvent e) {
         // Bring the device + polling thread up if not already running, so
-        // the calibration frame's live-cursor stream works whether or not
+        // the calibration tab's live-cursor stream works whether or not
         // the throttle menu has been opened first. Failure (no device
         // connected or hid4java init failure) is tolerated — the frame
         // still opens with hand-edit and Save available, and its status
@@ -32,6 +34,6 @@ public class RailDriverCalibrationAction extends AbstractAction {
         if (mi != null) {
             mi.ensureDeviceAndPolling();
         }
-        new RailDriverCalibrationFrame().setVisible(true);
+        new RailDriverSettingsFrame().setVisible(true);
     }
 }

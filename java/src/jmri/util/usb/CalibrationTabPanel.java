@@ -1,13 +1,9 @@
 package jmri.util.usb;
 
-import java.awt.BorderLayout;
 import java.awt.Component;
-import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
-import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -18,36 +14,34 @@ import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
-import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
-import javax.swing.JTextField;
-import javax.swing.SwingUtilities;
 
-import jmri.util.JmriJFrame;
 import jmri.util.usb.RailDriverCalibration.AutoBrakeCal;
 import jmri.util.usb.RailDriverCalibration.IndepBrakeCal;
 import jmri.util.usb.RailDriverCalibration.LightsCal;
 import jmri.util.usb.RailDriverCalibration.ReverserCal;
 import jmri.util.usb.RailDriverCalibration.ThrottleCal;
 import jmri.util.usb.RailDriverCalibration.WiperCal;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import jmri.util.usb.RailDriverSettingsFrame.DirtyTrackingTab;
 
 /**
- * Visual calibration UI for the RailDriver Modern Desktop's analog controls.
- * Each control is shown as one (or two, for Indep Brake) horizontal
- * {@link CalibrationBar} with detent markers and a live cursor that tracks
- * the user's lever movements. The user moves a lever to a detent, clicks
- * the corresponding {@code Capture &lt;Name&gt;} button, and the current
- * byte is recorded as that detent's calibrated value.
+ * Calibration tab content for {@link RailDriverSettingsFrame}: visual bars
+ * with detent markers and a live cursor that tracks lever movements. The
+ * UI body is the same one previously hosted by the standalone
+ * {@code RailDriverCalibrationFrame}; this class only extracts it into a
+ * {@code JPanel} that participates in the unified frame's dirty-tracking
+ * model.
  * <p>
- * See {@code docs/rpi-raildriver/plan-impl-phase3.md} §2.3.
- *
- * @author the Dave (phase 3)
+ * Capture buttons, per-section "Reset to defaults" buttons, and the
+ * "Reset all to defaults" button mark the panel dirty so the host frame's
+ * Apply button enables. {@link #resetToFile(RailDriverCalibration)} clears
+ * the dirty state after a successful Save/Apply round-trip from disk.
+ * <p>
+ * See {@code docs/rpi-raildriver/semi-realistic-throttle-plan.md} §2.4 and
+ * §3.1.
  */
-public final class RailDriverCalibrationFrame extends JmriJFrame implements PropertyChangeListener {
+public final class CalibrationTabPanel extends JPanel implements DirtyTrackingTab, PropertyChangeListener {
 
     private static final int AXIS_COUNT = 7;
 
@@ -60,34 +54,103 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
     private final List<CalibrationBar> allBars = new ArrayList<>();
     private final List<Runnable> auxRefreshers = new ArrayList<>();
 
-    private final JLabel statusLabel = new JLabel(" ");
+    private final List<Runnable> dirtyListeners = new ArrayList<>();
+    private boolean dirty = false;
 
-    public RailDriverCalibrationFrame() {
-        super(Bundle.getMessage("RdCalibrate"));
+    private final Consumer<String> statusSink;
+
+    /**
+     * @param statusSink callback for short status-line messages (e.g. capture
+     *                   confirmations, reset notifications). The host frame
+     *                   typically routes this to its bottom status label.
+     */
+    public CalibrationTabPanel(@javax.annotation.Nonnull Consumer<String> statusSink) {
+        this.statusSink = statusSink;
         for (int i = 0; i < AXIS_COUNT; i++) {
             liveBytes[i] = -1;
         }
-        working = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+        this.working = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
 
-        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+        setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        JPanel content = new JPanel(new BorderLayout(8, 8));
-        content.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        content.add(buildHeader(), BorderLayout.NORTH);
-        content.add(new JScrollPane(buildSections()), BorderLayout.CENTER);
-        content.add(buildBottomButtons(), BorderLayout.SOUTH);
-        setContentPane(content);
+        add(buildHeader());
+        add(Box.createVerticalStrut(4));
+        JScrollPane sectionsScroll = new JScrollPane(buildSections());
+        sectionsScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
+        add(sectionsScroll);
+        add(Box.createVerticalStrut(4));
+        add(buildResetAllRow());
 
-        setPreferredSize(new Dimension(720, 820));
-        pack();
-
-        wireUpLiveListener();
         auxRefreshers.forEach(Runnable::run);
     }
+
+    /**
+     * Updates the polling-state-driven enable/disable for capture buttons
+     * and the introductory status hint. Called by the host frame after it
+     * has wired up the live-byte listener.
+     */
+    public void onLiveListenerWired(boolean pollingActive) {
+        if (pollingActive) {
+            statusSink.accept(
+                "Move any control to verify the live cursor; click Capture when at the desired detent.");
+        } else {
+            for (JButton b : captureButtons) {
+                b.setEnabled(false);
+            }
+            statusSink.accept(
+                "RailDriver device not detected — values can still be edited and saved by hand.");
+        }
+    }
+
+    // -------- DirtyTrackingTab --------
+
+    @Override
+    public boolean isDirty() {
+        return dirty;
+    }
+
+    @Override
+    public void addDirtyChangeListener(Runnable listener) {
+        dirtyListeners.add(listener);
+    }
+
+    @Override
+    public boolean validateAndApplyTo(RailDriverCalibration target) {
+        // Captured byte values are validated at capture time (always in
+        // [0,255] because they come from a single byte read off the HID
+        // report) and at parse time by readInt(). There is nothing
+        // additional to validate at Save time for the calibration tab.
+        // Use copyCalibrationFieldsFrom so the calibration tab does NOT
+        // clobber the <semiRealistic> subtree that the Settings tab
+        // wrote in the same Save sequence.
+        target.copyCalibrationFieldsFrom(working);
+        return true;
+    }
+
+    @Override
+    public void resetToFile(RailDriverCalibration freshFromDisk) {
+        working.copyFrom(freshFromDisk);
+        allBars.forEach(CalibrationBar::refresh);
+        auxRefreshers.forEach(Runnable::run);
+        setDirty(false);
+    }
+
+    private void setDirty(boolean newDirty) {
+        if (dirty != newDirty) {
+            dirty = newDirty;
+            for (Runnable r : dirtyListeners) {
+                r.run();
+            }
+        }
+    }
+
+    // -------- UI build --------
 
     private JComponent buildHeader() {
         JPanel header = new JPanel();
         header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
+        header.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel title = new JLabel("Move each control to a detent and click Capture for that position.");
         title.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -99,10 +162,6 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
             + "<span style='color:#DC1E1E'>\u25B2 red</span> = current live position</html>");
         legend.setAlignmentX(Component.LEFT_ALIGNMENT);
         header.add(legend);
-
-        statusLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        header.add(Box.createVerticalStrut(4));
-        header.add(statusLabel);
 
         return header;
     }
@@ -292,13 +351,14 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
             capture.addActionListener(e -> {
                 int b = liveBytes[axisIndex];
                 if (b < 0) {
-                    showStatus("No live data on byte " + axisIndex
+                    statusSink.accept("No live data on byte " + axisIndex
                             + " yet. Move the control once after opening the RailDriver throttle menu.");
                     return;
                 }
                 r.capturer.accept(b);
                 bar.refresh();
-                showStatus(String.format("Captured %s = 0x%02x  (%d). Click Save to persist.",
+                setDirty(true);
+                statusSink.accept(String.format("Captured %s = 0x%02x  (%d). Click Save to persist.",
                         r.label, b, b));
             });
             captureButtons.add(capture);
@@ -310,89 +370,28 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
                 r.resetter.run();
             }
             bar.refresh();
+            setDirty(true);
         });
         p.add(resetSection);
         return p;
     }
 
-    private JComponent buildBottomButtons() {
-        JPanel bottom = new JPanel();
-        bottom.setLayout(new BoxLayout(bottom, BoxLayout.X_AXIS));
-        bottom.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
-
-        JButton save = new JButton("Save");
-        save.addActionListener(e -> doSave());
-
+    private JComponent buildResetAllRow() {
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
         JButton resetAll = new JButton("Reset all to defaults");
         resetAll.addActionListener(e -> {
             working.resetToDefaults();
             allBars.forEach(CalibrationBar::refresh);
             auxRefreshers.forEach(Runnable::run);
-            showStatus("All values reset to defaults. Click Save to persist.");
+            setDirty(true);
+            statusSink.accept("All values reset to defaults. Click Save to persist.");
         });
-
-        JButton cancel = new JButton("Cancel");
-        cancel.addActionListener(e -> dispose());
-
-        bottom.add(Box.createHorizontalGlue());
-        bottom.add(save);
-        bottom.add(Box.createHorizontalStrut(8));
-        bottom.add(resetAll);
-        bottom.add(Box.createHorizontalStrut(8));
-        bottom.add(cancel);
-        return bottom;
+        row.add(resetAll);
+        return row;
     }
 
-    private void doSave() {
-        File file = RailDriverCalibration.getDefaultFile();
-        if (file == null) {
-            JOptionPane.showMessageDialog(this,
-                    "No active JMRI profile — cannot save calibration.",
-                    "Calibration save failed", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        try {
-            working.save(file);
-        } catch (IOException ex) {
-            log.error("Failed to write RailDriver calibration to {}", file, ex);
-            JOptionPane.showMessageDialog(this,
-                    "Failed to save calibration:\n" + ex.getMessage(),
-                    "Calibration save failed", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        RailDriverMenuItem mi = RailDriverMenuItem.getInstance();
-        if (mi != null) {
-            mi.reloadCalibration();
-        }
-        log.info("RailDriver calibration saved to {}", file.getAbsolutePath());
-        dispose();
-    }
-
-    private void wireUpLiveListener() {
-        RailDriverMenuItem mi = RailDriverMenuItem.getInstance();
-        if (mi == null) {
-            // Should not happen — DebugMenu constructs the menu item on
-            // app startup so getInstance() is non-null by the time the
-            // calibration menu is reachable.
-            for (JButton b : captureButtons) {
-                b.setEnabled(false);
-            }
-            statusLabel.setText("Internal error: RailDriverMenuItem not initialised.");
-            return;
-        }
-        // Subscribe specifically for "RawByte" events so we don't get
-        // spurious property-change notifications (e.g. menu-popup
-        // ancestor events) on the AWT path.
-        mi.addPropertyChangeListener("RawByte", this);
-        if (mi.isPollingActive()) {
-            statusLabel.setText("Move any control to verify the live cursor; click Capture when at the desired detent.");
-        } else {
-            for (JButton b : captureButtons) {
-                b.setEnabled(false);
-            }
-            statusLabel.setText("RailDriver device not detected — values can still be edited and saved by hand.");
-        }
-    }
+    // -------- live-byte property change --------
 
     @Override
     public void propertyChange(PropertyChangeEvent evt) {
@@ -420,26 +419,11 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
         }
         liveBytes[axis] = b;
         final int finalAxis = axis;
-        SwingUtilities.invokeLater(() -> {
+        jmri.util.ThreadingUtil.runOnGUIEventually(() -> {
             CalibrationBar bar = barsByAxis[finalAxis];
             if (bar != null) {
                 bar.setLiveByte(b);
             }
         });
     }
-
-    @Override
-    public void dispose() {
-        RailDriverMenuItem mi = RailDriverMenuItem.getInstance();
-        if (mi != null) {
-            mi.removePropertyChangeListener("RawByte", this);
-        }
-        super.dispose();
-    }
-
-    private void showStatus(String message) {
-        statusLabel.setText(message);
-    }
-
-    private static final Logger log = LoggerFactory.getLogger(RailDriverCalibrationFrame.class);
 }
