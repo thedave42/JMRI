@@ -709,7 +709,7 @@ but not 1:1.
 | Mechanical brake slider (# of notches) | **Independent Brake (#11, byte 3)** | Calibrated Full Release (0xc0) → Full Application (0x41). Maps 1:1 onto a stepped brake slider with the right number of notches. |
 | Air-line pressure (decreases when brake slider is moved deeper) | **Auto Brake lever (#10, byte 2)** | The Auto Brake on a real RailDriver IS the trainline / air-brake handle, with mechanical detents at Released, SUP, CS, and EMG. EngineDriver simulates this as a derived value of the brake slider; we have a real continuous lever for it. |
 | Air-line bail-off (release of trainline brake while keeping mechanical brake) | **Bail-off momentary switch (#11 / byte 4 transient)** | EngineDriver doesn't have an explicit bail-off control; it derives air-line state from brake slider movement. We'd dispatch the bail-off press as "force `airLineValue` back toward 100 instantaneously" or, more authentically, as an immediate release of the air-line component of the effective brake until the switch is released. |
-| Load slider (cargo mass) | No physical control — software-only | Could be exposed in the calibration / settings UI as a JMRI preference, since the RailDriver doesn't have a load knob. Or repurpose one of the user-assignable hat / SPDT positions. |
+| Load slider (cargo mass) | No physical control — exposed as a **named-scenario picker** in JMRI | EngineDriver's continuous load slider becomes a small enumerated list of named operating scenarios (e.g. *Light engine*, *Switcher*, *Local freight*, *Through freight*, *Unit train*, *Custom*) that the operator picks at session start. Each scenario maps to a Δt multiplier internally; *Light engine* = 1.0 (no mass simulation), the heavier presets ramp up quadratically toward the EngineDriver ceiling of 10×. See §9.2 for details. |
 | Direction lever (FORWARD / NEUTRAL / REVERSE — only changeable at speed 0) | **Reverser (#8, byte 0)** | We already calibrate Forward / Neutral / Reverse detents. The "speed 0 only" interlock would have to be enforced JMRI-side. |
 | Stop button (4 modes) | **E-Stop SPDT switch (#2, slots 36/37)** | Currently does `setSpeedSetting(-1)`; in the semi-realistic context this would map to "E-Stop" mode, with maybe one of the front-edge buttons mapped to the gentler `THROTTLE_STOP_BRAKE_FULL` mode. |
 | ESU decoder-brake functions (F4/F5/F6 with thresholds) | Pure DCC-side, no physical control needed | Brake-percent computed from RailDriver's Independent Brake position; same threshold-driven F-function dispatch logic carries over. |
@@ -750,6 +750,119 @@ we want to keep the math off the EDT and just `invokeLater` the
 `setSpeedSetting` call. The ramp scheduler's "cancel and repost on
 every input change" pattern is straightforward with either one.
 
+### 9.2 Load slider — named-scenario picker
+
+EngineDriver's continuous load slider becomes a small enumerated list
+on the RailDriver because we have no physical analog control to bind a
+slider to. Operators of physical RailDriver consoles tend to think
+in scenarios anyway ("we're running the morning local freight"), so
+naming the load steps and pre-canning them is a UX win even compared
+to a numeric slider.
+
+#### 9.2.1 The preset list
+
+| Scenario | Δt multiplier | Mental model |
+|---|---:|---|
+| `Light engine` | 1.0 | Single loco, no cars. No mass simulation; ramp at base delay. |
+| `Switcher` | 1.5 | Yard work, a handful of cars. Slightly heavier than light. |
+| `Local freight` | 2.5 | Mid-length way-freight. Noticeable inertia. |
+| `Through freight` | 5.0 | Long road train, mixed loads. Half-way to ED's ceiling. |
+| `Unit train` | 10.0 | Heavy unit coal / grain / oil. Full ED ceiling. |
+| `Custom` | user-defined | Numeric input (1.0..10.0), persisted; for users who want to tune their own number. |
+
+The multipliers are picked to mirror EngineDriver's quadratic load
+curve (`getLoadPcnt`) at evenly spaced slider steps: 0/5 → 1.0,
+1/5 → 1.36, 2/5 → 2.44, 3/5 → 4.24, 4/5 → 6.76, 5/5 → 10.0. The named
+presets above approximate that curve while picking round numbers that
+read naturally in the UI.
+
+`Light engine` reproduces phase-3 behaviour exactly (multiplier 1.0,
+which is what `targetAcceleration` defaults to today). Picking any
+heavier scenario directly multiplies whatever `targetAcceleration`
+`setTargetSpeed` produces — same wiring point as EngineDriver's load
+slider, just driven from an enum rather than a SeekBar.
+
+#### 9.2.2 Where the picker lives
+
+A small dropdown / button group on the RailDriver throttle window
+(or on the calibration window — TBD during implementation) labelled
+**Scenario:**, with the six options. The current selection is
+displayed prominently so the operator can verify "I'm in *Through
+freight*" at a glance. Switching scenarios mid-session takes effect
+on the next `setTargetSpeed` invocation; the in-flight ramp continues
+with the old multiplier until the user touches a control or reaches
+the current target.
+
+#### 9.2.3 Persistence
+
+Stored as a single string in the same per-profile XML used by the
+calibration data:
+
+```xml
+<raildriver-calibration version="2">
+    ...
+    <semiRealistic>
+        <scenario>Through freight</scenario>
+        <customLoadMultiplier>3.5</customLoadMultiplier>  <!-- only honoured when scenario == Custom -->
+    </semiRealistic>
+    ...
+</raildriver-calibration>
+```
+
+Schema bumps to `version="2"` because `<semiRealistic>` is a new
+top-level subtree (the loader's existing tolerance for missing
+elements still keeps phase-3 calibration files loadable; the
+scenario simply defaults to `Light engine` until the user picks
+something).
+
+#### 9.2.4 Implementation sketch
+
+```java
+public enum LoadScenario {
+    LIGHT_ENGINE("Light engine",   1.0),
+    SWITCHER    ("Switcher",       1.5),
+    LOCAL       ("Local freight",  2.5),
+    THROUGH     ("Through freight",5.0),
+    UNIT_TRAIN  ("Unit train",    10.0),
+    CUSTOM      ("Custom",         /* read from RailDriverCalibration */ );
+
+    public double multiplier() { ... }
+}
+```
+
+`setTargetSpeed`'s existing load multiplication line:
+
+```java
+if (loadSliderPosition > 0) {
+    targetAcceleration = targetAcceleration
+            * getLoadPcnt(loadSliderPosition, prefSemiRealisticThrottleNumberOfLoadSteps, maxLoad);
+}
+```
+
+…becomes:
+
+```java
+LoadScenario scenario = settings.scenario();   // from the picker
+if (scenario != LoadScenario.LIGHT_ENGINE) {
+    targetAcceleration = targetAcceleration * scenario.multiplier();
+}
+```
+
+Same effect on the ramp Δt; same place in the math. The only thing
+that changes is *where the multiplier comes from* — an enum-backed
+preference rather than a slider position.
+
+#### 9.2.5 Future extensibility (deferred)
+
+If we later want per-loco defaults (the option-2 path I sketched
+during research), the picker adds a "Use roster default" option that
+reads `RosterEntry.getAttribute("raildriver.scenario")`. Implementing
+that is separable from the named-scenario picker itself — once the
+enum and the multiplication are in place, the only change is *where
+the active scenario is sourced from*. So phase 4 can ship with a
+session-level picker only, and phase 5+ can add the roster-attribute
+fallback if the operators end up wanting it.
+
 ---
 
 ## 10. Differences from the RailDriver hardware that we'll have to design around
@@ -770,10 +883,13 @@ every input change" pattern is straightforward with either one.
    bail-off. So our semi-realistic implementation can be more
    prototypical: byte 2 directly drives `airLineValue`; byte 3 directly
    drives the loco brake; bail-off pulses an air-line-restore.
-3. **No load slider on the device.** Either expose `loadSliderPosition`
-   as a per-loco JMRI preference (a "scenario / consist mass" setting),
-   or assign one of the front-edge buttons to "step load up / down" so
-   the operator can dial it in without a separate UI window.
+3. **No load slider on the device.** Exposed instead as a JMRI-side
+   **named-scenario picker** at session start (see §9.2). The operator
+   picks "what they're doing today" — `Light engine`, `Switcher`,
+   `Local freight`, `Through freight`, `Unit train`, or `Custom` — and
+   the corresponding Δt multiplier feeds into the same
+   `targetAcceleration` slot EngineDriver's slider does. No physical
+   knob is needed.
 4. **No Air on/off button — and we likely don't need one.** EngineDriver
    has the toggle because its single brake slider has to do double duty
    (mechanical brake *and* derived air-line pressure); the toggle lets
