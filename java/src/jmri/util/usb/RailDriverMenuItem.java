@@ -208,7 +208,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     double vDouble = (256 - vInt) / 256.D;
                                     if (i == 1) {   // throttle
                                         // convert to float (-1.0 thru +1.0)
-                                        vDouble = (2.D * vDouble) - 1.D;
+                                        // Lever DOWN (toward THROTTLE label, byte ~0xdd) -> positive value -> loco moves.
+                                        // Lever UP (toward DYN BRAKE label, byte ~0x3a) -> negative value -> dynamic-brake side.
+                                        vDouble = 1.D - (2.D * vDouble);
                                     }
                                     String name1 = String.format("Axis %d", i);
                                     log.info("firePropertyChange(\"Value\", {}, {})", name1, vDouble);
@@ -755,7 +757,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                 break;
                             }
                         }
-                        if (throttle != null && fNum > 0 && fNum < throttle.getFunctions().length)  {
+                        if (throttle != null && fNum >= 0 && fNum < throttle.getFunctions().length)  {
                             if (! throttle.getFunctionMomentary(fNum)) {
                                 if (isDown) {
                                     throttle.setFunction(fNum, !throttle.getFunction(fNum) );
