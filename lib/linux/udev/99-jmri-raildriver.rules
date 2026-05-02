@@ -1,0 +1,36 @@
+# JMRI RailDriver Modern Desktop (P.I. Engineering)
+#
+# Sample udev rule for Linux users of the RailDriver Modern Desktop with
+# JMRI. Not loaded by the JVM; this file is documentation/sample only.
+#
+# Install:
+#   sudo cp lib/linux/udev/99-jmri-raildriver.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#   # add yourself to the plugdev group if not already a member:
+#   sudo usermod -aG plugdev "$USER"   # log out and back in
+#   # unplug + replug the RailDriver
+#
+# What each rule does:
+# 1. Make the raw HID node (/dev/hidraw*) group-readable for plugdev.
+#    This is what JMRI's built-in RailDriver throttle actually opens
+#    via hid4java.
+# 2. Make the legacy USB node (/dev/bus/usb/*) group-readable. Covers
+#    the unrelated javax.usb path used by JMRI's Debug -> USB Browser
+#    tool (UsbUtil/UsbBrowserPanel); harmless for users who don't need
+#    that tool.
+# 3. Tell libinput / X11 to ignore the kernel-synthesised input device
+#    (/dev/input/eventN) so RailDriver button presses don't generate
+#    spurious mouse events on the desktop. Without this, button
+#    presses on the controller may produce
+#    "java.lang.IllegalArgumentException: Nonexistent button N"
+#    warnings on the AWT-XAWT thread (kernel synthesises mouse-button
+#    events with extended button numbers that exceed Java's accepted
+#    MouseEvent range). The hidraw access is unaffected.
+
+SUBSYSTEM=="usb",    ATTRS{idVendor}=="05f3", ATTRS{idProduct}=="00d2", \
+    MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="05f3", ATTRS{idProduct}=="00d2", \
+    MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="input",  ATTRS{idVendor}=="05f3", ATTRS{idProduct}=="00d2", \
+    ENV{ID_INPUT}="0", ENV{ID_INPUT_MOUSE}="0", ENV{ID_INPUT_KEY}="0", \
+    ENV{LIBINPUT_IGNORE_DEVICE}="1"
