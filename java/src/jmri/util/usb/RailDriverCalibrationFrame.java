@@ -201,19 +201,17 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
                 row("Full Release",     v -> i.fullRelease     = v, () -> i.fullRelease     = null),
                 row("Full Application", v -> i.fullApplication = v, () -> i.fullApplication = null)));
 
-        JLabel sub4 = new JLabel("Bail-off (transient, byte 4):");
+        JLabel sub4 = new JLabel("Bail-off (transient momentary switch, byte 4):");
         sub4.setAlignmentX(Component.LEFT_ALIGNMENT);
         section.add(Box.createVerticalStrut(4));
         section.add(sub4);
         CalibrationBar bar4 = newBarForAxis(4);
-        bar4.addDetent("Rest low",   () -> i.bailoffRestLow  != null ? i.bailoffRestLow  : RailDriverCalibration.DEF_INDEPBRAKE_BAILOFF_LOW,  () -> i.bailoffRestLow  != null);
-        bar4.addDetent("Rest high",  () -> i.bailoffRestHigh != null ? i.bailoffRestHigh : RailDriverCalibration.DEF_INDEPBRAKE_BAILOFF_HIGH, () -> i.bailoffRestHigh != null);
-        bar4.addDetent("Bail-off",   () -> i.bailoffFull     != null ? i.bailoffFull     : RailDriverCalibration.DEF_INDEPBRAKE_BAILOFF_FULL, () -> i.bailoffFull     != null);
+        bar4.addDetent("Rest",     () -> i.bailoffRest    != null ? i.bailoffRest    : RailDriverCalibration.DEF_INDEPBRAKE_BAILOFF_REST,    () -> i.bailoffRest    != null);
+        bar4.addDetent("Bail-off", () -> i.bailoffPressed != null ? i.bailoffPressed : RailDriverCalibration.DEF_INDEPBRAKE_BAILOFF_PRESSED, () -> i.bailoffPressed != null);
         section.add(bar4);
         section.add(buildCaptureButtonRow(4, bar4,
-                row("Rest low",  v -> i.bailoffRestLow  = v, () -> i.bailoffRestLow  = null),
-                row("Rest high", v -> i.bailoffRestHigh = v, () -> i.bailoffRestHigh = null),
-                row("Bail-off",  v -> i.bailoffFull     = v, () -> i.bailoffFull     = null)));
+                row("Rest",     v -> i.bailoffRest    = v, () -> i.bailoffRest    = null),
+                row("Bail-off", v -> i.bailoffPressed = v, () -> i.bailoffPressed = null)));
         return section;
     }
 

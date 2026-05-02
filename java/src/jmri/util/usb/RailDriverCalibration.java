@@ -55,11 +55,10 @@ public final class RailDriverCalibration {
     public static final int DEF_AUTOBRAKE_CS       = 0x80;   // mid placeholder; not captured (closer to EMG)
     public static final int DEF_AUTOBRAKE_EMG      = 0x4f;
 
-    public static final int DEF_INDEPBRAKE_FULLRELEASE   = 0xc0;
-    public static final int DEF_INDEPBRAKE_FULLAPP       = 0x41;
-    public static final int DEF_INDEPBRAKE_BAILOFF_LOW   = 0x95;
-    public static final int DEF_INDEPBRAKE_BAILOFF_HIGH  = 0xa8;
-    public static final int DEF_INDEPBRAKE_BAILOFF_FULL  = 0xd4;
+    public static final int DEF_INDEPBRAKE_FULLRELEASE      = 0xc0;
+    public static final int DEF_INDEPBRAKE_FULLAPP          = 0x41;
+    public static final int DEF_INDEPBRAKE_BAILOFF_REST     = 0x96;
+    public static final int DEF_INDEPBRAKE_BAILOFF_PRESSED  = 0xd0;
 
     public static final int DEF_WIPER_OFF          = 0x66;
     public static final int DEF_WIPER_SLOW         = 0x90;   // mid placeholder; not captured
@@ -92,13 +91,21 @@ public final class RailDriverCalibration {
         public Integer emg;
     }
 
-    /** Mutable POJO for the Independent Brake (bytes 3 + 4). */
+    /**
+     * Mutable POJO for the Independent Brake (bytes 3 + 4).
+     * <p>
+     * Byte 3 carries the continuous up/down lever travel between
+     * full release and full application. Byte 4 carries a momentary
+     * bail-off switch ("press the lever right") that activates
+     * independently of byte-3 position; the reported byte value is
+     * pressure-graded but JMRI treats it as binary against a midpoint
+     * threshold between the Rest and Pressed calibration values.
+     */
     public static final class IndepBrakeCal {
         public Integer fullRelease;       // byte 3
         public Integer fullApplication;   // byte 3
-        public Integer bailoffRestLow;    // byte 4
-        public Integer bailoffRestHigh;   // byte 4
-        public Integer bailoffFull;       // byte 4
+        public Integer bailoffRest;       // byte 4 — typical value with bail-off switch released
+        public Integer bailoffPressed;    // byte 4 — typical value with bail-off switch pressed
     }
 
     /** Mutable POJO for the Wiper rotary. */
@@ -143,6 +150,20 @@ public final class RailDriverCalibration {
     public int lightsOff()       { return lights.off != null ? lights.off : DEF_LIGHTS_OFF; }
     public int lightsFull()      { return lights.full != null ? lights.full : DEF_LIGHTS_FULL; }
     @CheckForNull public Integer lightsDim() { return lights.dim; }
+
+    public int indepBrakeBailoffRest()    { return indepBrake.bailoffRest    != null ? indepBrake.bailoffRest    : DEF_INDEPBRAKE_BAILOFF_REST; }
+    public int indepBrakeBailoffPressed() { return indepBrake.bailoffPressed != null ? indepBrake.bailoffPressed : DEF_INDEPBRAKE_BAILOFF_PRESSED; }
+
+    /**
+     * Threshold byte for the Independent Brake bail-off switch. byte 4 &gt;= this
+     * value means bail-off is active; below means released. Computed as the
+     * midpoint between the calibrated Rest and Pressed reference values.
+     * Phase 3 stores this for phase 4+ wiring; Axis 4 dispatch is still
+     * log-only at the moment.
+     */
+    public int bailoffThreshold() {
+        return (indepBrakeBailoffRest() + indepBrakeBailoffPressed()) / 2;
+    }
 
     // -------- derived thresholds for propertyChange dispatch --------
 
@@ -300,9 +321,8 @@ public final class RailDriverCalibration {
         autoBrake.emg = null;
         indepBrake.fullRelease = null;
         indepBrake.fullApplication = null;
-        indepBrake.bailoffRestLow = null;
-        indepBrake.bailoffRestHigh = null;
-        indepBrake.bailoffFull = null;
+        indepBrake.bailoffRest = null;
+        indepBrake.bailoffPressed = null;
         wiper.off = null;
         wiper.slow = null;
         wiper.full = null;
@@ -338,11 +358,10 @@ public final class RailDriverCalibration {
 
     private static void populateIndepBrake(IndepBrakeCal i, @CheckForNull Element e) {
         if (e == null) return;
-        i.fullRelease      = readInt(e, "fullRelease");
-        i.fullApplication  = readInt(e, "fullApplication");
-        i.bailoffRestLow   = readInt(e, "bailoffRestLow");
-        i.bailoffRestHigh  = readInt(e, "bailoffRestHigh");
-        i.bailoffFull      = readInt(e, "bailoffFull");
+        i.fullRelease     = readInt(e, "fullRelease");
+        i.fullApplication = readInt(e, "fullApplication");
+        i.bailoffRest     = readInt(e, "bailoffRest");
+        i.bailoffPressed  = readInt(e, "bailoffPressed");
     }
 
     private static void populateWiper(WiperCal w, @CheckForNull Element e) {
@@ -389,9 +408,8 @@ public final class RailDriverCalibration {
         Element e = new Element("indepBrake");
         e.addContent(intElement("fullRelease",     i.fullRelease));
         e.addContent(intElement("fullApplication", i.fullApplication));
-        e.addContent(intElement("bailoffRestLow",  i.bailoffRestLow));
-        e.addContent(intElement("bailoffRestHigh", i.bailoffRestHigh));
-        e.addContent(intElement("bailoffFull",     i.bailoffFull));
+        e.addContent(intElement("bailoffRest",     i.bailoffRest));
+        e.addContent(intElement("bailoffPressed", i.bailoffPressed));
         return e;
     }
 
