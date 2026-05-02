@@ -162,9 +162,9 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
                 () -> t.fullDynBrake != null);
         section.add(bar);
         section.add(buildCaptureButtonRow(1, bar,
-                row("Full Throttle",  v -> t.fullThrottle = v, () -> t.fullThrottle = null),
+                row("Full Dyn Brake", v -> t.fullDynBrake = v, () -> t.fullDynBrake = null),
                 row("Idle",           v -> t.idle         = v, () -> t.idle         = null),
-                row("Full Dyn Brake", v -> t.fullDynBrake = v, () -> t.fullDynBrake = null)));
+                row("Full Throttle",  v -> t.fullThrottle = v, () -> t.fullThrottle = null)));
         section.add(buildDeadbandRow(t));
         return section;
     }
@@ -179,10 +179,10 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
         bar.addDetent("EMG",      () -> a.emg      != null ? a.emg      : RailDriverCalibration.DEF_AUTOBRAKE_EMG,      () -> a.emg      != null);
         section.add(bar);
         section.add(buildCaptureButtonRow(2, bar,
-                row("Released", v -> a.released = v, () -> a.released = null),
-                row("SUP",      v -> a.sup      = v, () -> a.sup      = null),
+                row("EMG",      v -> a.emg      = v, () -> a.emg      = null),
                 row("CS",       v -> a.cs       = v, () -> a.cs       = null),
-                row("EMG",      v -> a.emg      = v, () -> a.emg      = null)));
+                row("SUP",      v -> a.sup      = v, () -> a.sup      = null),
+                row("Released", v -> a.released = v, () -> a.released = null)));
         return section;
     }
 
@@ -198,8 +198,8 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
         bar3.addDetent("Full Application", () -> i.fullApplication != null ? i.fullApplication : RailDriverCalibration.DEF_INDEPBRAKE_FULLAPP,     () -> i.fullApplication != null);
         section.add(bar3);
         section.add(buildCaptureButtonRow(3, bar3,
-                row("Full Release",     v -> i.fullRelease     = v, () -> i.fullRelease     = null),
-                row("Full Application", v -> i.fullApplication = v, () -> i.fullApplication = null)));
+                row("Full Application", v -> i.fullApplication = v, () -> i.fullApplication = null),
+                row("Full Release",     v -> i.fullRelease     = v, () -> i.fullRelease     = null)));
 
         JLabel sub4 = new JLabel("Bail-off (transient momentary switch, byte 4):");
         sub4.setAlignmentX(Component.LEFT_ALIGNMENT);
