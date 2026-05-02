@@ -406,7 +406,8 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
         if (mi != null) {
             mi.reloadCalibration();
         }
-        showStatus("Saved to " + file.getAbsolutePath());
+        log.info("RailDriver calibration saved to {}", file.getAbsolutePath());
+        dispose();
     }
 
     private void wireUpLiveListener() {
