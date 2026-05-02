@@ -68,6 +68,16 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      */
     private static RailDriverMenuItem instance = null;
 
+    /**
+     * Per-byte change threshold applied to analog axes (bytes 0..6) by
+     * the polling thread. The new byte must differ from the
+     * last-emitted byte by at least this many counts before an event
+     * fires; smaller-magnitude changes are silently absorbed. Absorbs
+     * the ~1-byte potentiometer jitter observed when a lever is held
+     * at rest. Digital bytes (7..13) bypass this filter.
+     */
+    private static final int ANALOG_NOISE_THRESHOLD = 2;
+
     @CheckForNull
     public static RailDriverMenuItem getInstance() {
         return instance;
@@ -229,7 +239,21 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     if (ret >= 0) {
                         //log.debug("hidDevice.read: {}", buff_new);
                         for (int i = 0; i < buff_new.length; i++) {
-                            if (buff_old[i] != buff_new[i]) {
+                            // Per-axis change detection. Analog bytes (0..6) get
+                            // hysteresis to absorb the ~1-byte potentiometer
+                            // jitter the user observes when a lever is at rest;
+                            // an event only fires when the new byte differs
+                            // from the last-emitted byte by at least
+                            // ANALOG_NOISE_THRESHOLD. Digital bytes (7..13) are
+                            // unfiltered — buttons need single-bit response.
+                            boolean changed;
+                            if (i < 7) {
+                                int diff = Math.abs((0xFF & buff_new[i]) - (0xFF & buff_old[i]));
+                                changed = diff >= ANALOG_NOISE_THRESHOLD;
+                            } else {
+                                changed = buff_old[i] != buff_new[i];
+                            }
+                            if (changed) {
                                 if (i < 7) {
                                     // analog values
                                     // convert to unsigned int
