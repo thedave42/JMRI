@@ -1,10 +1,6 @@
 # RailDriver Semi-Realistic Throttle Support
 
-> **Parent plan:** [`plan.md`](plan.md)
-> **Related:** [`plan-impl-phase1.md`](plan-impl-phase1.md), [`plan-impl-phase2.md`](plan-impl-phase2.md), [`plan-impl-phase3.md`](plan-impl-phase3.md) — RailDriver bring-up phases 1-3, all merged. This document is a separate feature added on top of that work, not a fourth phase of it.
 > **Research source:** [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md). All section references prefixed `[research §X]` resolve there.
-> **Branch:** `rpi-raildriver`
-> **Target platform:** Raspberry Pi 4, 64-bit Raspberry Pi OS / Debian 12+, JMRI 5.15.x.
 > **Feature goal:** add EngineDriver-style semi-realistic throttle behaviour to the RailDriver path. Speed is no longer set directly from the throttle lever; instead the lever sets a *target* and a separate ramp scheduler walks the live decoder speed toward it on a brake-/scenario-aware schedule. Independent and Auto brakes shape the ramp's Δt; bail-off restores the air line; the dynamic-brake side of the throttle lever finally does something; a named-scenario picker stands in for EngineDriver's continuous load slider.
 
 ## 1. Scope
