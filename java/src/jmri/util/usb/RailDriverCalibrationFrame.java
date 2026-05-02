@@ -151,21 +151,31 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
         ThrottleCal t = working.throttle();
         JPanel section = section("Throttle / Dyn Brake  (#9 / byte 1)  — DOWN = throttle, UP = dyn brake");
         CalibrationBar bar = newBarForAxis(1);
+        // Bar markers in byte order (low byte left → high byte right):
+        // Full Dyn Brake (0x3a) ── Idle Low (~0x80) ── Idle High (~0x86) ── Full Throttle (0xdd)
         bar.addDetent("Full Throttle",
                 () -> t.fullThrottle != null ? t.fullThrottle : RailDriverCalibration.DEF_THROTTLE_FULL,
                 () -> t.fullThrottle != null);
-        bar.addDetent("Idle",
-                () -> t.idle != null ? t.idle : RailDriverCalibration.DEF_THROTTLE_IDLE,
-                () -> t.idle != null);
+        bar.addDetent("Idle High",
+                () -> t.idleHigh != null ? t.idleHigh : RailDriverCalibration.DEF_THROTTLE_IDLE_HIGH,
+                () -> t.idleHigh != null);
+        bar.addDetent("Idle Low",
+                () -> t.idleLow != null ? t.idleLow : RailDriverCalibration.DEF_THROTTLE_IDLE_LOW,
+                () -> t.idleLow != null);
         bar.addDetent("Full Dyn Brake",
                 () -> t.fullDynBrake != null ? t.fullDynBrake : RailDriverCalibration.DEF_THROTTLE_FULLDYN,
                 () -> t.fullDynBrake != null);
         section.add(bar);
+        // Capture buttons in left-to-right bar order (matches the byte-axis layout).
+        // Idle is captured as a [Idle Low, Idle High] range — bytes within that
+        // range register as no-movement; bytes above Idle High accelerate the
+        // loco toward Full Throttle. Below Idle Low is also no-movement today
+        // (dyn-brake side not yet wired).
         section.add(buildCaptureButtonRow(1, bar,
                 row("Full Dyn Brake", v -> t.fullDynBrake = v, () -> t.fullDynBrake = null),
-                row("Idle",           v -> t.idle         = v, () -> t.idle         = null),
+                row("Idle Low",       v -> t.idleLow      = v, () -> t.idleLow      = null),
+                row("Idle High",      v -> t.idleHigh     = v, () -> t.idleHigh     = null),
                 row("Full Throttle",  v -> t.fullThrottle = v, () -> t.fullThrottle = null)));
-        section.add(buildDeadbandRow(t));
         return section;
     }
 
@@ -302,58 +312,6 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
             bar.refresh();
         });
         p.add(resetSection);
-        return p;
-    }
-
-    private JPanel buildDeadbandRow(ThrottleCal t) {
-        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        p.setAlignmentX(Component.LEFT_ALIGNMENT);
-
-        p.add(new JLabel("Idle deadband (0.0..0.5):"));
-
-        JTextField field = new JTextField(6);
-        Runnable refresh = () -> {
-            Double cur = t.idleDeadband;
-            field.setText(cur == null ? "" : cur.toString());
-        };
-        auxRefreshers.add(refresh);
-        refresh.run();
-        Runnable commit = () -> {
-            String text = field.getText().trim();
-            if (text.isEmpty()) {
-                t.idleDeadband = null;
-                return;
-            }
-            try {
-                double v = Double.parseDouble(text);
-                if (v < 0.0 || v > 0.5) {
-                    showStatus("Idle deadband must be in 0.0..0.5. Reverting.");
-                    field.setText("");
-                    t.idleDeadband = null;
-                    return;
-                }
-                t.idleDeadband = v;
-            } catch (NumberFormatException ex) {
-                showStatus("'" + text + "' is not a valid number. Reverting.");
-                field.setText("");
-                t.idleDeadband = null;
-            }
-        };
-        field.addActionListener(e -> commit.run());
-        field.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override public void focusLost(java.awt.event.FocusEvent e) { commit.run(); }
-        });
-        p.add(field);
-
-        p.add(new JLabel(String.format("(default %.2f)", RailDriverCalibration.DEF_IDLE_DEADBAND)));
-
-        JButton reset = new JButton("Reset");
-        reset.addActionListener(e -> {
-            t.idleDeadband = null;
-            field.setText("");
-        });
-        p.add(reset);
-
         return p;
     }
 

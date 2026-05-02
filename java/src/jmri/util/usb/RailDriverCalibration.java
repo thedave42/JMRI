@@ -45,10 +45,10 @@ public final class RailDriverCalibration {
     public static final int DEF_REVERSER_NEUTRAL   = 0x80;   // mid; not captured by inventory
     public static final int DEF_REVERSER_REVERSE   = 0xcf;
 
-    public static final int DEF_THROTTLE_FULL      = 0xdd;   // lever DOWN per inventory
-    public static final int DEF_THROTTLE_IDLE      = 0x80;   // mid; not captured by inventory
-    public static final int DEF_THROTTLE_FULLDYN   = 0x3a;   // lever UP per inventory
-    public static final double DEF_IDLE_DEADBAND   = 0.05D;
+    public static final int DEF_THROTTLE_FULL       = 0xdd;   // lever DOWN per inventory
+    public static final int DEF_THROTTLE_IDLE_LOW   = 0x80;   // bipolar zero — lower bound of default idle range
+    public static final int DEF_THROTTLE_IDLE_HIGH  = 0x86;   // ~6 bytes above bipolar zero — upper bound of default idle range, reproduces phase-2's 0.05 deadband
+    public static final int DEF_THROTTLE_FULLDYN    = 0x3a;   // lever UP per inventory
 
     public static final int DEF_AUTOBRAKE_RELEASED = 0xb7;
     public static final int DEF_AUTOBRAKE_SUP      = 0xa0;   // mid placeholder; not captured (closer to RELEASED)
@@ -75,12 +75,23 @@ public final class RailDriverCalibration {
         public Integer reverse;
     }
 
-    /** Mutable POJO for the Throttle/DynBrake lever including its idle deadband. */
+    /**
+     * Mutable POJO for the Throttle / Dyn Brake lever.
+     * <p>
+     * Idle is captured as a {@code [idleLow, idleHigh]} byte range rather
+     * than a single point, so the lever's mechanical rest slop and the
+     * operator's preferred "fudge zone" can be modelled directly on the
+     * calibration bar. Bytes within the captured idle range are treated
+     * as no-movement; bytes above {@code idleHigh} accelerate the loco
+     * toward {@code fullThrottle}; bytes below {@code idleLow} are also
+     * no-movement today (the dynamic-brake side is not yet wired —
+     * phase 4+).
+     */
     public static final class ThrottleCal {
         public Integer fullThrottle;
-        public Integer idle;
+        public Integer idleLow;
+        public Integer idleHigh;
         public Integer fullDynBrake;
-        public Double  idleDeadband;
     }
 
     /** Mutable POJO for the Auto Brake lever's named positions. */
@@ -142,10 +153,10 @@ public final class RailDriverCalibration {
     public int reverserNeutral() { return reverser.neutral != null ? reverser.neutral : DEF_REVERSER_NEUTRAL; }
     public int reverserReverse() { return reverser.reverse != null ? reverser.reverse : DEF_REVERSER_REVERSE; }
 
-    public int throttleFull()    { return throttle.fullThrottle != null ? throttle.fullThrottle : DEF_THROTTLE_FULL; }
-    public int throttleIdle()    { return throttle.idle != null ? throttle.idle : DEF_THROTTLE_IDLE; }
-    public int throttleFullDyn() { return throttle.fullDynBrake != null ? throttle.fullDynBrake : DEF_THROTTLE_FULLDYN; }
-    public double idleDeadband() { return throttle.idleDeadband != null ? throttle.idleDeadband : DEF_IDLE_DEADBAND; }
+    public int throttleFull()     { return throttle.fullThrottle != null ? throttle.fullThrottle : DEF_THROTTLE_FULL; }
+    public int throttleIdleLow()  { return throttle.idleLow      != null ? throttle.idleLow      : DEF_THROTTLE_IDLE_LOW; }
+    public int throttleIdleHigh() { return throttle.idleHigh     != null ? throttle.idleHigh     : DEF_THROTTLE_IDLE_HIGH; }
+    public int throttleFullDyn()  { return throttle.fullDynBrake != null ? throttle.fullDynBrake : DEF_THROTTLE_FULLDYN; }
 
     public int lightsOff()       { return lights.off != null ? lights.off : DEF_LIGHTS_OFF; }
     public int lightsFull()      { return lights.full != null ? lights.full : DEF_LIGHTS_FULL; }
@@ -191,9 +202,11 @@ public final class RailDriverCalibration {
     }
 
     /**
-     * Throttle's lower pin in {@code value} space — Idle plus the user's
-     * idle deadband. Below this the loco is at speed 0; above this the
-     * loco accelerates toward {@link #throttleMax()}.
+     * Throttle's lower pin in {@code value} space — the bipolar value at
+     * the upper edge of the calibrated idle range. Byte values within
+     * the {@code [idleLow, idleHigh]} idle window all map to fraction = 0
+     * (loco at speed 0); bytes above {@code idleHigh} accelerate the
+     * loco toward {@link #throttleMax()}.
      * <p>
      * Throttle uses the bipolar transform {@code 1 - 2*(256-vInt)/256}.
      * Lever DOWN (toward THROTTLE label, byte ~0xdd) yields a high
@@ -201,8 +214,8 @@ public final class RailDriverCalibration {
      * yields negative.
      */
     public double throttleMin() {
-        double idle = 1.0 - (2.0 * (256 - throttleIdle()) / 256.0);
-        return idle + idleDeadband();
+        int idleHigh = throttleIdleHigh();
+        return (2.0 * idleHigh - 256.0) / 256.0;
     }
 
     /**
@@ -210,7 +223,7 @@ public final class RailDriverCalibration {
      * after the bipolar transform. Above this the loco runs at speed 1.0.
      */
     public double throttleMax() {
-        return 1.0 - (2.0 * (256 - throttleFull()) / 256.0);
+        return (2.0 * throttleFull() - 256.0) / 256.0;
     }
 
     /**
@@ -312,9 +325,9 @@ public final class RailDriverCalibration {
         reverser.neutral = null;
         reverser.reverse = null;
         throttle.fullThrottle = null;
-        throttle.idle = null;
+        throttle.idleLow = null;
+        throttle.idleHigh = null;
         throttle.fullDynBrake = null;
-        throttle.idleDeadband = null;
         autoBrake.released = null;
         autoBrake.sup = null;
         autoBrake.cs = null;
@@ -343,9 +356,9 @@ public final class RailDriverCalibration {
     private static void populateThrottle(ThrottleCal t, @CheckForNull Element e) {
         if (e == null) return;
         t.fullThrottle = readInt(e, "fullThrottle");
-        t.idle         = readInt(e, "idle");
+        t.idleLow      = readInt(e, "idleLow");
+        t.idleHigh     = readInt(e, "idleHigh");
         t.fullDynBrake = readInt(e, "fullDynBrake");
-        t.idleDeadband = readDouble(e, "idleDeadband");
     }
 
     private static void populateAutoBrake(AutoBrakeCal a, @CheckForNull Element e) {
@@ -389,9 +402,9 @@ public final class RailDriverCalibration {
     private static Element buildThrottle(ThrottleCal t) {
         Element e = new Element("throttle");
         e.addContent(intElement("fullThrottle", t.fullThrottle));
-        e.addContent(intElement("idle",         t.idle));
+        e.addContent(intElement("idleLow",      t.idleLow));
+        e.addContent(intElement("idleHigh",     t.idleHigh));
         e.addContent(intElement("fullDynBrake", t.fullDynBrake));
-        e.addContent(doubleElement("idleDeadband", t.idleDeadband));
         return e;
     }
 
