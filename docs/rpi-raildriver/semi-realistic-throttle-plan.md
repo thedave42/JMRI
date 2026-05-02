@@ -1,40 +1,40 @@
-# RailDriver Phase 4 — Semi-realistic throttle support
+# RailDriver Semi-Realistic Throttle Support
 
 > **Parent plan:** [`plan.md`](plan.md)
-> **Predecessors:** [`plan-impl-phase1.md`](plan-impl-phase1.md), [`plan-impl-phase2.md`](plan-impl-phase2.md), [`plan-impl-phase3.md`](plan-impl-phase3.md) — all merged.
+> **Related:** [`plan-impl-phase1.md`](plan-impl-phase1.md), [`plan-impl-phase2.md`](plan-impl-phase2.md), [`plan-impl-phase3.md`](plan-impl-phase3.md) — RailDriver bring-up phases 1-3, all merged. This document is a separate feature added on top of that work, not a fourth phase of it.
 > **Research source:** [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md). All section references prefixed `[research §X]` resolve there.
 > **Branch:** `rpi-raildriver`
 > **Target platform:** Raspberry Pi 4, 64-bit Raspberry Pi OS / Debian 12+, JMRI 5.15.x.
-> **Phase 4 goal:** add EngineDriver-style semi-realistic throttle behaviour to the RailDriver path. Speed is no longer set directly from the throttle lever; instead the lever sets a *target* and a separate ramp scheduler walks the live decoder speed toward it on a brake-/scenario-aware schedule. Independent and Auto brakes shape the ramp's Δt; bail-off restores the air line; the dynamic-brake side of the throttle lever finally does something; a named-scenario picker stands in for EngineDriver's continuous load slider.
+> **Feature goal:** add EngineDriver-style semi-realistic throttle behaviour to the RailDriver path. Speed is no longer set directly from the throttle lever; instead the lever sets a *target* and a separate ramp scheduler walks the live decoder speed toward it on a brake-/scenario-aware schedule. Independent and Auto brakes shape the ramp's Δt; bail-off restores the air line; the dynamic-brake side of the throttle lever finally does something; a named-scenario picker stands in for EngineDriver's continuous load slider.
 
 ## 1. Scope
 
-### In scope (split into sub-phases 4a–4g, each independently shippable)
+### In scope (split into stages 1–7, each independently shippable)
 
-**4a — Ramp engine + bypass switch.** New `SemiRealisticThrottleEngine` class that owns `targetSpeed` / `targetAcceleration` / a `ScheduledExecutorService`-driven ramp scheduler. When semi-realistic mode is OFF (default, until the user opts in), behaviour is identical to phase 3. When ON, the throttle lever (Axis 1 above Idle High) sets `targetSpeed`; the scheduler ticks toward it at the base acceleration / deceleration delay. No brakes shape the ramp yet — purely target-and-walk.
+**Stage 1 — Ramp engine + bypass switch + unified Settings window.** New `SemiRealisticThrottleEngine` class that owns `targetSpeed` / `targetAcceleration` / a `ScheduledExecutorService`-driven ramp scheduler. When semi-realistic mode is OFF (default, until the user opts in), behaviour is identical to the existing RailDriver bring-up. When ON, the throttle lever (Axis 1 above Idle High) sets `targetSpeed`; the scheduler ticks toward it at the base acceleration / deceleration delay. No brakes shape the ramp yet — purely target-and-walk. Stage 1 also rolls up the existing standalone Calibration window and the new feature settings into a single tabbed `RailDriver Settings...` Debug-menu entry (see §2.4).
 
-**4b — Scenario picker (load multiplier).** Adds the named-scenario enum and picker UI per [research §9.2]. Multiplies `targetAcceleration` so heavier scenarios visibly extend Δt. Persisted in the calibration XML under a new `<semiRealistic>` subtree (schema bumped to version `"2"`).
+**Stage 2 — Scenario picker (load multiplier).** Adds the named-scenario enum and picker UI per [research §9.2]. Multiplies `targetAcceleration` so heavier scenarios visibly extend Δt. Persisted in the calibration XML under a new `<semiRealistic>` subtree (schema bumped to version `"2"`).
 
-**4c — Independent brake (Axis 3) → mechanical brake clip + accel shaping.** Calibrated Indep-brake position becomes EngineDriver's `brakeSliderPosition`, quantised to a configurable number of steps. Folds into the existing `setTargetSpeed` brake regimes [research §3.5] — clipping the target and selecting between `effectiveBrake` and `maxBrakeUnderPower`-curve acceleration depending on whether the throttle is fighting the brake.
+**Stage 3 — Independent brake (Axis 3) → mechanical brake clip + accel shaping.** Calibrated Indep-brake position becomes EngineDriver's `brakeSliderPosition`, quantised to a configurable number of steps. Folds into the existing `setTargetSpeed` brake regimes [research §3.5] — clipping the target and selecting between `effectiveBrake` and `maxBrakeUnderPower`-curve acceleration depending on whether the throttle is fighting the brake.
 
-**4d — Auto brake (Axis 2) → air-line value + bail-off (byte 4) restore.** The Auto Brake lever directly drives `airLineValue` (no derived-from-mechanical model — see [research §10] item 2). Released → 100, EMG → 0, monotonic between. The bail-off switch (byte 4 transient) immediately restores `airLineValue` to 100 while held. Replaces EngineDriver's reservoir-and-line refill repeaters [research §4.2] with a simpler direct-from-lever mapping (the operator's hand on the lever is the prototype).
+**Stage 4 — Auto brake (Axis 2) → air-line value + bail-off (byte 4) restore.** The Auto Brake lever directly drives `airLineValue` (no derived-from-mechanical model — see [research §10] item 2). Released → 100, EMG → 0, monotonic between. The bail-off switch (byte 4 transient) immediately restores `airLineValue` to 100 while held. Replaces EngineDriver's reservoir-and-line refill repeaters [research §4.2] with a simpler direct-from-lever mapping (the operator's hand on the lever is the prototype).
 
-**4e — Dynamic brake side of throttle lever (Axis 1 below Idle Low).** Below the calibrated Idle Low, the throttle lever produces a negative `targetAcceleration` term, separate from the air-line and indep-brake terms. Distinct from the indep-brake because real dyn-brake doesn't use trainline air [research §10 item 1]. LED display shows `DBr` while in dyn-brake region.
+**Stage 5 — Dynamic brake side of throttle lever (Axis 1 below Idle Low).** Below the calibrated Idle Low, the throttle lever produces a negative `targetAcceleration` term, separate from the air-line and indep-brake terms. Distinct from the indep-brake because real dyn-brake doesn't use trainline air [research §10 item 1]. LED display shows `DBr` while in dyn-brake region.
 
-**4f — Reverser interlock.** Direction-change-only-at-speed-0 interlock per [research §5]. E-Stop SPDT keeps its current `setSpeedSetting(-1)` behaviour. (EngineDriver's "soft stop button" mode is intentionally not adopted — the RailDriver's physical Independent Brake handle already gives the operator a more prototypical controlled-stop than a one-touch button would.)
+**Stage 6 — Reverser interlock.** Direction-change-only-at-speed-0 interlock per [research §5]. E-Stop SPDT keeps its current `setSpeedSetting(-1)` behaviour. (EngineDriver's "soft stop button" mode is intentionally not adopted — the RailDriver's physical Independent Brake handle already gives the operator a more prototypical controlled-stop than a one-touch button would.)
 
-**4g — ESU decoder-brake passthrough (optional, gated by user preference).** Per [research §4.3], computes brake-percent from the calibrated indep-brake position and forwards F4/F5/F6 dispatch when the user opts in. Defaults to OFF.
+**Stage 7 — ESU decoder-brake passthrough (optional, gated by user preference).** Per [research §4.3], computes brake-percent from the calibrated indep-brake position and forwards F4/F5/F6 dispatch when the user opts in. Defaults to OFF.
 
-### Out of scope (deferred to phase 5+)
+### Out of scope (deferred to future work)
 
-- **Per-roster scenario default.** Phase 4 ships with a session-level picker; reading `RosterEntry.getAttribute("raildriver.scenario")` to override the session default is phase 5+ per [research §9.2.5].
-- **Multi-throttle support.** EngineDriver runs up to 6 locos in parallel; we keep the phase-1..3 single-throttle assumption.
-- **Configurable ramp parameters via UI.** Phase 4 exposes `accelerationDelay` / `decelerationDelay` / `speedStep` / `brakeSteps` / `maxBrakePcnt` as fields on the new settings window; advanced curves (e.g. user-configurable load multiplier table) stay hardcoded.
-- **EngineDriver's `Stop` button and its four behaviour modes.** The Stop button is an Android-touch UX device — useful when your only inputs are screen taps. On a RailDriver console the operator already has E-Stop (hard) and the Independent Brake handle (controlled) within reach. None of EngineDriver's four stop modes (`THROTTLE_STOP`, `THROTTLE_STOP_BRAKE_FULL`, `SPEED_ZERO`, `SPEED_ZERO_BRAKE_ZERO`) is adopted; the existing E-Stop SPDT keeps its phase-1 behaviour.
-- **Tests.** Parent §4.5. Phase 5+.
-- **Help / documentation updates.** Parent §4.6. Phase 5+.
+- **Per-roster scenario default.** This feature ships with a session-level picker; reading `RosterEntry.getAttribute("raildriver.scenario")` to override the session default is deferred per [research §9.2.5].
+- **Multi-throttle support.** EngineDriver runs up to 6 locos in parallel; we keep the existing single-throttle assumption from the RailDriver bring-up phases.
+- **Configurable ramp parameters via UI.** This feature exposes `accelerationDelay` / `decelerationDelay` / `speedStep` / `brakeSteps` / `maxBrakePcnt` as fields on the Settings tab; advanced curves (e.g. user-configurable load multiplier table) stay hardcoded.
+- **EngineDriver's `Stop` button and its four behaviour modes.** The Stop button is an Android-touch UX device — useful when your only inputs are screen taps. On a RailDriver console the operator already has E-Stop (hard) and the Independent Brake handle (controlled) within reach. None of EngineDriver's four stop modes (`THROTTLE_STOP`, `THROTTLE_STOP_BRAKE_FULL`, `SPEED_ZERO`, `SPEED_ZERO_BRAKE_ZERO`) is adopted; the existing E-Stop SPDT keeps its current behaviour.
+- **Tests.** Parent §4.5. Deferred.
+- **Help / documentation updates.** Parent §4.6. Deferred.
 - **Cross-platform verification** — community testers, not in scope.
-- **All latent issues from parent §3 / §6** still untouched.
+- **Latent issues from parent §3 / §6** other than the off-EDT mutation, which is fixed as part of stage 1.
 
 ## 2. Architecture
 
@@ -56,11 +56,11 @@ public final class SemiRealisticThrottleEngine {
 
     // — Latest physical inputs (units after calibration application) —
     private volatile int    leverThrottleSpeed;       // 0..126 from Axis 1 above Idle High
-    private volatile double leverDynBrakeFraction;    // 0.0..1.0 from Axis 1 below Idle Low (4e)
-    private volatile int    indepBrakeStep;           // 0..brakeSteps from Axis 3 (4c)
-    private volatile int    airLinePercent;           // 0..100 from Axis 2 (4d)
-    private volatile boolean bailoffPressed;          // from byte 4 transient (4d)
-    private volatile LoadScenario scenario;           // from picker (4b)
+    private volatile double leverDynBrakeFraction;    // 0.0..1.0 from Axis 1 below Idle Low (stage 5)
+    private volatile int    indepBrakeStep;           // 0..brakeSteps from Axis 3 (stage 3)
+    private volatile int    airLinePercent;           // 0..100 from Axis 2 (stage 4)
+    private volatile boolean bailoffPressed;          // from byte 4 transient (stage 4)
+    private volatile LoadScenario scenario;           // from picker (stage 2)
     private volatile int    direction;                // FORWARD / NEUTRAL / REVERSE from Axis 0
 
     // — Scheduler —
@@ -82,7 +82,7 @@ public final class SemiRealisticThrottleEngine {
 
 ### 2.2 Threading model
 
-Three threads are involved. The EDT-discipline boundary is strict: **no Swing-touching code runs off the EDT, anywhere.** The phase-3 latent off-EDT mutation (parent §3 / §6) is fixed as part of phase 4a — see §3.1 for the wrapping work.
+Three threads are involved. The EDT-discipline boundary is strict: **no Swing-touching code runs off the EDT, anywhere.** The pre-existing off-EDT mutation in the RailDriver bring-up code (parent §3 / §6) is fixed as part of stage 1 — see §3.1 for the wrapping work.
 
 | Thread | What it does | What it must NOT do |
 |---|---|---|
@@ -118,7 +118,7 @@ When `enabled == false`, `engine.recompute()` is a no-op and `dispatchValueEvent
 
 **Decision: the existing phase-3 calibration window and the new semi-realistic settings UI are merged into a single two-tab `RailDriverSettingsFrame`.** Going forward there is exactly one Debug-menu entry for RailDriver configuration, and one window the operator opens to adjust either set of values.
 
-Menu entry: `Debug → RailDriver Settings...` (replaces the phase-3 `Debug → RailDriver Calibration...`).
+Menu entry: `Debug → RailDriver Settings...` (replaces the standalone `Debug → RailDriver Calibration...` entry that ships with the existing RailDriver bring-up).
 
 Window layout (top-down):
 
@@ -137,7 +137,7 @@ Window layout (top-down):
 ```
 
 - The **Settings tab** is the one selected when the window opens (`setSelectedIndex(0)` in the constructor).
-- The **Calibration tab** holds the existing phase-3 visual-bar UI verbatim — bars, capture buttons, per-section "Reset to defaults" buttons, "Reset all to defaults" button. None of that visual layout changes; it's just hosted inside a tab now instead of being the entire window.
+- The **Calibration tab** holds the existing visual-bar UI verbatim — bars, capture buttons, per-section "Reset to defaults" buttons, "Reset all to defaults" button. None of that visual layout changes; it's just hosted inside a tab now instead of being the entire window.
 - The Settings tab holds the controls listed below.
 - The bottom button bar is shared across tabs — clicking Save or Apply persists everything from both tabs, regardless of which tab is currently visible.
 
@@ -174,7 +174,7 @@ Internally each input control in a tab (`JTextField` document listener, `JCheckB
 
 The frame holds a single `boolean uiDirty = settingsTab.isDirty() || calibrationTab.isDirty()` and uses it to drive `applyButton.setEnabled(uiDirty)`. It registers itself as a dirty listener on both tabs at construction time. After a successful Save / Apply the frame calls `resetToFile(freshlyReloadedCalibration)` on both tabs, which clears their dirty flags and fires one final notification → Apply greys out.
 
-**Capture buttons mark dirty.** A capture-button press writes the live byte into the working calibration's detent; that's a value change ⇒ Apply enables. The phase-3 capture flow is unchanged otherwise (live cursor, detent markers, etc.).
+**Capture buttons mark dirty.** A capture-button press writes the live byte into the working calibration's detent; that's a value change ⇒ Apply enables. The capture flow inherited from the existing calibration window is unchanged otherwise (live cursor, detent markers, etc.).
 
 #### Save/Apply persistence flow
 
@@ -184,11 +184,11 @@ Both buttons run the same sequence:
 3. Call `calibrationTab.validateAndApplyTo(working)` — write the per-axis detent values.
 4. If either returned false, abort — auto-select that tab, show the validation message in the status line, leave window open, leave dirty set.
 5. Persist `working` to XML.
-6. Call `RailDriverMenuItem.reloadCalibration()` so the polling thread + (when phase 4a lands) the semi-realistic engine pick up the new values without restart.
+6. Call `RailDriverMenuItem.reloadCalibration()` so the polling thread + (when stage 1 lands) the semi-realistic engine pick up the new values without restart.
 7. Re-load `working` from disk (round-trip) and call `resetToFile(roundTripped)` on both tabs — guarantees the in-window state matches the file exactly, clears dirty.
 8. Save closes the window via `dispose()`; Apply does not.
 
-This consolidation rolls together the phase-3 and phase-4 user-facing surfaces. **The phase-3 `RailDriverCalibrationFrame` and `RailDriverCalibrationAction` are deleted as part of phase 4a; the `RdCalibrate` Bundle key is replaced with `RdSettings`.** Operators who used `Debug → RailDriver Calibration...` will find the same calibration UI on the second tab of `Debug → RailDriver Settings...`.
+This consolidation rolls the existing standalone calibration UI together with this feature's settings UI into a single window. **The pre-existing `RailDriverCalibrationFrame` and `RailDriverCalibrationAction` are deleted as part of stage 1; the `RdCalibrate` Bundle key is replaced with `RdSettings`.** Operators who used `Debug → RailDriver Calibration...` will find the same calibration UI on the second tab of `Debug → RailDriver Settings...`.
 
 ### 2.5 Settings persistence
 
@@ -223,23 +223,23 @@ XML schema bumps to `version="2"`. The new `<semiRealistic>` subtree is added at
 </raildriver-calibration>
 ```
 
-Schema migration: phase-3 files (`version="1"`) load cleanly because the loader's existing tolerance for missing elements treats `<semiRealistic>` as absent ⇒ defaults (= disabled, which is the phase-3 fallback ⇒ no behaviour change for legacy files). The `version` attribute exists so a later schema-3 change can branch cleanly.
+Schema migration: existing files (`version="1"`) load cleanly because the loader's existing tolerance for missing elements treats `<semiRealistic>` as absent ⇒ defaults (= disabled, which is the bring-up-era fallback ⇒ no behaviour change for legacy files). The `version` attribute exists so a later schema-3 change can branch cleanly.
 
-## 3. Sub-phase staging
+## 3. Implementation stages
 
-Each sub-phase is independently buildable, installable, and testable on a real DCC loco. Acceptance criteria are listed for each.
+Each stage is independently buildable, installable, and testable on a real DCC loco. Acceptance criteria are listed for each.
 
-### 3.1 Sub-phase 4a — Ramp engine + bypass switch + unified Settings window
+### 3.1 Stage 1 — Ramp engine + bypass switch + unified Settings window
 
-**Goal:** verify the ramp scheduler works end-to-end without any brake/load complexity. The throttle lever sets a target; the loco walks toward it at constant base delay. Also closes out the parent §3 / §6 off-EDT-mutation latent issue by routing every Swing-touching call (in both the new engine path AND the existing phase-3 bypass-mode path) through `SwingUtilities.invokeLater`. Replaces the phase-3 stand-alone calibration window with the unified two-tab Settings window described in §2.4.
+**Goal:** verify the ramp scheduler works end-to-end without any brake/load complexity. The throttle lever sets a target; the loco walks toward it at constant base delay. Also closes out the parent §3 / §6 off-EDT-mutation latent issue by routing every Swing-touching call (in both the new engine path AND the existing direct-dispatch path) through `SwingUtilities.invokeLater`. Replaces the standalone calibration window from the existing RailDriver bring-up with the unified two-tab Settings window described in §2.4.
 
 **New / modified / deleted files:**
 
 *New:*
-- `java/src/jmri/util/usb/SemiRealisticThrottleEngine.java` — engine with the `recompute()` / scheduler / `ThrottleProxy`. In 4a only the throttle path is wired; brake/load fields are present but unused. Worker thread does the math; EDT does the `setSpeedSetting`.
+- `java/src/jmri/util/usb/SemiRealisticThrottleEngine.java` — engine with the `recompute()` / scheduler / `ThrottleProxy`. In stage 1 only the throttle path is wired; brake/load fields are present but unused. Worker thread does the math; EDT does the `setSpeedSetting`.
 - `java/src/jmri/util/usb/SemiRealisticSettings.java` — settings POJO with load + save methods, mirroring `RailDriverCalibration`'s structure.
 - `java/src/jmri/util/usb/RailDriverSettingsFrame.java` — the `JmriJFrame` host described in §2.4: holds a `JTabbedPane` (Settings / Calibration), the bottom Save/Apply/Cancel button bar, status line, and the dirty-tracking glue. Listens for `"RawByte"` events and forwards them to the calibration tab so the live cursor still works while that tab is visible.
-- `java/src/jmri/util/usb/RailDriverSettingsAction.java` — `AbstractAction` opening the unified frame. Calls `RailDriverMenuItem.ensureDeviceAndPolling()` before showing the window (same precondition the phase-3 calibration action enforces today).
+- `java/src/jmri/util/usb/RailDriverSettingsAction.java` — `AbstractAction` opening the unified frame. Calls `RailDriverMenuItem.ensureDeviceAndPolling()` before showing the window (same precondition the existing calibration action enforces today).
 - `java/src/jmri/util/usb/SemiRealisticSettingsPanel.java` — the Settings tab. Implements the `isDirty / addDirtyChangeListener / validateAndApplyTo / resetToFile` contract from §2.4. Disables fields based on the `enabled` checkbox and the Decoder-brake mode dropdown.
 - `java/src/jmri/util/usb/CalibrationTabPanel.java` — the Calibration tab. Created by extracting the entire visual-bar UI body from the existing `RailDriverCalibrationFrame` (everything in the current `buildHeader` / `buildSections` / per-axis `build*Section` / capture-row helpers) into a `JPanel` subclass, dropping the bottom Save / Reset-all / Cancel row (those move to the frame), and implementing the same `isDirty` contract. Capture-button and per-section "Reset to defaults" presses now flip dirty.
 
@@ -247,7 +247,7 @@ Each sub-phase is independently buildable, installable, and testable on a real D
 - `java/src/jmri/util/usb/RailDriverCalibration.java` — bump schema to `"2"`, add `<semiRealistic>` subtree population/build, hold a `SemiRealisticSettings` field.
 - `java/src/jmri/util/usb/RailDriverMenuItem.java`:
    1. Instantiate the engine in `attachThrottleWindow`; route `dispatchValueEvent` Axis 1 dispatch through the engine when `settings.enabled`.
-   2. **Wrap every Swing-touching call in `dispatchValueEvent` in `SwingUtilities.invokeLater`** — this fixes the phase-1..3 off-EDT mutation per §2.2's threading contract. Affects: Axis 0 `throttle.setIsForward`; Axis 1 `throttle.setSpeedSetting` + `setLEDs` (when `setLEDs` reaches Swing — verify; if it only touches `HidDevice` it can stay on the worker); Axis 6 `throttle.setFunction`; the inner-switch's `addressPanel.selectRosterEntry` / `dispatchAddress` / `setRosterSelectedIndex` / `throttleWindow.nextThrottleFrame` / `previousThrottleFrame` / `throttle.setSpeedSetting` / `throttle.setFunction` / `throttle.getFunctionMomentary` / `throttle.getFunctions`. The decision logic (which case matched, what value to compute) stays on the polling thread; only the final mutator/getter call against a Swing-backed object goes through `invokeLater`.
+   2. **Wrap every Swing-touching call in `dispatchValueEvent` in `SwingUtilities.invokeLater`** — this fixes the pre-existing off-EDT mutation per §2.2's threading contract. Affects: Axis 0 `throttle.setIsForward`; Axis 1 `throttle.setSpeedSetting` + `setLEDs` (when `setLEDs` reaches Swing — verify; if it only touches `HidDevice` it can stay on the worker); Axis 6 `throttle.setFunction`; the inner-switch's `addressPanel.selectRosterEntry` / `dispatchAddress` / `setRosterSelectedIndex` / `throttleWindow.nextThrottleFrame` / `previousThrottleFrame` / `throttle.setSpeedSetting` / `throttle.setFunction` / `throttle.getFunctionMomentary` / `throttle.getFunctions`. The decision logic (which case matched, what value to compute) stays on the polling thread; only the final mutator/getter call against a Swing-backed object goes through `invokeLater`.
    3. `reloadCalibration()` already covers the calibration reload; extend it to also notify the engine of new semi-realistic settings (or add a sibling `reloadSemiRealisticSettings()` if the engine needs distinct hooks — implementation detail).
 - `java/src/apps/jmrit/DebugMenu.java` — replace the `new jmri.util.usb.RailDriverCalibrationAction()` line with `new jmri.util.usb.RailDriverSettingsAction()`.
 - `java/src/jmri/util/usb/Bundle.properties` — replace `RdCalibrate = RailDriver Calibration...` with `RdSettings = RailDriver Settings...`. (The new action and frame title reference `RdSettings`.)
@@ -259,32 +259,32 @@ Each sub-phase is independently buildable, installable, and testable on a real D
 `CalibrationBar.java` is unchanged — `CalibrationTabPanel` uses it exactly as the old frame did.
 
 **Acceptance:**
-1. `Debug → RailDriver Settings...` opens the unified window. The Settings tab is selected by default. The Calibration tab shows the same visual-bar UI as phase 3.
+1. `Debug → RailDriver Settings...` opens the unified window. The Settings tab is selected by default. The Calibration tab shows the same visual-bar UI as the existing standalone calibration window.
 2. With either tab visible: editing any field, toggling any checkbox, capturing any byte, or pressing any per-section / settings-tab Reset button enables the Apply button. The Apply button greys back out as soon as Save or Apply completes successfully.
 3. Save: persists everything from both tabs in one XML write, reloads, **closes window**.
 4. Apply: same persistence behaviour, **leaves window open**, dirty greys out after a successful write.
 5. Cancel with no pending changes closes the window. Cancel with pending changes prompts the operator; "Yes / discard" closes, "No / keep editing" leaves the window open with dirty intact.
-6. Validation failure on either tab during Save or Apply: the offending tab is auto-selected, the status line shows the message, the window stays open, dirty stays set. (No phase-3 calibration field can fail validation today; the failure path is exercised by the new Settings-tab numeric inputs.)
-7. Mode OFF: throttle behaves exactly as in phase 3 (direct `setSpeedSetting`, but now wrapped in `invokeLater` — operator-perceptibly identical).
+6. Validation failure on either tab during Save or Apply: the offending tab is auto-selected, the status line shows the message, the window stays open, dirty stays set. (No pre-existing calibration field can fail validation today; the failure path is exercised by the new Settings-tab numeric inputs.)
+7. Mode OFF: throttle behaves exactly as before (direct `setSpeedSetting`, but now wrapped in `invokeLater` — operator-perceptibly identical).
 8. Mode ON: moving the throttle lever from idle to full speed produces a visible ramp on the loco — the loco's speed slider (in JMRI throttle window) walks up over ~19 s by default (63 steps × 300 ms, with default speed step = 2).
 9. Mode ON: moving the lever back to idle produces a ~50 s ramp down (default 800 ms × 63 steps).
 10. Reverser still works, just with the ramp engine in between.
-11. Polling-thread NPE invariant from phase 3 still holds.
+11. The `activeThrottleFrame` NPE invariant from the existing RailDriver bring-up still holds.
 12. **Code audit:** every method call in `RailDriverMenuItem.dispatchValueEvent` (and any helpers it calls) that mutates a Swing component, or calls a JMRI throttle/address-panel API that is documented as EDT-only, is wrapped in `SwingUtilities.invokeLater`. Verified by `grep` against the listed call sites and by a 5-minute live lever-sweep session in both modes producing no visible UI corruption.
-13. Phase-3 XML files (schema `version="1"`) load cleanly into the new window — semi-realistic fields populate from defaults (disabled), calibration fields load as before; saving from the unified window produces a `version="2"` file.
+13. Pre-existing XML files (schema `version="1"`) load cleanly into the new window — semi-realistic fields populate from defaults (disabled), calibration fields load as before; saving from the unified window produces a `version="2"` file.
 
-### 3.2 Sub-phase 4b — Scenario picker
+### 3.2 Stage 2 — Scenario picker
 
 **Goal:** the load multiplier visibly extends ramp Δt.
 
-**Modified:** `SemiRealisticSettings.java` (add `scenario` + `customScenarioMultiplier`), `SemiRealisticSettingsFrame.java` (enable the Scenario row), `SemiRealisticThrottleEngine.java` (multiply `targetAcceleration` by `scenario.multiplier()` before scheduling).
+**Modified:** `SemiRealisticSettings.java` (add `scenario` + `customScenarioMultiplier`), `SemiRealisticSettingsPanel.java` (enable the Scenario row), `SemiRealisticThrottleEngine.java` (multiply `targetAcceleration` by `scenario.multiplier()` before scheduling).
 
 **Acceptance:**
 1. Picker shows all 6 scenarios; Custom shows a numeric field that's only honoured when Custom is selected.
 2. Switching from `Light engine` to `Unit train` makes a 0 → full-speed ramp take ~10 × longer (≈ 3 minutes).
 3. Switching mid-ramp picks up on the next `recompute()` (next lever movement or every brake update).
 
-### 3.3 Sub-phase 4c — Independent brake → mechanical brake
+### 3.3 Stage 3 — Independent brake → mechanical brake
 
 **Goal:** Indep-brake lever (Axis 3) shapes the target and Δt per [research §3.5].
 
@@ -293,12 +293,12 @@ Each sub-phase is independently buildable, installable, and testable on a real D
 Quantisation: `indepBrakeStep = round((calibratedFullRelease - byteValue) / (calibratedFullRelease - calibratedFullApplication) * brakeSteps)`. `brakeSteps` from settings (default 7).
 
 **Acceptance:**
-1. Indep brake at Full Release: throttle behaves as in 4a/4b (ramp toward lever target).
+1. Indep brake at Full Release: throttle behaves as in stages 1-2 (ramp toward lever target).
 2. Indep brake mid-travel while throttle is at full: loco drops to a partial speed (the EngineDriver "throttle defeated by brake" curve) and decelerates to it on the brake-shaped Δt.
 3. Indep brake at Full Application + throttle at zero: loco stops on a fast deceleration (the regime-B curve, `Δt = base × −effectiveBrake` ≈ 90 ms with 70 % maxBrake).
 4. Releasing the indep brake while at speed: loco resumes accelerating toward the lever's target on the normal curve.
 
-### 3.4 Sub-phase 4d — Auto brake → air line + bail-off restore
+### 3.4 Stage 4 — Auto brake → air line + bail-off restore
 
 **Goal:** Auto Brake (Axis 2) directly drives `airLinePercent`; bail-off (byte 4) restores it to 100 transiently.
 
@@ -307,27 +307,27 @@ Quantisation: `indepBrakeStep = round((calibratedFullRelease - byteValue) / (cal
 This replaces EngineDriver's reservoir-and-line repeater simulation [research §4.2] with a direct mapping. It's both simpler in code and more prototypical (the operator's hand position *is* the air pressure on a real RailDriver). The reservoir-with-recharge state machine is **out of scope** unless the operator specifically wants to simulate "running out of air" — which they don't on a console with a real Auto Brake handle.
 
 **Acceptance:**
-1. Auto brake at Released: throttle ramps to lever target as in 4c.
+1. Auto brake at Released: throttle ramps to lever target as in stage 3.
 2. Auto brake at EMG: loco drops to zero on the air-line-as-brake curve, fast deceleration.
 3. Auto brake mid-travel + indep brake at Full Release: the air line dominates because it bites harder (`min(airLineAsBrakePcnt, brakePcnt)` per [research §3.4]).
 4. Auto brake at SUP/CS + bail-off pressed: loco accelerates again because air line is treated as 100 while bail-off is held — even though the lever is still applying.
 5. Releasing bail-off restores brake immediately.
 
-### 3.5 Sub-phase 4e — Dynamic brake (lever UP)
+### 3.5 Stage 5 — Dynamic brake (lever UP)
 
 **Goal:** the half of the throttle lever above center (toward DYN BRAKE label) finally does something.
 
-**Modified:** `dispatchValueEvent` Axis 1 case to compute `leverDynBrakeFraction = (calibratedIdleLow - byteValue) / (calibratedIdleLow - calibratedFullDynBrake)` clamped to 0..1 when the byte is below Idle Low (= the dyn-brake side); `SemiRealisticThrottleEngine.recompute()` adds a separate `dynBrakeAcceleration` term that's strictly subtractive, distinct from `effectiveBrake`. The `DBr` LED, currently a TODO from phase 2, becomes the indication that the dyn-brake region is active.
+**Modified:** `dispatchValueEvent` Axis 1 case to compute `leverDynBrakeFraction = (calibratedIdleLow - byteValue) / (calibratedIdleLow - calibratedFullDynBrake)` clamped to 0..1 when the byte is below Idle Low (= the dyn-brake side); `SemiRealisticThrottleEngine.recompute()` adds a separate `dynBrakeAcceleration` term that's strictly subtractive, distinct from `effectiveBrake`. The `DBr` LED, currently a TODO from the existing RailDriver bring-up, becomes the indication that the dyn-brake region is active.
 
 Dyn brake doesn't use trainline air, so it stacks orthogonally with `airLinePercent` — both contribute deceleration. The combined effective `targetAcceleration` magnitude is the larger (i.e. shorter Δt) of the two terms when both are active.
 
 **Acceptance:**
-1. Lever at Idle Low or above: dyn brake is inactive; behaviour identical to 4d.
+1. Lever at Idle Low or above: dyn brake is inactive; behaviour identical to stage 4.
 2. Lever at full DYN BRAKE: loco decelerates to zero on a fast curve; LED shows `DBr`.
 3. Lever just past Idle Low: loco decelerates slowly, LED still shows `DBr`.
 4. Auto brake also applied while in dyn brake: deceleration is at least as fast as the most aggressive of the two — they don't cancel, they reinforce.
 
-### 3.6 Sub-phase 4f — Reverser interlock
+### 3.6 Stage 6 — Reverser interlock
 
 **Goal:** [research §5] direction can only change at speed 0.
 
@@ -336,13 +336,13 @@ Dyn brake doesn't use trainline air, so it stacks orthogonally with `airLinePerc
 **Acceptance:**
 1. Loco at speed > 0 + reverser moved to opposite direction: direction does NOT flip; an INFO log line records the suppression. Direction lever change with loco at speed 0 still works.
 2. Reverser to NEUTRAL at any speed: loco coasts to a stop on the deceleration curve regardless of throttle/brake levers (per [research §3.3]).
-3. E-Stop SPDT at any speed: loco hard-stops via `setSpeedSetting(-1)`. Same as phase 1–3 behaviour.
+3. E-Stop SPDT at any speed: loco hard-stops via `setSpeedSetting(-1)`. Same as the existing RailDriver bring-up behaviour.
 
-### 3.7 Sub-phase 4g — ESU decoder-brake passthrough (optional)
+### 3.7 Stage 7 — ESU decoder-brake passthrough (optional)
 
 **Goal:** for users with ESU decoders, mirror brake percent to F4/F5/F6 [research §4.3]. Off by default.
 
-**Modified:** `SemiRealisticSettings.java` (`decoderBrakeMode` enum; ESU function/threshold fields), `SemiRealisticSettingsFrame.java` (enable the Decoder-brake Mode dropdown + ESU-only sub-fields), `SemiRealisticThrottleEngine.recompute()` (after computing `effectiveBrake`, dispatch the function changes with the same three-pass logic from `setDecoderBrake` in [research §4.3]).
+**Modified:** `SemiRealisticSettings.java` (`decoderBrakeMode` enum; ESU function/threshold fields), `SemiRealisticSettingsPanel.java` (enable the Decoder-brake Mode dropdown + ESU-only sub-fields), `SemiRealisticThrottleEngine.recompute()` (after computing `effectiveBrake`, dispatch the function changes with the same three-pass logic from `setDecoderBrake` in [research §4.3]).
 
 **Acceptance:**
 1. Decoder-brake mode = None: no F4/F5/F6 dispatch from semi-realistic logic.
@@ -351,16 +351,16 @@ Dyn brake doesn't use trainline air, so it stacks orthogonally with `airLinePerc
 
 ## 4. Acceptance criteria (overall)
 
-1. With semi-realistic mode OFF, behaviour is identical to phase 3 (no regression).
-2. With mode ON, all sub-phase acceptance criteria pass on a real DCC loco.
-3. Calibration XML round-trips through Save / Load with the new schema; phase-3 files (version `"1"`) still load cleanly with semi-realistic defaults.
-4. The `activeThrottleFrame == null` invariant from phase 3 still holds — the engine acquires its `ThrottleProxy` from `activeThrottleFrame` at attach time and never holds the reference past the throttle's `"ancestor"` close.
-5. The phase-3 noise hysteresis filter still applies — the engine never sees byte-level jitter as a "lever moved".
+1. With semi-realistic mode OFF, behaviour is identical to the existing RailDriver bring-up (no regression).
+2. With mode ON, all per-stage acceptance criteria pass on a real DCC loco.
+3. Calibration XML round-trips through Save / Load with the new schema; pre-existing files (version `"1"`) still load cleanly with semi-realistic defaults.
+4. The `activeThrottleFrame == null` invariant from the existing RailDriver bring-up still holds — the engine acquires its `ThrottleProxy` from `activeThrottleFrame` at attach time and never holds the reference past the throttle's `"ancestor"` close.
+5. The pre-existing noise hysteresis filter still applies — the engine never sees byte-level jitter as a "lever moved".
 6. No new `messages.log` exceptions during a 30-minute ops session involving repeated brake / throttle work.
 
 ## 5. Deliverables
 
-Per sub-phase, listed in §3. Total across phases 4a–4g:
+Per stage, listed in §3. Total across stages 1–7:
 
 - 7 new Java files (`SemiRealisticThrottleEngine`, `SemiRealisticSettings`, `LoadScenario` enum, `RailDriverSettingsAction`, `RailDriverSettingsFrame`, `SemiRealisticSettingsPanel`, `CalibrationTabPanel`).
 - 2 deleted Java files (`RailDriverCalibrationFrame`, `RailDriverCalibrationAction`) — replaced by the unified Settings frame.
@@ -370,40 +370,41 @@ Per sub-phase, listed in §3. Total across phases 4a–4g:
 
 ## 6. Open design questions for review
 
-These are not yet resolved; please decide before sub-phase 4a starts.
+These are not yet resolved; please decide before stage 1 starts.
 
 1. **Mode toggle location.** Settings tab only (proposed), or also a quick toggle button on the JMRI throttle window?
 2. **`maxBrakeUnderPower`** — derive as `maxBrake - 0.20` per EngineDriver (proposed), or expose as a separate user setting?
-3. **Bail-off semantics.** Phase-3 currently doesn't dispatch byte-4 transitions to anything functional. Phase 4d makes byte 4 a binary "bail-off pressed" flag using the calibrated `bailoffThreshold()`. Is that the desired semantic (latched while the byte is above the threshold), or do we want a one-shot pulse on the rising edge?
+3. **Bail-off semantics.** The existing RailDriver bring-up doesn't dispatch byte-4 transitions to anything functional. Stage 4 makes byte 4 a binary "bail-off pressed" flag using the calibrated `bailoffThreshold()`. Is that the desired semantic (latched while the byte is above the threshold), or do we want a one-shot pulse on the rising edge?
 4. **Defaults for the new settings.** Match EngineDriver's defaults exactly (proposed: 300 / 800 / 2 / 7 / 70 / `Light engine`), or pre-tune for the typical small-railroad operator (e.g. `Local freight` default scenario)?
 
 ### Resolved decisions
 
-- **EDT discipline (decided 2026-05-02): Option B with worker-thread-math mitigation.** Every Swing-touching call from a non-EDT thread — both the new ramp dispatch AND the existing phase-3 bypass-mode dispatch — is wrapped in `SwingUtilities.invokeLater`. The mitigation: the engine worker thread does all the speed-step math locally, then hands the final `int next` value to the EDT for application. This keeps ramp cadence governed by the `ScheduledExecutorService` (precise timing) and only the value-application bounces through the event queue (Swing consistency). Closes the parent §3 / §6 off-EDT latent issue. See §2.2 for the threading contract and §3.1 for the wrapping deliverables.
-- **UI surface (decided 2026-05-02): one unified `RailDriver Settings...` window with two tabs (Settings + Calibration), plus a new Apply button alongside Save and Cancel.** Replaces the phase-3 standalone `RailDriver Calibration...` entry. See §2.4 for layout, dirty-tracking model, and Save/Apply/Cancel behaviour. Implementation is part of sub-phase 4a (§3.1).
+- **EDT discipline (decided 2026-05-02): Option B with worker-thread-math mitigation.** Every Swing-touching call from a non-EDT thread — both the new ramp dispatch AND the existing direct-dispatch path — is wrapped in `SwingUtilities.invokeLater`. The mitigation: the engine worker thread does all the speed-step math locally, then hands the final `int next` value to the EDT for application. This keeps ramp cadence governed by the `ScheduledExecutorService` (precise timing) and only the value-application bounces through the event queue (Swing consistency). Closes the parent §3 / §6 off-EDT latent issue. See §2.2 for the threading contract and §3.1 for the wrapping deliverables.
+- **UI surface (decided 2026-05-02): one unified `RailDriver Settings...` window with two tabs (Settings + Calibration), plus a new Apply button alongside Save and Cancel.** Replaces the standalone `RailDriver Calibration...` entry that ships with the existing RailDriver bring-up. See §2.4 for layout, dirty-tracking model, and Save/Apply/Cancel behaviour. Implementation is part of stage 1 (§3.1).
+- **Framing (decided 2026-05-02): this is a standalone feature, not a fourth phase of the RailDriver bring-up work.** Stages are numbered 1–7 within this document and don't extend the phase-1/2/3 numbering of the predecessor plans.
 
-## 7. Known limitations accepted in phase 4
+## 7. Known limitations accepted in this feature
 
-- **Single-throttle only.** Phase 4 doesn't introduce multi-loco support.
-- **Per-roster scenario default deferred to phase 5+** (see [research §9.2.5]).
-- **Reservoir-and-line refill model from EngineDriver §4.2 is replaced with the direct lever-driven model.** Operators who want "ran out of air, must release brake to recharge" gameplay will have to wait for a hypothetical phase 5+ that simulates a virtual reservoir behind the Auto Brake — this is out of scope here because the RailDriver's physical Auto Brake gives us the real signal.
-- **No tests.** Parent §4.5 / phase 5+.
-- **No help-page documentation.** Parent §4.6 / phase 5+.
-- **All latent issues from parent §3 / §6 except the off-EDT mutation are still untouched.** The off-EDT issue is fixed in 4a (see §3.1, item 2 of `RailDriverMenuItem.java` modifications).
+- **Single-throttle only.** This feature doesn't introduce multi-loco support.
+- **Per-roster scenario default deferred** (see [research §9.2.5]).
+- **Reservoir-and-line refill model from EngineDriver §4.2 is replaced with the direct lever-driven model.** Operators who want "ran out of air, must release brake to recharge" gameplay will have to wait for a future feature that simulates a virtual reservoir behind the Auto Brake — this is out of scope here because the RailDriver's physical Auto Brake gives us the real signal.
+- **No tests.** Parent §4.5 / deferred.
+- **No help-page documentation.** Parent §4.6 / deferred.
+- **All latent issues from parent §3 / §6 except the off-EDT mutation are still untouched.** The off-EDT issue is fixed in stage 1 (see §3.1, item 2 of `RailDriverMenuItem.java` modifications).
 
-## 8. What unlocks phase 5
+## 8. Future work
 
 - Tests (parent §4.5) — byte-parser, settings persistence round-trip, ramp scheduler determinism with a stub `ThrottleProxy`.
 - Per-roster scenario default via `RosterEntry.getAttribute("raildriver.scenario")`.
 - Help / documentation updates (parent §4.6).
 - Optional: virtual reservoir / line model for users who want EngineDriver-style "run out of air" behaviour layered on top of the physical Auto Brake handle.
-- Latent-issue fixes from parent §3 / §6.
+- Remaining latent-issue fixes from parent §3 / §6.
 
 ## 9. Cross-references
 
 - Research source: [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md).
 - Parent: [`plan.md`](plan.md).
-- Phase 1: [`plan-impl-phase1.md`](plan-impl-phase1.md) — connect & verify MVP.
-- Phase 2: [`plan-impl-phase2.md`](plan-impl-phase2.md) — wire existing mappings, throttle-direction fix, F0/F28 redesign, slot 0..27 → F1..F28.
-- Phase 3: [`plan-impl-phase3.md`](plan-impl-phase3.md) — calibration framework, visual bar UI, idle-range model, polling lifecycle decouple.
+- RailDriver bring-up phase 1: [`plan-impl-phase1.md`](plan-impl-phase1.md) — connect & verify MVP.
+- RailDriver bring-up phase 2: [`plan-impl-phase2.md`](plan-impl-phase2.md) — wire existing mappings, throttle-direction fix, F0/F28 redesign, slot 0..27 → F1..F28.
+- RailDriver bring-up phase 3: [`plan-impl-phase3.md`](plan-impl-phase3.md) — calibration framework, visual bar UI, idle-range model, polling lifecycle decouple.
 - Canonical bit-for-bit map: [`control-inventory.md`](control-inventory.md).
