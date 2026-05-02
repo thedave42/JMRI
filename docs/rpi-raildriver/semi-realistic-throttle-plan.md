@@ -226,7 +226,7 @@ The auto-install of the toolbar Jynstrument has no XML state. The only persisten
 
 **Decision: the existing phase-3 calibration window and the new semi-realistic settings UI are merged into a single two-tab `RailDriverSettingsFrame`.** Going forward there is exactly one Debug-menu entry for RailDriver configuration, and one window the operator opens to adjust either set of values.
 
-Menu entry: `Debug → RailDriver Settings...` (replaces the standalone `Debug → RailDriver Calibration...` entry that ships with the existing RailDriver bring-up).
+Menu entry: `Debug → RailDriver Settings...` (replaces the current `Debug → RailDriver Calibration...` entry).
 
 Window layout (top-down):
 
