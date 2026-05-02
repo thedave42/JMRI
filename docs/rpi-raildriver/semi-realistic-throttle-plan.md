@@ -1,21 +1,21 @@
 # RailDriver Semi-Realistic Throttle Support
 
 > **Research source:** [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md). All section references prefixed `[research §X]` resolve there.
-> **Feature goal:** add EngineDriver-style semi-realistic throttle behaviour to the RailDriver path. Speed is no longer set directly from the throttle lever; instead the lever sets a *target* and a separate ramp scheduler walks the live decoder speed toward it on a brake-/scenario-aware schedule. Independent and Auto brakes shape the ramp's Δt; bail-off restores the air line; the dynamic-brake side of the throttle lever finally does something; a named-scenario picker stands in for EngineDriver's continuous load slider.
+> **Feature goal:** add EngineDriver-style semi-realistic throttle behaviour to the RailDriver path. Speed is no longer set directly from the throttle lever; instead the lever sets a target velocity and a single physics integration loop walks the live decoder speed toward it under net force `a = (F_drive − F_rr − F_brake_mech − F_brake_air − F_brake_dyn) / m_total`. Throttle position drives `F_drive`; Independent, Auto, and Dynamic brakes each contribute their own subtractive force; bail-off zeros the air-line term while held; a named-scenario picker selects the consist mass and operator-power-percent that feed the integration. The same loop runs in both directions — sign of `a` falls out of which forces are active, so accelerating, coasting, "throttle fighting brake", and stacked brakes are all the same code path with different terms turned on. The integration math is a parallel implementation that adopts the same physical conventions (mass / power / TE / rolling-resistance / steam-power-exponent / mechanical-transmission gear pause) as JMRI's `RosterSpeedProfile.runPhysicsAccelerationToTargetThrottle()` but is independent code, extended with brake-force terms (which JMRI does not currently model anywhere). The two implementations do not share code and are not expected to remain in lock-step — see §2.1.
 
 ## 1. Scope
 
 ### In scope (split into stages 1–7, each independently shippable)
 
-**Stage 1 — Ramp engine + bypass switch + unified Settings window.** New `SemiRealisticThrottleEngine` class that owns `targetSpeed` / `targetAcceleration` / a `ScheduledExecutorService`-driven ramp scheduler. When semi-realistic mode is OFF (default, until the user opts in), behaviour is identical to the existing RailDriver bring-up. When ON, the throttle lever (Axis 1 above Idle High) sets `targetSpeed`; the scheduler ticks toward it at the base acceleration / deceleration delay. No brakes shape the ramp yet — purely target-and-walk. Stage 1 also rolls up the existing standalone Calibration window and the new feature settings into a single tabbed `RailDriver Settings...` Debug-menu entry (see §2.4).
+**Stage 1 — Physics integration engine + bypass switch + unified Settings window.** New `SemiRealisticThrottleEngine` class that owns a fixed-time-slice physics integrator (50 ms per slice) running on a dedicated worker thread. The integrator computes net force `a = (F_drive − F_rr) / m_total` (brake terms come in later stages) and walks the in-engine velocity `v` toward the lever-derived target velocity `v_target`. The integration loop is an **independent, parallel implementation** of the same physics in `RosterSpeedProfile.runPhysicsAccelerationToTargetThrottle()` — same mass/power/TE/rolling-resistance physics conventions, same steam-power exponent (0.85), same gear-change pause thresholds (15/27/41 mph) for mechanical transmissions, same `getPhysicsMaxSpeedKmh()` cap behaviour — but rewritten from scratch as a continuously-scheduled tick instead of a one-shot step queue, with no `a < 0` clamp so the same code runs accelerating or decelerating, and with brake-force terms (added in stages 3–5) layered into the same equation. The two files share no code and evolve independently. When semi-realistic mode is OFF (default, until the user opts in), behaviour is identical to the existing RailDriver bring-up. When ON, the throttle lever (Axis 1 above Idle High) sets `v_target` and the integrator walks `v` toward it under loco physics. Stage 1 also rolls up the existing standalone Calibration window and the new feature settings into a single tabbed `RailDriver Settings...` Debug-menu entry (see §2.4). Defaults match a single-loco "Light engine" out of the box (see §2.4.1) so users with empty rosters get sensible behaviour with zero configuration.
 
-**Stage 2 — Scenario picker (load multiplier).** Adds the named-scenario enum and picker UI per [research §9.2]. Multiplies `targetAcceleration` so heavier scenarios visibly extend Δt. Persisted in the calibration XML under a new `<semiRealistic>` subtree (schema bumped to version `"2"`).
+**Stage 2 — Scenario picker (consist mass + driver power).** Adds the named-scenario enum and picker UI per [research §9.2]. Each scenario sets `additionalWeightTonnes` (consist mass added to the loco mass) and `driverPowerPercent` (operator aggressiveness, limits applied power/TE during accel). Heavier scenarios produce visibly longer accel and shorter equivalent stopping distance under brake — emergent from the physics, not from a Δt multiplier. Persisted in the calibration XML under a new `<semiRealistic>` subtree (schema bumped to version `"2"`).
 
-**Stage 3 — Independent brake (Axis 3) → mechanical brake clip + accel shaping.** Calibrated Indep-brake position becomes EngineDriver's `brakeSliderPosition`, quantised to a configurable number of steps. Folds into the existing `setTargetSpeed` brake regimes [research §3.5] — clipping the target and selecting between `effectiveBrake` and `maxBrakeUnderPower`-curve acceleration depending on whether the throttle is fighting the brake.
+**Stage 3 — Independent brake (Axis 3) → mechanical brake force term.** Calibrated Indep-brake position drives `F_brake_mech = (brakePct/100) · BRAKE_MAX_DECEL · m_total`, added as a subtractive term in the integration. No regime detection, no "throttle fighting brake" branch — when both throttle and brake are applied, the integrator sums forces and the sign of `a` falls out. Replaces EngineDriver's `effectiveBrake` / `maxBrakeUnderPower` curves [research §3.5] with a single force equation.
 
-**Stage 4 — Auto brake (Axis 2) → air-line value + bail-off (byte 4) restore.** The Auto Brake lever directly drives `airLineValue` (no derived-from-mechanical model — see [research §10] item 2). Released → 100, EMG → 0, monotonic between. The bail-off switch (byte 4 transient) immediately restores `airLineValue` to 100 while held. Replaces EngineDriver's reservoir-and-line refill repeaters [research §4.2] with a simpler direct-from-lever mapping (the operator's hand on the lever is the prototype).
+**Stage 4 — Auto brake (Axis 2) → air-line force term + bail-off (byte 4) override.** The Auto Brake lever drives `airLinePct` (Released → 0, EMG → 100, monotonic between — no derived-from-mechanical model per [research §10] item 2), which drives `F_brake_air = (airLinePct/100) · AIR_BRAKE_MAX_DECEL · m_total`, summed with the mechanical brake force in the integration. The bail-off switch (byte 4 transient) zeroes `F_brake_air` while held — direct level-triggered override on the air term, without affecting mechanical or dyn-brake terms. Replaces EngineDriver's reservoir-and-line refill repeaters [research §4.2] with a direct mapping (the operator's hand on the lever is the prototype).
 
-**Stage 5 — Dynamic brake side of throttle lever (Axis 1 below Idle Low).** Below the calibrated Idle Low, the throttle lever produces a negative `targetAcceleration` term, separate from the air-line and indep-brake terms. Distinct from the indep-brake because real dyn-brake doesn't use trainline air [research §10 item 1]. LED display shows `DBr` while in dyn-brake region.
+**Stage 5 — Dynamic brake side of throttle lever (Axis 1 below Idle Low).** Below the calibrated Idle Low, the throttle lever produces `F_brake_dyn = (dynPct/100) · DYN_BRAKE_MAX_DECEL · m_loco · speedTaper(v)` where `speedTaper(v) = min(1, v / V_dyn_min)` and `V_dyn_min ≈ 5 mph`. Acts on loco mass only (dyn brake doesn't propagate through trainline air per [research §10] item 1) and tapers to zero near stop (real dyn brake fades below ~5 mph). Stacks with mechanical and air brake by simple force summation — no min/max selection, no "reinforce" special case. LED display shows `DBr` while in dyn-brake region.
 
 **Stage 6 — Reverser interlock.** Direction-change-only-at-speed-0 interlock per [research §5]. E-Stop SPDT keeps its current `setSpeedSetting(-1)` behaviour. (EngineDriver's "soft stop button" mode is intentionally not adopted — the RailDriver's physical Independent Brake handle already gives the operator a more prototypical controlled-stop than a one-touch button would.)
 
@@ -25,7 +25,7 @@
 
 - **Per-roster scenario default.** This feature ships with a session-level picker; reading `RosterEntry.getAttribute("raildriver.scenario")` to override the session default is deferred per [research §9.2.5].
 - **Multi-throttle support.** EngineDriver runs up to 6 locos in parallel; we keep the existing single-throttle assumption from the RailDriver bring-up phases.
-- **Configurable ramp parameters via UI.** This feature exposes `accelerationDelay` / `decelerationDelay` / `speedStep` / `brakeSteps` / `maxBrakePcnt` as fields on the Settings tab; advanced curves (e.g. user-configurable load multiplier table) stay hardcoded.
+- **Configurable physics constants via UI.** This feature exposes `BRAKE_MAX_DECEL`, `AIR_BRAKE_MAX_DECEL`, `DYN_BRAKE_MAX_DECEL`, `DYN_BRAKE_V_MIN`, `ROLLING_RESISTANCE_COEFF`, and per-scenario `additionalWeightTonnes` / `driverPowerPercent` / loco mass / power / TE overrides as fields on the Settings tab; deeper integration parameters (50 ms slice time, gear-pause thresholds) stay hardcoded.
 - **EngineDriver's `Stop` button and its four behaviour modes.** The Stop button is an Android-touch UX device — useful when your only inputs are screen taps. On a RailDriver console the operator already has E-Stop (hard) and the Independent Brake handle (controlled) within reach. None of EngineDriver's four stop modes (`THROTTLE_STOP`, `THROTTLE_STOP_BRAKE_FULL`, `SPEED_ZERO`, `SPEED_ZERO_BRAKE_ZERO`) is adopted; the existing E-Stop SPDT keeps its current behaviour.
 - **Tests.** Parent §4.5. Deferred.
 - **Help / documentation updates.** Parent §4.6. Deferred.
@@ -38,6 +38,10 @@
 
 Single-throttle engine. Owned by `RailDriverMenuItem`. Lifecycle parallels the polling thread: created lazily in `attachThrottleWindow` after `activeThrottleFrame` is set; disposed in `propertyChange`'s `"ancestor"` case alongside the `throttleDispatcher` deregistration.
 
+The engine is built around a single physics integration loop that runs on a dedicated worker thread at a fixed 50 ms slice. The loop computes net force, integrates velocity, quantises to a DCC speed step, and posts the result to the EDT for `setSpeedSetting`. **There is no separate "accel path" and "decel path"** — sign of `a` falls out of which forces are active in any given slice.
+
+> **Relationship to `RosterSpeedProfile.runPhysicsAccelerationToTargetThrottle()` — intentional parallel implementation.** The new engine is **not** a refactor of the existing method and does **not** share code with it. The two implementations are independent by design, because the integration *shape* is fundamentally different: the existing method is a one-shot planner that pre-computes a queue of throttle steps and replays it via `javax.swing.Timer`, while the new engine is a continuously-scheduled tick that integrates net force in either direction with brake-force terms layered in. The brake-force layering is the whole point of this feature — air-brake simulation, independent-brake, and dynamic-brake are RailDriver-specific concerns that have no place in a general-purpose dispatcher physics planner. Each implementation evolves on its own; there is no shared helper, no header cross-reference, and no expectation that fixes in one are mirrored in the other. The engine adopts the same physical conventions (m/s², `c_rr · m · g` rolling resistance, steam power exponent 0.85, gear-pause thresholds 15/27/41 mph) and the same `getPhysicsMaxSpeedKmh()` cap behaviour (see §2.1's tick logic below) so a yard goat with `maxSpeedKmh = 30` doesn't run at 80 mph because the operator picked a Through-freight scenario, but those are coincidences of physics, not contractual ties between the two files.
+
 ```java
 public final class SemiRealisticThrottleEngine {
     // — Mode —
@@ -46,35 +50,86 @@ public final class SemiRealisticThrottleEngine {
     // — Settings (loaded from calibration XML <semiRealistic> subtree) —
     private final SemiRealisticSettings settings;
 
-    // — Target state —
-    private volatile int    targetSpeed;          // 0..126
-    private volatile double targetAcceleration;   // sign + magnitude (see research §2)
+    // — Physics parameters (resolved per session from scenario + roster overrides) —
+    private volatile float locoMassKg;            // from RosterEntry.getPhysicsWeightKg() if > 0, else scenario default
+    private volatile float locoPowerW;            // from RosterEntry.getPhysicsPowerKw() if > 0, else scenario default
+    private volatile float locoTractiveEffortN;   // from RosterEntry.getPhysicsTractiveEffortKn() if > 0, else scenario default
+    private volatile float additionalMassKg;      // scenario-driven consist mass
+    private volatile float driverPowerPct;        // 0.0..1.0, scenario-driven aggressiveness
+    private volatile float rollingResistanceCoeff;// c_rr, default 0.002
+    private volatile float brakeMaxDecel;         // m/s² at 100% indep brake
+    private volatile float airBrakeMaxDecel;      // m/s² at 100% air line
+    private volatile float dynBrakeMaxDecel;      // m/s² at 100% dyn brake, before speed taper
+    private volatile float dynBrakeVMinMps;       // speed below which dyn brake tapers to zero
+    private volatile float layoutScaleRatio;      // 87 for HO, 160 for N, etc.
 
-    // — Latest physical inputs (units after calibration application) —
-    private volatile int    leverThrottleSpeed;       // 0..126 from Axis 1 above Idle High
-    private volatile double leverDynBrakeFraction;    // 0.0..1.0 from Axis 1 below Idle Low (stage 5)
-    private volatile int    indepBrakeStep;           // 0..brakeSteps from Axis 3 (stage 3)
-    private volatile int    airLinePercent;           // 0..100 from Axis 2 (stage 4)
+    // — Live integration state (worker thread only, except where noted) —
+    private float v_fs;                           // current full-scale velocity, m/s
+    private volatile float vTarget_fs;            // lever-derived target velocity, m/s (set from polling thread)
+
+    // — Latest physical inputs (units after calibration application; set from polling thread) —
+    private volatile int     leverThrottleStep;       // 0..126 from Axis 1 above Idle High
+    private volatile float   leverDynBrakeFraction;   // 0.0..1.0 from Axis 1 below Idle Low (stage 5)
+    private volatile float   indepBrakeFraction;      // 0.0..1.0 from Axis 3 (stage 3)
+    private volatile float   airLineFraction;         // 0.0..1.0 from Axis 2 (stage 4)
     private volatile boolean bailoffPressed;          // from byte 4 transient (stage 4)
     private volatile LoadScenario scenario;           // from picker (stage 2)
-    private volatile int    direction;                // FORWARD / NEUTRAL / REVERSE from Axis 0
+    private volatile int     direction;               // FORWARD / NEUTRAL / REVERSE from Axis 0
 
-    // — Scheduler —
+    // — Worker scheduler (50 ms fixed slice) —
     private final ScheduledExecutorService scheduler =
         Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "RailDriver-SemiRealistic-Ramp");
+            Thread t = new Thread(r, "RailDriver-SemiRealistic-Physics");
             t.setDaemon(true);
             return t;
         });
-    private ScheduledFuture<?> rampTask;
+    private ScheduledFuture<?> integrationTask;
 
-    // — Throttle proxy (replaces direct DccThrottle.setSpeedSetting calls) —
-    private final ThrottleProxy proxy;
+    // — DccThrottle for setSpeedSetting / setIsForward / setFunction (acquired at attach time) —
+    private DccThrottle throttle;
     ...
 }
 ```
 
-`ThrottleProxy` is a thin abstraction so the engine doesn't link directly to `DccThrottle` — easier to unit-test later, and easier to swap with a stub when the throttle is detached. Methods: `setSpeed(int 0..126)`, `setIsForward(boolean)`, `getCurrentSpeed()`, `getMaxFunctionCount()`, `setFunction(int n, boolean on)`. Backed by `activeThrottleFrame.getAddressPanel().getThrottle()`.
+Per-tick logic (worker thread, every 50 ms while engine is enabled and either `v_fs` is nonzero or `vTarget_fs ≠ v_fs`):
+
+```java
+// 1. Read current input snapshot (volatile fields, set from polling thread)
+float vTarget = Math.min(vTarget_fs, vCap_fs);   // vCap_fs from getPhysicsMaxSpeedKmh(), see below
+float brake   = indepBrakeFraction;
+float air     = bailoffPressed ? 0.0f : airLineFraction;
+float dyn     = leverDynBrakeFraction;
+boolean drive = (leverThrottleStep > 0) && (v_fs >= 0);
+
+// 2. Compute forces (parallel implementation, brake terms added)
+float massTotal = locoMassKg + additionalMassKg;
+float P_avail   = locoPowerW * driverPowerPct * powerExp(scenario);
+float TE_avail  = locoTractiveEffortN * driverPowerPct;
+float v_guard   = Math.max(0.01f, v_fs);
+float F_drive   = drive ? Math.min(TE_avail, P_avail / v_guard) : 0.0f;
+float F_rr      = rollingResistanceCoeff * massTotal * 9.80665f;
+float F_brakeM  = brake * brakeMaxDecel    * massTotal;
+float F_brakeA  = air   * airBrakeMaxDecel * massTotal;
+float taper     = Math.min(1.0f, v_fs / dynBrakeVMinMps);
+float F_brakeD  = dyn * dynBrakeMaxDecel * locoMassKg * taper;
+
+// 3. Integrate (no clamp on sign of a)
+float a   = (F_drive - F_rr - F_brakeM - F_brakeA - F_brakeD) / massTotal;
+v_fs     += a * 0.050f;
+if (v_fs < 0.0f)    v_fs = 0.0f;
+if (v_fs > vCap_fs) v_fs = vCap_fs;              // hard cap: roster max-speed wins
+if (Math.abs(v_fs - vTarget) < epsilon && Math.signum(a) != 0) v_fs = vTarget;
+
+// 4. Quantise to DCC step via roster speed profile (or linear fallback) and emit
+int dccStep = velocityToDccStep(v_fs);
+ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(dccStep / 126.0f));
+```
+
+`powerExp(scenario)` returns `v^0.85` for steam locomotives and the linear `driverPowerPct` for everything else; gear-pause logic for mechanical-transmission locos coasts (drive force zero) for 3.5 s at 15/27/41 mph crossings.
+
+`vCap_fs` is the per-attach roster-derived speed cap, computed once at engine attach and on every settings reload from `Math.max(0.0f, RosterEntry.getPhysicsMaxSpeedKmh()) / 3.6f`. When the field is 0 (the JMRI default for a fresh roster entry), `vCap_fs` is set to `Float.POSITIVE_INFINITY` so the cap is effectively disabled and the integration is bounded only by the scenario's design top speed via the linear `velocityToDccStep` fallback. When the field is populated, both the lever-derived target and the integrated `v_fs` are clamped — a yard goat with `maxSpeedKmh = 30` cannot exceed 30 km/h regardless of throttle position or scenario.
+
+Roster physics fields override scenario defaults whenever `> 0`. With an empty roster (the default JMRI install), all physics fields read 0 from `RosterEntry`, and the engine substitutes the active scenario's defaults — which are Light-engine values in the default scenario, so a brand-new install gets prototype-realistic single-loco behaviour with zero configuration.
 
 ### 2.2 Threading model
 
@@ -83,46 +138,72 @@ Three threads are involved. The EDT-discipline boundary is strict: **no Swing-to
 | Thread | What it does | What it must NOT do |
 |---|---|---|
 | **Polling thread** (`RailDriver`, existing) | Reads HID reports, fires `RawByte` and `Value` PCS events. `dispatchValueEvent` runs here as a PCS listener. | Touch any Swing component or call any method that reaches Swing (`setSpeedSetting`, `setIsForward`, `setFunction`, `JMenuItem.setEnabled`, etc.). |
-| **Engine worker** (`RailDriver-SemiRealistic-Ramp`, new) | Owned by the engine's single-thread `ScheduledExecutorService`. Runs `rampTask` on the configured Δt. **Computes the next speed step here** — the math (current ± step, clamps, target reached?) all happens on this thread. | Touch Swing. |
+| **Engine worker** (`RailDriver-SemiRealistic-Physics`, new) | Owned by the engine's single-thread `ScheduledExecutorService`. Runs the 50 ms physics integration tick. **Reads input snapshot, computes forces, integrates `v`, quantises to DCC step here** — all the math runs on this thread. | Touch Swing. |
 | **EDT** (Swing's own thread) | All Swing-touching work: `setSpeedSetting`, `setIsForward`, `setFunction`, LED updates that route through Swing components, status-label changes, etc. | Block on the worker or polling thread (no `invokeAndWait`; would deadlock). |
 
 The contract:
 
-- `dispatchValueEvent` (polling thread) updates the engine's input fields (`leverThrottleSpeed` etc.) and calls `engine.recompute()`. `recompute()` runs `setTargetSpeed`-equivalent logic, computes a fresh `(targetSpeed, targetAcceleration)`, cancels the in-flight `rampTask`, schedules a new one on the worker. **No Swing calls in the polling-thread path.**
+- `dispatchValueEvent` (polling thread) updates the engine's input fields (`leverThrottleStep`, `indepBrakeFraction`, `airLineFraction`, `leverDynBrakeFraction`, `bailoffPressed`, `direction`, `scenario`) — all `volatile` — and computes a fresh `vTarget_fs` from the lever calibration. **No Swing calls in the polling-thread path.** The integration task is permanently scheduled at fixed rate (50 ms); it picks up the new inputs on its next tick. **No cancel/reschedule churn** — the inputs are just `volatile` writes the worker reads on the next tick.
 
-- `rampTask`'s body runs on the engine worker. It computes the next step locally:
+- The integration task's body runs on the engine worker. It computes net force locally and integrates velocity:
   ```java
-  int next = current + signedStep;       // worker thread, no Swing
-  if (overshoot) next = targetSpeed;
-  current = next;
+  float a = (F_drive - F_rr - F_brakeM - F_brakeA - F_brakeD) / massTotal;
+  v_fs   += a * 0.050f;       // worker thread, no Swing
+  int dccStep = velocityToDccStep(v_fs);
   ```
   Only after the math is final does it hand the result to the EDT:
   ```java
-  SwingUtilities.invokeLater(() -> proxy.setSpeed(next));
+  ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(dccStep / 126.0f));
   ```
-  This keeps the *cadence* governed by the worker's `ScheduledExecutorService` (so timing is precise) and only the *application* of the value bounces through the EDT queue (so Swing stays consistent). If the EDT is busy, the lambda waits in the queue but the worker's next tick is unaffected — at worst the user sees one display-update of latency, never a missed scheduling slot.
+  This keeps the *cadence* governed by the worker's `ScheduledExecutorService` (so timing is precise) and only the *application* of the value bounces through the EDT queue (so Swing stays consistent). If the EDT is busy, the lambda waits in the queue but the worker's next tick is unaffected — at worst the user sees one display-update of latency, never a missed integration slot.
 
-- `dispatchValueEvent`'s phase-3 fall-back path (when semi-realistic mode is OFF) also wraps every Swing-touching call in `invokeLater` — see §3.1 deliverables. Same pattern: any `throttle.setX` / `addressPanel.setX` call from `dispatchValueEvent` becomes `SwingUtilities.invokeLater(() -> throttle.setX(...))`. The math/decision logic stays where it is.
+- `dispatchValueEvent`'s phase-3 fall-back path (when semi-realistic mode is OFF) also wraps every Swing-touching call appropriately — see §3.1 deliverables. **Setters** (`throttle.setX`, `addressPanel.setX`, `throttleWindow.nextThrottleFrame` etc.) become `ThreadingUtil.runOnGUIEventually(() -> throttle.setX(...))` — fire-and-forget. **Getters whose return values feed the surrounding decision** (`throttle.getFunctions()`, `throttle.getFunctionMomentary(fNum)`, `throttle.getFunction(fNum)`) become `ThreadingUtil.runOnGUIwithReturn(() -> throttle.getFunctions())` — synchronous round-trip, blocks the polling thread for the duration of one EDT lambda. The math/decision logic stays where it is.
 
-- `targetSpeed` / `targetAcceleration` / `current` are accessed under a single `synchronized` block on the engine instance to keep the polling-thread `recompute` and the worker's `rampTask` coherent. Each access is a few field reads/writes; contention is negligible.
+  We standardise on `ThreadingUtil` rather than direct `SwingUtilities.invokeLater` for consistency with the rest of JMRI (`jmri.jmrit.logix.Engineer`, `jmri.jmrit.throttle.AddressPanel`, etc. all use `ThreadingUtil`). `runOnGUIEventually(ta)` is a one-line wrapper around `SwingUtilities.invokeLater(ta)` (see `ThreadingUtil.java:262`) — runtime behaviour is bytecode-equivalent. `runOnGUIwithReturn(ta)` (`ThreadingUtil.java:223`) wraps `SwingUtilities.invokeAndWait` plus a `Reference<T>` shim, which `SwingUtilities` doesn't expose directly — so the synchronous-getter case needs `ThreadingUtil` regardless of stylistic preference. The single existing `SwingUtilities.invokeLater` call site in `RailDriverMenuItem.java` (line 244, in `attachThrottleWindow`) is migrated to `ThreadingUtil.runOnGUIEventually` as part of stage 1 to keep the file uniform; the import for `javax.swing.SwingUtilities` is removed. (The other pre-existing `invokeLater` site cited in earlier drafts of this plan was in `RailDriverCalibrationFrame.java:423`, which is moot — that file is deleted in stage 1.)
+
+- The volatile input fields (`leverThrottleStep`, `indepBrakeFraction`, `airLineFraction`, `leverDynBrakeFraction`, `bailoffPressed`, `direction`, `scenario`) are written by the polling thread and read by the worker — single-writer, single-reader, no interleaved compound ops, so volatile semantics suffice for those fields. `v_fs` is a different case: it is normally touched only by the worker thread (no sync needed for tick-to-tick updates), **but** the mode-switch handover (§2.3) writes `v_fs` from the EDT side of `setSemiRealisticEnabledPersisting()` / `setSemiRealisticEnabledSessionOnly()`, and the reverser interlock (§3.6) reads `v_fs` from the polling thread. All non-worker accesses to `v_fs` (write from either enabled-setter, read from polling-thread Axis 0 dispatch) go through the engine's `synchronized` block; `v_fs` is also declared `volatile` so the polling-thread read sees the latest worker write without entering the monitor.
 
 ### 2.3 Bypass-mode wiring and mode-switch handover
 
-When `enabled == false`, `engine.recompute()` is a no-op and `dispatchValueEvent` falls back to the bring-up-era direct `setSpeedSetting` / `setIsForward` / `setFunction(0, ...)` path. **No behavioural change for users who don't opt in.** The mode is per-profile, persisted alongside the rest of the calibration; default OFF.
+When `enabled == false`, the integration task is paused (or the integrator's body is a no-op) and `dispatchValueEvent` falls back to the bring-up-era direct `setSpeedSetting` / `setIsForward` / `setFunction(0, ...)` path. **No behavioural change for users who don't opt in.** The mode is per-profile; the persisted-on-disk default is OFF.
+
+#### Persistence model — split between Settings window and Jynstrument
+
+The `enabled` flag has **two** mutation paths with **different** persistence semantics:
+
+- **Settings window (`Enable semi-realistic mode` checkbox + Save/Apply):** persists to the calibration XML. This is the only path that writes the flag to disk. Becomes the new default at next JMRI launch.
+- **Jynstrument toolbar click:** session-only, in-memory toggle. Does **not** write to disk. Resets to the persisted Settings-window value at next JMRI launch (or at the next `attachThrottleWindow()` after a fresh `reloadCalibration()`).
+
+The split lets the operator opt in via the Settings window and then flip the mode mid-session via the toolbar without polluting the persisted preference. If the operator decides the new session-level value should stick, they open the Settings window and Save (the Settings checkbox reads the current in-memory value when the window opens, so flipping it back-and-forth via Save matches the Jynstrument's last value with one click).
+
+The auto-install suppression flag from earlier drafts is **removed** for the same reason: the only persistence channel for the toolbar's *presence* is JMRI's existing throttle-layout XML (`ThrottleWindow.java:800–865`), which the operator saves explicitly via the throttle window's standard "Save throttle layout" workflow. If the operator removes the Jynstrument and wants the removal to persist across JMRI restarts, they save the throttle layout — same workflow as for every other Jynstrument in JMRI.
 
 #### Mode-switch handover at speed
 
 The operator can flip the mode toggle at any time, including while the loco is moving. The engine's response:
 
-- **OFF → ON:** at the moment the toggle flips, the engine reads `throttle.getSpeedSetting()` once (on the EDT) and writes that value to `engine.current` (on the worker thread, under the engine's `synchronized` block). It then runs `recompute()` to derive the new `targetSpeed` / `targetAcceleration` from current lever and brake positions. If the lever's calibrated value implies a different target than the loco's current speed, the engine ramps smoothly from `current` toward `target` on the configured Δt. **No speed snap.** The loco's perceived speed is continuous across the toggle.
+- **OFF → ON:** at the moment the toggle flips, the engine reads `throttle.getSpeedSetting()` once (on the EDT), converts that DCC fraction to a full-scale velocity using the loco's roster speed profile (or a linear fallback when no profile exists), and writes that value to `engine.v_fs` (under the engine's `synchronized` block). It then refreshes the input snapshot from the current lever positions. The integration task starts ticking; on each tick it computes net force from current inputs and walks `v_fs` toward the lever-derived `vTarget_fs`. If the lever's target is far from the loco's current speed, the loco accelerates or decelerates under physics until it gets there. **No speed snap.** The loco's perceived speed is continuous across the toggle.
 
-- **ON → OFF:** at the moment the toggle flips, the engine cancels its in-flight `rampTask`, stops the scheduler, and `dispatchValueEvent` reverts to the direct path. The very next byte change on any axis writes the lever-derived value via `setSpeedSetting()` directly. **If the lever is far from the engine's last `current`, the loco will snap to the lever-derived speed on the next dispatch.** Operators are expected to either move the lever to match the loco's current speed before flipping OFF, or to accept the snap as the cost of switching to direct control mid-motion.
+- **ON → OFF:** at the moment the toggle flips, the engine pauses its integration task and `dispatchValueEvent` reverts to the direct path. The very next byte change on any axis writes the lever-derived value via `setSpeedSetting()` directly. **If the lever is far from the engine's last `v_fs`, the loco will snap to the lever-derived speed on the next dispatch.** Operators are expected to either move the lever to match the loco's current speed before flipping OFF, or to accept the snap as the cost of switching to direct control mid-motion.
 
-Implementation: `RailDriverMenuItem.setSemiRealisticEnabled(boolean enabled)` (the public API used by both the Settings tab and the Jynstrument toggle, per §2.6) wraps the toggle in two phases:
-1. Compute new state on whichever thread called the setter (could be EDT — Settings tab — or could be the Jynstrument's button click thread which is also EDT).
-2. If transitioning OFF → ON: read `throttle.getSpeedSetting()` on the EDT, post a `Runnable` to the engine that sets `engine.current` and calls `recompute()` under `synchronized`.
-3. If transitioning ON → OFF: post a `Runnable` to the engine that cancels `rampTask` and shuts down the scheduler executor.
-4. Persist the new state to XML and fire the `"semiRealisticEnabled"` PropertyChange so all observers (Jynstrument icon, Settings tab checkbox, etc.) update.
+Implementation: there are **two** API entry points on `RailDriverMenuItem`, distinguished by persistence:
+
+```java
+// Settings window only — persists to calibration XML.
+public void setSemiRealisticEnabledPersisting(boolean enabled);
+
+// Jynstrument toolbar click — session-only, in-memory toggle.
+public void setSemiRealisticEnabledSessionOnly(boolean enabled);
+```
+
+Both share the same handover sequence, only differing on the final persistence step:
+
+1. Compute new state on whichever thread called the setter (always EDT — both Settings tab Save/Apply and Jynstrument click run on the EDT).
+2. If transitioning OFF → ON: read `throttle.getSpeedSetting()` on the EDT, post a `Runnable` to the engine that converts the fraction to `v_fs` (via roster speed profile when available) and starts the integration task under `synchronized`.
+3. If transitioning ON → OFF: post a `Runnable` to the engine that pauses the integration task.
+4. Update the in-memory `settings.enabled` field.
+5. **Persisting variant only:** persist the calibration XML.
+6. Fire the `"semiRealisticEnabled"` PropertyChange (both variants) so all observers (Jynstrument icon, Settings tab checkbox if the window is open) update. The Settings tab's checkbox listener is wired so it reflects the in-memory value on every PCS event — meaning a session-only Jynstrument toggle is visible as a checkbox state change in an open Settings window, and Save/Apply at that point will persist whatever the current in-memory value is.
 
 Repeated rapid toggles are safe — each transition is idempotent and serialised through the engine's `synchronized` block.
 
@@ -156,15 +237,39 @@ Window layout (top-down):
 #### Settings-tab controls
 
 - **Enable semi-realistic mode** checkbox (the master switch).
-- **Scenario:** dropdown — `Light engine` / `Switcher` / `Local freight` / `Through freight` / `Unit train` / `Custom` (with a numeric field exposed when `Custom` is selected).
-- **Acceleration delay (ms):** numeric, default 300.
-- **Deceleration delay (ms):** numeric, default 800.
-- **Speed step:** numeric, default 2.
-- **Brake steps:** numeric, default 7.
-- **Maximum brake percent:** numeric, default 70.
-- **Maximum brake under power percent:** numeric, default 50 (= EngineDriver's `maxBrake − 0.20`). The "throttle is fighting brake" softer-curve constant per [research §3.5].
+- **Scenario:** dropdown — `Light engine` (default) / `Switcher` / `Local freight` / `Through freight` / `Unit train` / `Custom` (with the per-loco override fields below editable when `Custom` is selected).
+- **Loco mass (t):** numeric override; default = scenario's loco mass; "auto" sentinel uses `RosterEntry.getPhysicsWeightKg()` when populated.
+- **Loco power (kW):** numeric override; default = scenario's loco power; "auto" sentinel uses `RosterEntry.getPhysicsPowerKw()` when populated.
+- **Loco tractive effort (kN):** numeric override; default = scenario's loco TE; "auto" sentinel uses `RosterEntry.getPhysicsTractiveEffortKn()` when populated.
+- **Additional consist mass (t):** numeric, scenario-provided default; the operator can tune up or down for one-off heavy/light trains without changing scenario.
+- **Driver power (%):** numeric 0–100, scenario-provided default; throttles applied power and TE.
+- **Rolling resistance coefficient (c_rr):** numeric, default 0.002. Affects coast-down rate and high-speed drag.
+- **Mechanical brake max decel (m/s²):** numeric, default 1.0. Force applied per 100 % indep brake = this × `m_total`.
+- **Air brake max decel (m/s²):** numeric, default 1.5. Force applied per 100 % air-line setting = this × `m_total`.
+- **Dynamic brake max decel (m/s²):** numeric, default 0.4. Force applied per 100 % dyn-brake setting (× `m_loco` only, not consist).
+- **Dynamic brake taper threshold (mph):** numeric, default 5. Below this speed dyn brake force scales linearly to zero.
 - **Decoder-brake mode:** dropdown `None` / `ESU` (and ESU-only sub-fields when ESU is selected — F-numbers + thresholds).
-- **Reset to defaults** button (settings-tab-scoped — restores only the semi-realistic fields to their EngineDriver defaults; does not touch calibration values).
+- **Reset to defaults** button (settings-tab-scoped — restores only the semi-realistic fields to the active scenario's defaults; does not touch calibration values).
+
+#### 2.4.1 Scenario defaults
+
+Light-engine values are also the all-scenarios fallback when roster fields are absent — so a fresh JMRI install with an empty roster gets prototype-realistic single-loco behaviour out of the box.
+
+| Scenario | Loco mass | Loco power | Loco TE | Additional consist mass | Driver power |
+|---|---:|---:|---:|---:|---:|
+| **Light engine (default)** | 130 t | 2200 kW | 350 kN | 0 t | 100 % |
+| Switcher | 100 t | 1100 kW | 200 kN | 200 t | 80 % |
+| Local freight | 130 t | 2200 kW | 350 kN | 1500 t | 90 % |
+| Through freight | 130 t | 2200 kW | 350 kN | 5000 t | 100 % |
+| Unit train | 130 t | 2200 kW | 350 kN | 10 000 t | 100 % |
+| Custom | (operator) | (operator) | (operator) | (operator) | (operator) |
+
+Brake constants (`BRAKE_MAX_DECEL = 1.0`, `AIR_BRAKE_MAX_DECEL = 1.5`, `DYN_BRAKE_MAX_DECEL = 0.4`, `DYN_BRAKE_V_MIN = 5 mph`, `c_rr = 0.002`) are scenario-independent and apply to every scenario unless individually overridden on the Settings tab.
+
+Order of precedence resolving each physics field at attach time and on every Settings reload:
+1. Custom-scenario operator override (Settings tab) if non-blank.
+2. `RosterEntry.getPhysicsWeightKg()` / `getPhysicsPowerKw()` / `getPhysicsTractiveEffortKn()` if `> 0`.
+3. Active scenario's default from the table above.
 
 #### Bottom button bar
 
@@ -218,14 +323,18 @@ XML schema bumps to `version="2"`. The new `<semiRealistic>` subtree is added at
     <lights>...</lights>
     <semiRealistic>
         <enabled>true</enabled>
-        <scenario>Through freight</scenario>
-        <customScenarioMultiplier>3.5</customScenarioMultiplier>
-        <accelerationDelayMs>300</accelerationDelayMs>
-        <decelerationDelayMs>800</decelerationDelayMs>
-        <speedStep>2</speedStep>
-        <brakeSteps>7</brakeSteps>
-        <maxBrakePercent>70</maxBrakePercent>
-        <maxBrakeUnderPowerPercent>50</maxBrakeUnderPowerPercent>
+        <scenario>Light engine</scenario>
+        <!-- "auto" = use roster value if > 0 else scenario default; numeric = explicit override -->
+        <locoMassKg>auto</locoMassKg>
+        <locoPowerKw>auto</locoPowerKw>
+        <locoTractiveEffortKn>auto</locoTractiveEffortKn>
+        <additionalWeightTonnes>0</additionalWeightTonnes>
+        <driverPowerPercent>100</driverPowerPercent>
+        <rollingResistanceCoeff>0.002</rollingResistanceCoeff>
+        <brakeMaxDecel>1.0</brakeMaxDecel>
+        <airBrakeMaxDecel>1.5</airBrakeMaxDecel>
+        <dynBrakeMaxDecel>0.4</dynBrakeMaxDecel>
+        <dynBrakeVMinMph>5</dynBrakeVMinMph>
         <decoderBrakeMode>none</decoderBrakeMode>
         <esuLowFunction>4</esuLowFunction>
         <esuMidFunction>5</esuMidFunction>
@@ -248,25 +357,62 @@ JMRI ships a documented extension framework called **Jynstruments** [[`jython/Jy
 #### What the Jynstrument exposes
 
 A single toolbar button:
-- **Icon** — green when semi-realistic mode is ON, grey when OFF. Two PNGs ship with the `.jyn` folder.
-- **Click** — toggles `settings.enabled`. Persists to disk immediately and notifies the engine + Settings window so all three stay coherent.
+- **Icon** — green when semi-realistic mode is ON, grey when OFF, plus a transient "binding…" icon during the State 2 → State 4 handover. Three PNGs ship with the `.jyn` folder.
+- **Click** — toggles `settings.enabled` **for the current session only**; does **not** write the calibration XML. Notifies the engine + Settings window so all three stay coherent in memory. Persistent changes go through the Settings window (§2.3).
 - **Right-click** — popup with one item: `Settings...` → opens the unified Settings frame to the Settings tab (same `RailDriverSettingsAction` used by the Debug menu).
-- **Tooltip** — `RailDriver semi-realistic throttle: ON / OFF (last edited HH:MM)`.
+- **Tooltip** — `RailDriver semi-realistic throttle: ON / OFF (session)`.
 
-Scope is intentionally narrow: the Jynstrument is the mode-toggle UI, not a full RailDriver control panel. The Debug menu remains the entry point for first-time attach; everything else (calibration, advanced settings) goes through the Settings window.
+Scope is intentionally narrow: the Jynstrument is the mode-toggle UI, not a full RailDriver control panel. The Debug menu remains the entry point for first-time attach; everything else (calibration, advanced settings, persistent enable) goes through the Settings window.
 
 #### Java-side support
 
-`RailDriverMenuItem` gains four small public methods to support the Jynstrument (and any future toolbar / status surface):
+`RailDriverMenuItem` gains a small public API to support the Jynstrument (and any future toolbar / status surface):
 
 ```java
 public boolean isSemiRealisticEnabled();
-public void setSemiRealisticEnabled(boolean enabled);   // toggles in memory + persists XML + notifies engine + fires PCS
+public void setSemiRealisticEnabledPersisting(boolean enabled); // Settings tab: in memory + persists XML + notifies engine + fires PCS
+public void setSemiRealisticEnabledSessionOnly(boolean enabled); // Jynstrument click: in memory + notifies engine + fires PCS only
+
+public boolean isRailDriverConnected();                 // device present in USB
+public ThrottleFrame getActiveThrottleFrame();          // currently bound throttle, or null
+public boolean isAttachInProgress();                    // true between requestAttachToThrottle() and the resulting "activeThrottleFrame" PCS event
+public void requestAttachToThrottle(ThrottleFrame tf);  // ensureDeviceAndPolling + attachThrottleWindow against tf, asynchronous
+
 public void addSettingsListener(PropertyChangeListener l);
 public void removeSettingsListener(PropertyChangeListener l);
 ```
 
-The PCS event name is `"semiRealisticEnabled"` with the new boolean as `newValue`. The Settings window also fires this on Save / Apply so the Jynstrument's icon updates instantly when the operator toggles the checkbox there. The Jynstrument fires the same event when its button is clicked so the Settings window's checkbox tracks too. (Standard observer pattern; no risk of feedback loops because PCS doesn't fire when old equals new.)
+PCS events fired on the settings listener:
+- `"semiRealisticEnabled"` — `newValue` = boolean. Fired by both `setSemiRealisticEnabledPersisting` (Settings tab Save/Apply) and `setSemiRealisticEnabledSessionOnly` (Jynstrument click). Listeners cannot tell from the event whether the change was persisted; observers that care (e.g. the Settings tab's checkbox) reflect whatever the in-memory value is, and the Save/Apply persistence flow snapshots that value at write time.
+- `"railDriverConnected"` — `newValue` = boolean. Fired from the existing `HidServicesListener` callbacks (`hidDeviceAttached` / `hidDeviceDetached`) when our VID/PID is involved. **Note:** the existing `hidDeviceAttached` body in `RailDriverMenuItem.java:539–546` is currently commented out — earlier bring-up plans gated auto-`setupRailDriver()` on a now-removed `invokeOnMenuOnly` flag. Stage 1 re-enables a *minimal* version of that body that fires `"railDriverConnected"` on VID/PID match **without** auto-calling `setupRailDriver()` (the Debug-menu workflow keeps owning the polling lifecycle, so cold-plug behaviour is unchanged for users who don't have the Jynstrument installed). `hidDeviceDetached` already nulls `hidDevice` on VID/PID match; stage 1 adds a `firePropertyChange` next to that line.
+- `"activeThrottleFrame"` — `oldValue` and `newValue` = `ThrottleFrame` (either may be null). Fired whenever `attachThrottleWindow()` binds a new frame or the existing frame is detached. Lets each Jynstrument tell whether IT is the bound one.
+- `"attachInProgress"` — `newValue` = boolean. Fired around the `requestAttachToThrottle()` async window: `true` when the async attach starts, `false` when the resulting `"activeThrottleFrame"` event has been delivered. Lets the Jynstrument display the transient "binding…" icon and ignore extra clicks during the window.
+
+(Standard observer pattern; no risk of feedback loops on `semiRealisticEnabled` because PCS doesn't fire when old equals new.)
+
+#### Jynstrument click behaviour by state
+
+The Jynstrument can find itself in one of five states at any moment. Behaviour for each:
+
+| # | State | Trigger | Click behaviour | Visual |
+|---|---|---|---|---|
+| 1 | **No device** | `isRailDriverConnected() == false` | No-op | Greyed icon, tooltip `"RailDriver not detected"` |
+| 2 | **Device present, no throttle bound** | `isRailDriverConnected() == true` && `getActiveThrottleFrame() == null` && `!isAttachInProgress()` | **Auto-bootstrap with deferred toggle:** call `requestAttachToThrottle(getContext())` (where `getContext()` is the Jynstrument's `ThrottleWindow`'s current `ThrottleFrame`); set the Jynstrument's local `pendingSessionToggle = true`. The toggle is applied later, when the `"activeThrottleFrame"` PCS event arrives confirming this Jynstrument's frame is bound (transition to state 4). | Normal icon + tooltip `"Click to attach RailDriver to this throttle and toggle semi-realistic mode"` |
+| 2.5 | **Attach in progress** | `isAttachInProgress() == true` | No-op (extra clicks during the attach window are absorbed) | Transient "binding…" icon, tooltip `"RailDriver attaching to this throttle…"` |
+| 3 | **Device present, bound to a different throttle** | `isRailDriverConnected() == true` && `getActiveThrottleFrame() != null` && `getActiveThrottleFrame() != this` | No-op | Greyed icon, tooltip `"RailDriver already bound to another throttle window"` |
+| 4 | **Fully operational** | `isRailDriverConnected() == true` && `getActiveThrottleFrame() == this` | `setSemiRealisticEnabledSessionOnly(!isSemiRealisticEnabled())` | On/off icon per current `enabled` state; tooltip `"RailDriver semi-realistic throttle: ON / OFF (session)"` |
+
+The Jynstrument re-evaluates state on every PCS event (`railDriverConnected`, `activeThrottleFrame`, `attachInProgress`, `semiRealisticEnabled`) and updates its icon / tooltip / enabled-ness accordingly.
+
+**State 2 → State 4 deferred-toggle handling:** because `requestAttachToThrottle` is **asynchronous** (the actual binding happens inside a `ThreadingUtil.runOnGUIEventually` posted from the polling-lifecycle code, which can race with other EDT work), the Jynstrument cannot rely on the bind being complete by the time its click handler returns. Instead:
+
+1. State-2 click: call `requestAttachToThrottle(getContext())`; set `pendingSessionToggle = true`. Visual transitions to State 2.5 (binding…) on the `"attachInProgress"` PCS event.
+2. The polling-lifecycle code completes the bind, fires `"activeThrottleFrame"` with `newValue == getContext()`, then fires `"attachInProgress"` with `newValue == false`.
+3. The Jynstrument's `"activeThrottleFrame"` listener sees that `newValue == this.getContext()` and `pendingSessionToggle == true`; it calls `setSemiRealisticEnabledSessionOnly(!isSemiRealisticEnabled())` and clears the flag. Visual transitions to State 4.
+4. If `newValue` is some *other* throttle frame (e.g. the user clicked the toggle on Jynstrument A but binding ended up on Jynstrument B's throttle), `pendingSessionToggle` is cleared without action — Jynstrument A returns to State 3.
+5. If the user clicks the Jynstrument *again* during State 2.5, the click is absorbed (no-op) — `pendingSessionToggle` stays at its existing value, no re-issued `requestAttachToThrottle`.
+
+State 2's "if not bound elsewhere" check is implicit in the table: the precondition `getActiveThrottleFrame() == null` means there is no other throttle to displace. If RailDriver is already bound somewhere else, the Jynstrument is in State 3 and clicking does nothing.
 
 #### Bootstrap / install
 
@@ -276,14 +422,107 @@ The `.jyn` folder ships in JMRI's standard tree at `jython/Jynstruments/Throttle
 // In attachThrottleWindow, after binding succeeds:
 String jynPath = FileUtil.getProgramPath()
     + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn";
-if (!isAlreadyInstalled(throttleWindow, "RailDriverModeToggle")) {
+if (!hasJynstrumentInstalled(throttleWindow, "RailDriverModeToggle")) {
     throttleWindow.ynstrument(jynPath);
 }
 ```
 
-`isAlreadyInstalled` walks the toolbar's components and checks each `Jynstrument` instance's class name. The auto-install is idempotent across multiple `attachThrottleWindow()` calls, and the throttle layout XML's `<Jynstrument>` save/restore (existing JMRI behaviour, already in `ThrottleWindow.java:800-865`) means the toggle persists if the operator saves their layout.
+`hasJynstrumentInstalled(ThrottleWindow tw, String classNameSuffix)` is a recursive descent over `tw.getContentPane().getComponents()`: at each `Container` it walks children, at each `JToolBar` it inspects the `Jynstrument` instances it contains and matches by class-name suffix. (`ThrottleWindow.throttleToolBar` is private with no public getter — verified at `ThrottleWindow.java:57` — so we can't index it directly; the recursive walk is the supported workaround.) The same Jynstrument-walking pattern is established precedent inside `ThrottleWindow` itself: the close-handler at `ThrottleWindow.java:160–167` and the save-Jynstruments code at `ThrottleWindow.java:801–810` both iterate `throttleToolBar.getComponents()` and `instanceof Jynstrument`-check each child. Our walk extends the pattern only by adding the recursive descent (because we don't have direct access to the toolbar reference).
+
+The auto-install is idempotent within a single `attachThrottleWindow()` call via the `hasJynstrumentInstalled` pre-check. **It does not track removal in any persisted state** — there is no `<jynstrumentAutoInstallSuppressed>` flag and no calibration-XML state for the toolbar's presence. The only gate on auto-install is `hasJynstrumentInstalled`, which catches both (a) repeat attaches within a session where the toggle is already present, and (b) the case where saved-layout-XML restoration (`ThrottleWindow.java:800–865`) already installed the toggle before our auto-install check runs.
+
+**Within a single session,** if the operator removes the Jynstrument via right-click → Quit, the toggle stays gone for the rest of that throttle window's lifetime — `quit()` runs once, `Jynstrument.exit()` removes the panel from the toolbar, and nothing in the engine re-adds it on its own. If the operator then re-clicks `Debug → RailDriver Throttle (built in)` (re-running `attachThrottleWindow()`), the auto-install treats that as a fresh attach and re-adds the toggle — this is acceptable because re-running the Debug menu is a deliberate operator action.
+
+**Across JMRI restarts,** persistence of the toolbar's presence relies on JMRI's existing throttle-layout XML save/restore (`ThrottleWindow.java:800–865`): a saved layout that omits the toggle restores without it, and as long as the operator does not re-trigger `Debug → RailDriver Throttle (built in)`, the auto-install never runs and the toggle stays absent. If the operator does re-trigger the Debug menu, the auto-install fires (per the within-session rule above). This matches the persistence model for every other Jynstrument in JMRI and respects the "only persist things the operator changes via the Settings window" rule from §2.3.
+
+The Jynstrument's `quit()` hook (called from `Jynstrument.exit()` at `Jynstrument.java:69–83` after `JynstrumentPopupMenu.actionPerformed` fires for the user's right-click → Quit) deregisters its PCS listener so the disposed instance does not leak listener subscriptions. Concretely, the Jython side looks like this:
+
+```python
+# RailDriverModeToggle.py — abbreviated
+import java
+import jmri.jmrit.jython.Jynstrument as Jynstrument
+import jmri.util.usb.RailDriverMenuItem as RailDriverMenuItem
+from javax.swing import JButton, JPopupMenu, JMenuItem, ImageIcon
+from java.beans import PropertyChangeListener
+
+class RailDriverModeToggle(Jynstrument):
+    def getExpectedContextClassName(self):
+        return "jmri.jmrit.throttle.ThrottleWindow"
+
+    def init(self):
+        self.menuItem = RailDriverMenuItem.getInstance()
+        if self.menuItem is None:
+            return  # Debug menu not opened yet; toggle is dormant
+        self.iconOn   = ImageIcon(self.getFolder() + "/icons/raildriver-on.png")
+        self.iconOff  = ImageIcon(self.getFolder() + "/icons/raildriver-off.png")
+        self.iconWait = ImageIcon(self.getFolder() + "/icons/raildriver-binding.png")
+        self.button = JButton(self.iconOff)
+        self.button.actionPerformed = self.onClick
+        self.add(self.button)
+        self.pendingSessionToggle = False
+        self.listener = self._makeListener()
+        self.menuItem.addSettingsListener(self.listener)
+        self._refreshState()
+        # right-click popup
+        popup = JPopupMenu()
+        item = JMenuItem("Settings...")
+        item.actionPerformed = lambda evt: java.lang.Class.forName(
+            "jmri.util.usb.RailDriverSettingsAction").newInstance().actionPerformed(evt)
+        popup.add(item)
+        self.setPopUpMenu(popup)
+
+    def quit(self):
+        # Called from Jynstrument.exit() on user right-click → Quit.
+        # Only deregisters listeners — does NOT persist the removal anywhere.
+        # Persistence of removal is handled by saving the throttle layout XML.
+        if self.menuItem is not None and self.listener is not None:
+            self.menuItem.removeSettingsListener(self.listener)
+        self.listener = None
+
+    def _makeListener(self):
+        outer = self
+        class L(PropertyChangeListener):
+            def propertyChange(self, evt):
+                outer._onPCS(evt)
+        return L()
+
+    def _onPCS(self, evt):
+        name = evt.getPropertyName()
+        if name == "activeThrottleFrame":
+            if evt.getNewValue() is self.getContext() and self.pendingSessionToggle:
+                self.menuItem.setSemiRealisticEnabledSessionOnly(
+                    not self.menuItem.isSemiRealisticEnabled())
+                self.pendingSessionToggle = False
+            elif evt.getNewValue() is not self.getContext():
+                self.pendingSessionToggle = False
+        self._refreshState()
+
+    def onClick(self, evt):
+        if not self.menuItem.isRailDriverConnected():
+            return  # State 1
+        if self.menuItem.isAttachInProgress():
+            return  # State 2.5
+        active = self.menuItem.getActiveThrottleFrame()
+        if active is None:
+            self.pendingSessionToggle = True
+            self.menuItem.requestAttachToThrottle(self.getContext())  # State 2 → 2.5
+        elif active is self.getContext():
+            self.menuItem.setSemiRealisticEnabledSessionOnly(  # State 4
+                not self.menuItem.isSemiRealisticEnabled())
+        # State 3: bound elsewhere → no-op
+
+    def _refreshState(self):
+        # Update icon and tooltip based on current state. Implementation elided.
+        pass
+```
+
+Total ~80 lines. The key contract is that `quit()` is purely a listener-deregistration hook — it never writes to disk, never sets a "suppress" flag, and never reaches back into Java state beyond removing its own subscription.
 
 If the operator opens a *plain* throttle window (not via Debug → RailDriver), no auto-install fires — but in that case `attachThrottleWindow()` hasn't run either, so RailDriver isn't bound to that window and the toggle would have nothing to toggle. The two paths are coherent: the Jynstrument only appears on a throttle window that has RailDriver attached.
+
+##### Relationship to legacy `RailDriverModernDesktop.py`
+
+JMRI ships an older Jython-based RailDriver Jynstrument at `jython/Jynstruments/ThrottleWindowToolBar/USBThrottle.jyn/RailDriverModernDesktop.py` (~226 lines, JInput-backed, Windows-only per its own header comment). It's a **separate, parallel** code path with no shared state and no callbacks into our Java engine. Operators using the legacy script are not the audience for this feature; operators using `Debug → RailDriver Throttle (built in)` are. The new `RailDriverModeToggle.jyn` only attaches when the Java-side `RailDriverMenuItem` binds, so the two never overlap on the same throttle window in practice. No deprecation, no migration; the legacy script remains for users on the old path.
 
 #### Why a Jynstrument and not a JMRI core change
 
@@ -293,32 +532,54 @@ JMRI's `ThrottleWindow` has no Java SPI for adding toolbar buttons or menu items
 
 Each stage is independently buildable, installable, and testable on a real DCC loco. Acceptance criteria are listed for each.
 
-### 3.1 Stage 1 — Ramp engine + bypass switch + unified Settings window + toolbar mode toggle
+### 3.1 Stage 1 — Physics integration engine + bypass switch + unified Settings window + toolbar mode toggle
 
-**Goal:** verify the ramp scheduler works end-to-end without any brake/load complexity. The throttle lever sets a target; the loco walks toward it at constant base delay. Also closes out the parent §3 / §6 off-EDT-mutation latent issue by routing every Swing-touching call (in both the new engine path AND the existing direct-dispatch path) through `SwingUtilities.invokeLater`. Replaces the standalone calibration window from the existing RailDriver bring-up with the unified two-tab Settings window described in §2.4. Ships the throttle-toolbar mode toggle Jynstrument from §2.6.
+**Goal:** verify the physics integration loop works end-to-end without any brake input. The throttle lever sets `vTarget_fs`; the integrator walks `v_fs` toward it under loco mass + power + TE + rolling resistance. Defaults are Light-engine values so a brand-new install produces prototype-realistic single-loco behaviour with zero configuration. Also closes out the parent §3 / §6 off-EDT-mutation latent issue by routing every Swing-touching call (in both the new engine path AND the existing direct-dispatch path) through `ThreadingUtil.runOnGUIEventually` for setters and `ThreadingUtil.runOnGUIwithReturn` for getters that feed decision logic. Replaces the standalone calibration window from the existing RailDriver bring-up with the unified two-tab Settings window described in §2.4. Ships the throttle-toolbar mode toggle Jynstrument from §2.6.
+
+The integration core is an **independent, parallel implementation** of the same physics described in `RosterSpeedProfile.runPhysicsAccelerationToTargetThrottle()` (`java/src/jmri/jmrit/roster/RosterSpeedProfile.java:1871–2103`), not a refactor or extraction. The new engine reuses no code from that method; in particular, the F_drive / F_rr / a integration body, the bucket-to-DCC-step quantisation, the steam-power-exponent, and the gear-pause logic are all rewritten from scratch with brake-force layering and a continuous tick instead of a one-shot queue. There is no `a < 0` clamp (the loop integrates in either direction). The two files evolve independently — see §2.1's "intentional parallel implementation" note for the rationale.
+
+Velocity ↔ DCC step conversion uses `RosterSpeedProfile.getSpeed(throttleStep, isForward)` when a calibrated speed profile exists, falling back to a linear `dccStep = round(v_fs / vMax_fs · 126)` mapping (where `vMax_fs` is the scenario's design top speed) when it doesn't. With the linear fallback the loco's prototype-realistic behaviour is preserved; only the absolute speed-step calibration is approximate.
 
 **New / modified / deleted files:**
 
 *New:*
-- `java/src/jmri/util/usb/SemiRealisticThrottleEngine.java` — engine with the `recompute()` / scheduler / `ThrottleProxy`. In stage 1 only the throttle path is wired; brake/load fields are present but unused. Worker thread does the math; EDT does the `setSpeedSetting`.
-- `java/src/jmri/util/usb/SemiRealisticSettings.java` — settings POJO with load + save methods, mirroring `RailDriverCalibration`'s structure.
+- `java/src/jmri/util/usb/SemiRealisticThrottleEngine.java` — engine with the integration tick / `ScheduledExecutorService` / DccThrottle access. In stage 1 only the throttle path is wired; brake force terms are present in the equation but their input fields stay zero. Worker thread does the math; EDT does the `setSpeedSetting`.
+- `java/src/jmri/util/usb/SemiRealisticSettings.java` — settings POJO with load + save methods, mirroring `RailDriverCalibration`'s structure. Holds the physics constants and per-scenario defaults table.
+- `java/src/jmri/util/usb/LoadScenario.java` — enum with the six scenarios from §2.4.1 and their default mass/power/TE/consist/driver values.
 - `java/src/jmri/util/usb/RailDriverSettingsFrame.java` — the `JmriJFrame` host described in §2.4: holds a `JTabbedPane` (Settings / Calibration), the bottom Save/Apply/Cancel button bar, status line, and the dirty-tracking glue. Listens for `"RawByte"` events and forwards them to the calibration tab so the live cursor still works while that tab is visible.
 - `java/src/jmri/util/usb/RailDriverSettingsAction.java` — `AbstractAction` opening the unified frame. Calls `RailDriverMenuItem.ensureDeviceAndPolling()` before showing the window (same precondition the existing calibration action enforces today).
-- `java/src/jmri/util/usb/SemiRealisticSettingsPanel.java` — the Settings tab. Implements the `isDirty / addDirtyChangeListener / validateAndApplyTo / resetToFile` contract from §2.4. Disables fields based on the `enabled` checkbox and the Decoder-brake mode dropdown.
+- `java/src/jmri/util/usb/SemiRealisticSettingsPanel.java` — the Settings tab. Implements the `isDirty / addDirtyChangeListener / validateAndApplyTo / resetToFile` contract from §2.4. Disables fields based on the `enabled` checkbox and the Decoder-brake mode dropdown; switches loco-mass/power/TE rows between read-only "auto" display and editable when scenario = Custom.
 - `java/src/jmri/util/usb/CalibrationTabPanel.java` — the Calibration tab. Created by extracting the entire visual-bar UI body from the existing `RailDriverCalibrationFrame` (everything in the current `buildHeader` / `buildSections` / per-axis `build*Section` / capture-row helpers) into a `JPanel` subclass, dropping the bottom Save / Reset-all / Cancel row (those move to the frame), and implementing the same `isDirty` contract. Capture-button and per-section "Reset to defaults" presses now flip dirty.
-- `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/RailDriverModeToggle.py` — the Jynstrument from §2.6. ~80 lines of Jython following the pattern of existing `Light.jyn` / `Direction.jyn`. Implements `init()`, `quit()`, `getExpectedContextClassName()` (returns `"jmri.jmrit.throttle.ThrottleWindow"`), creates a single `JButton` showing the on/off icon, registers a Java `PropertyChangeListener` on `RailDriverMenuItem` for the `"semiRealisticEnabled"` event, and builds a one-item `JPopupMenu` with `Settings...` invoking `RailDriverSettingsAction`.
-- `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/icons/raildriver-on.png` and `raildriver-off.png` — two 24×24 (or whatever size matches existing toolbar icons; check `resources/icons/throttles/*.png` for the convention) icons in the Jynstrument folder.
+- `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/RailDriverModeToggle.py` — the Jynstrument from §2.6. ~80 lines of Jython following the pattern of existing toolbar Jynstruments (`DCCThrottle.jyn`, `WiimoteThrottle.jyn`). Implements `init()`, `quit()`, `getExpectedContextClassName()` (returns `"jmri.jmrit.throttle.ThrottleWindow"`), creates a single `JButton` showing the on/off/binding icon, registers a Java `PropertyChangeListener` on `RailDriverMenuItem` for the `"semiRealisticEnabled"` / `"railDriverConnected"` / `"activeThrottleFrame"` / `"attachInProgress"` events, tracks an internal `pendingSessionToggle` flag for the State 2 → State 4 deferred toggle described in §2.6, and builds a one-item `JPopupMenu` with `Settings...` invoking `RailDriverSettingsAction`. `quit()` is a pure listener-deregistration hook with no persistence side effects.
+- `jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/icons/raildriver-on.png`, `raildriver-off.png`, and `raildriver-binding.png` — three 24×24 (or whatever size matches existing toolbar icons; check `resources/icons/throttles/*.png` for the convention) icons in the Jynstrument folder. The "binding" icon is shown during the State 2.5 attach-in-progress window.
 
 *Modified:*
 - `java/src/jmri/util/usb/RailDriverCalibration.java` — bump schema to `"2"`, add `<semiRealistic>` subtree population/build, hold a `SemiRealisticSettings` field.
 - `java/src/jmri/util/usb/RailDriverMenuItem.java`:
    1. Instantiate the engine in `attachThrottleWindow`; route `dispatchValueEvent` Axis 1 dispatch through the engine when `settings.enabled`.
-   2. **Wrap every Swing-touching call in `dispatchValueEvent` in `SwingUtilities.invokeLater`** — this fixes the pre-existing off-EDT mutation per §2.2's threading contract. Affects: Axis 0 `throttle.setIsForward`; Axis 1 `throttle.setSpeedSetting` + `setLEDs` (when `setLEDs` reaches Swing — verify; if it only touches `HidDevice` it can stay on the worker); Axis 6 `throttle.setFunction`; the inner-switch's `addressPanel.selectRosterEntry` / `dispatchAddress` / `setRosterSelectedIndex` / `throttleWindow.nextThrottleFrame` / `previousThrottleFrame` / `throttle.setSpeedSetting` / `throttle.setFunction` / `throttle.getFunctionMomentary` / `throttle.getFunctions`. The decision logic (which case matched, what value to compute) stays on the polling thread; only the final mutator/getter call against a Swing-backed object goes through `invokeLater`.
+   2. **Wrap every Swing-touching call in `dispatchValueEvent` via `ThreadingUtil`** — this fixes the pre-existing off-EDT mutation per §2.2's threading contract. The wrapping splits into two cases by the call's nature, not by which axis it's on:
+
+      **Setters / fire-and-forget mutators → `ThreadingUtil.runOnGUIEventually(() -> ...)`:**
+      - Axis 0: `throttle.setIsForward(...)`
+      - Axis 1: `throttle.setSpeedSetting(...)` (in OFF-mode fallback path; in ON-mode the engine's integration tick already wraps via `runOnGUIEventually`)
+      - Axis 6: `throttle.setFunction(0, ...)` (lights toggle)
+      - Inner-switch: `addressPanel.selectRosterEntry(...)`, `addressPanel.dispatchAddress(...)`, `addressPanel.setRosterSelectedIndex(...)`, `throttleWindow.nextThrottleFrame()`, `throttleWindow.previousThrottleFrame()`, `throttle.setSpeedSetting(...)`, `throttle.setFunction(...)`
+
+      **Getters whose return values feed the surrounding decision → `ThreadingUtil.runOnGUIwithReturn(() -> ...)`:**
+      - `throttle.getFunctions()` (used in `RailDriverMenuItem.java:883` to bound-check `fNum`)
+      - `throttle.getFunctionMomentary(fNum)` (line 884; gates whether to toggle vs. set)
+      - `throttle.getFunction(fNum)` (line 886; current state for toggle computation)
+
+      **This corrects a latent bug the original bring-up plan introduced** by listing those getters alongside the setters: wrapping a getter in fire-and-forget `invokeLater` returns `null`/garbage to the calling code because the lambda hasn't run yet. `runOnGUIwithReturn` blocks the polling thread until the EDT lambda completes — slightly higher polling-thread latency on the inner-switch path, but the function-state read is now actually correct. The polling thread can afford the round-trip; HID reports come at ~11.5 Hz so even a 50 ms EDT round-trip is well within budget.
+
+      **No wrapping needed:** `setLEDs(...)` calls `sendMessage`/`hidDevice` only (verified `RailDriverMenuItem.java:446`) — no Swing path. The decision logic (which axis case matched, what value to compute) stays on the polling thread; only the final mutator/getter call against a Swing-backed object crosses to the EDT.
+
+      **Migration of the existing `SwingUtilities.invokeLater` call site:** `RailDriverMenuItem.java:244` (the `attachThrottleWindow` deferred-listener-wiring `invokeLater` — verified to be the **only** `SwingUtilities.invokeLater` site in the file) becomes `ThreadingUtil.runOnGUIEventually` — same behaviour, JMRI-canonical idiom. The `import javax.swing.SwingUtilities;` line is removed; `import jmri.util.ThreadingUtil;` is added. The other pre-existing `SwingUtilities.invokeLater` site in `RailDriverCalibrationFrame.java:423` is moot — that file is deleted in stage 1.
    3. `reloadCalibration()` already covers the calibration reload; extend it to also notify the engine of new semi-realistic settings (or add a sibling `reloadSemiRealisticSettings()` if the engine needs distinct hooks — implementation detail).
-   4. Add `isSemiRealisticEnabled()`, `setSemiRealisticEnabled(boolean)`, `addSettingsListener(PropertyChangeListener)`, `removeSettingsListener(PropertyChangeListener)` per §2.6. `setSemiRealisticEnabled` mutates the working calibration's `<semiRealistic><enabled>` field, persists the calibration XML, calls `reloadCalibration()`, and fires `"semiRealisticEnabled"` on a dedicated `PropertyChangeSupport`.
-   5. Auto-install the Jynstrument at the end of `attachThrottleWindow`'s success path, idempotent across repeat calls. Helper `private static boolean hasJynstrumentInstalled(ThrottleWindow tw, String classNameSuffix)` walks `tw.getJMenuBar()`'s parent's components — actually walks the `JToolBar` reachable via `tw`'s component tree — checking each `Jynstrument` instance's class name.
+   4. Add `isSemiRealisticEnabled()`, `setSemiRealisticEnabledPersisting(boolean)`, `setSemiRealisticEnabledSessionOnly(boolean)`, `isRailDriverConnected()`, `getActiveThrottleFrame()`, `isAttachInProgress()`, `requestAttachToThrottle(ThrottleFrame)`, `addSettingsListener(PropertyChangeListener)`, `removeSettingsListener(PropertyChangeListener)` per §2.6. The two enabled-setters share a private helper that mutates `settings.enabled` in memory, runs the §2.3 mode-switch handover, and fires `"semiRealisticEnabled"`; `setSemiRealisticEnabledPersisting` additionally writes the calibration XML and calls `reloadCalibration()`, while `setSemiRealisticEnabledSessionOnly` skips both. `requestAttachToThrottle` is a no-op if the requested frame is already the bound one; otherwise sets an internal `attachInProgress = true` and fires `"attachInProgress"` (true), then schedules the bind via `ThreadingUtil.runOnGUIEventually`. The bind path (`ensureDeviceAndPolling()` then `attachThrottleWindow()` against the requested frame) fires `"activeThrottleFrame"` on success and finally `"attachInProgress"` (false) once the activeThrottleFrame event has been dispatched. The existing `HidServicesListener` callbacks are extended for VID/PID hot-plug awareness: `hidDeviceAttached` (currently a commented-out no-op at `RailDriverMenuItem.java:539–546`, originally gated on a now-removed `invokeOnMenuOnly` flag) is re-enabled to fire `firePropertyChange("railDriverConnected", false, true)` on VID/PID match **without** auto-calling `setupRailDriver()` — the Debug-menu workflow keeps owning the polling lifecycle, so cold-plug behaviour is unchanged for users without the Jynstrument; only the Jynstrument's icon state is affected. `hidDeviceDetached` (which already nulls `hidDevice` on VID/PID match at line 552–557) gains a sibling `firePropertyChange("railDriverConnected", true, false)` call.
+   5. Auto-install the Jynstrument at the end of `attachThrottleWindow`'s success path, idempotent across repeat calls within a single attach. Helper `private static boolean hasJynstrumentInstalled(ThrottleWindow tw, String classNameSuffix)` is a recursive descent over `tw.getContentPane().getComponents()` (`ThrottleWindow.throttleToolBar` is private with no public getter, verified at `ThrottleWindow.java:57`; the recursive walk inspects every contained `JToolBar` for `Jynstrument` instances and matches by class-name suffix). The walk extends a precedent established inside `ThrottleWindow` itself: the close-handler at `ThrottleWindow.java:160–167` and the save-Jynstruments code at `ThrottleWindow.java:801–810` both iterate `throttleToolBar.getComponents()` and `instanceof Jynstrument`-check each child; our walk only adds the recursive descent because we lack direct access to the toolbar reference. Auto-install is gated **only** by `hasJynstrumentInstalled`. **There is no `<jynstrumentAutoInstallSuppressed>` flag, no `seenQuitThisSession` flag, and no other in-memory or on-disk state for the toolbar's presence.** Saved-layout-XML restoration (`ThrottleWindow.java:800–865`) runs before `attachThrottleWindow`, so a saved layout that includes the Jynstrument is detected by the walk and auto-install becomes a no-op for that session. A saved layout that omits the Jynstrument restores the empty toolbar; auto-install then re-adds it — meaning "save throttle layout with toggle removed" by itself is **not** sufficient to keep the toggle out across `Debug → RailDriver Throttle (built in)` re-clicks, because the auto-install treats a re-click as a deliberate operator action equivalent to the first attach. Operators who want the removal to be sticky across re-clicks must use the deferred-future "Restore toolbar toggle" workflow (currently: drag-install only) to manage the toggle's presence explicitly. The Jynstrument's `quit()` hook is solely a session-local listener-deregistration cleanup — see §2.6's Jython code sketch.
 - `java/src/apps/jmrit/DebugMenu.java` — replace the `new jmri.util.usb.RailDriverCalibrationAction()` line with `new jmri.util.usb.RailDriverSettingsAction()`.
-- `java/src/jmri/util/usb/Bundle.properties` — replace `RdCalibrate = RailDriver Calibration...` with `RdSettings = RailDriver Settings...`. (The new action and frame title reference `RdSettings`.)
+- `java/src/jmri/util/usb/Bundle.properties` — replace `RdCalibrate = RailDriver Calibration...` with `RdSettings = RailDriver Settings...`. Also add Bundle keys for all new Settings-tab labels (scenario names, physics field labels, brake constant labels, button labels, status messages). The 5 existing locale Bundle files (`Bundle_ca`, `Bundle_cs`, `Bundle_de`, `Bundle_fr`, `Bundle_nl`) fall through to English for any keys they don't override; translators can add localized values later.
 
 *Deleted:*
 - `java/src/jmri/util/usb/RailDriverCalibrationFrame.java` — replaced by `RailDriverSettingsFrame` + `CalibrationTabPanel`.
@@ -333,83 +594,90 @@ Each stage is independently buildable, installable, and testable on a real DCC l
 4. Apply: same persistence behaviour, **leaves window open**, dirty greys out after a successful write.
 5. Cancel with no pending changes closes the window. Cancel with pending changes prompts the operator; "Yes / discard" closes, "No / keep editing" leaves the window open with dirty intact.
 6. Validation failure on either tab during Save or Apply: the offending tab is auto-selected, the status line shows the message, the window stays open, dirty stays set. (No pre-existing calibration field can fail validation today; the failure path is exercised by the new Settings-tab numeric inputs.)
-7. Mode OFF: throttle behaves exactly as before (direct `setSpeedSetting`, but now wrapped in `invokeLater` — operator-perceptibly identical).
-8. Mode ON: moving the throttle lever from idle to full speed produces a visible ramp on the loco — the loco's speed slider (in JMRI throttle window) walks up over ~19 s by default (63 steps × 300 ms, with default speed step = 2).
-9. Mode ON: moving the lever back to idle produces a ~50 s ramp down (default 800 ms × 63 steps).
-10. Reverser still works, just with the ramp engine in between.
+7. Mode OFF: throttle behaves exactly as before (direct `setSpeedSetting`, but now wrapped in `ThreadingUtil.runOnGUIEventually` — operator-perceptibly identical).
+8. Mode ON, default Light-engine scenario, empty roster (no physics fields populated): moving the throttle lever from idle to full speed produces a visible ramp on the loco. Time from 0 to top speed is on the order of 30–60 s prototype (depends on layout scale and roster speed-profile coverage), dominated by power-limited integration above ~14 mph. **No snap, no jitter, no missed slots** during a 5-minute lever-sweep session.
+9. Mode ON, dropping the throttle to idle while at speed: loco coasts down on rolling resistance alone (no brake input in stage 1) at very low decel rate (~0.02 m/s² for default `c_rr = 0.002`). This is intentional — full deceleration is gated on brake stages 3–5.
+10. Reverser still works, just with the integrator in between.
 11. The `activeThrottleFrame` NPE invariant from the existing RailDriver bring-up still holds.
-12. **Code audit:** every method call in `RailDriverMenuItem.dispatchValueEvent` (and any helpers it calls) that mutates a Swing component, or calls a JMRI throttle/address-panel API that is documented as EDT-only, is wrapped in `SwingUtilities.invokeLater`. Verified by `grep` against the listed call sites and by a 5-minute live lever-sweep session in both modes producing no visible UI corruption.
-13. Pre-existing XML files (schema `version="1"`) load cleanly into the new window — semi-realistic fields populate from defaults (disabled), calibration fields load as before; saving from the unified window produces a `version="2"` file.
-14. The toolbar mode-toggle Jynstrument auto-installs on first `Debug → RailDriver Throttle (built in)` click. The icon shows the current `enabled` state. Clicking it flips the state, persists to disk, and the Settings tab's `Enable semi-realistic mode` checkbox tracks the new value (and vice versa). Right-clicking the icon shows a `Settings...` item that opens the unified Settings frame.
-15. The Jynstrument is idempotent on repeat attaches — opening the throttle, closing it, and re-opening via the Debug menu does NOT add a second copy of the toggle to the toolbar.
+12. **Code audit:** every method call in `RailDriverMenuItem.dispatchValueEvent` (and any helpers it calls) that mutates a Swing component, or calls a JMRI throttle/address-panel API that is documented as EDT-only, is wrapped in `ThreadingUtil.runOnGUIEventually` (setters) or `ThreadingUtil.runOnGUIwithReturn` (getters). Verified by `grep` against the listed call sites (`grep -n 'throttle\.\|addressPanel\.\|throttleWindow\.next\|throttleWindow\.previous'` showing zero unwrapped occurrences) and by a 5-minute live lever-sweep session in both modes producing no visible UI corruption. The file no longer imports `javax.swing.SwingUtilities`.
+13. Pre-existing XML files (schema `version="1"`) load cleanly into the new window — semi-realistic fields populate from defaults (disabled, Light engine), calibration fields load as before; saving from the unified window produces a `version="2"` file.
+14. The toolbar mode-toggle Jynstrument auto-installs on first `Debug → RailDriver Throttle (built in)` click. The icon shows the current `enabled` state. Clicking it flips the state **for this session only** (no XML write); the Settings tab's `Enable semi-realistic mode` checkbox reflects the new in-memory value when the window is open, and Save/Apply at that point persists whatever the current value is. Right-clicking the icon shows a `Settings...` item that opens the unified Settings frame.
+15. The Jynstrument is idempotent on repeat attaches within a session — opening the throttle, closing it, and re-opening via the Debug menu does NOT add a second copy of the toggle to the toolbar.
+16. If the operator explicitly removes the Jynstrument from the toolbar (right-click → Quit), it stays removed for the rest of the throttle window's lifetime. Re-clicking `Debug → RailDriver Throttle (built in)` triggers `attachThrottleWindow()` again, which **does** re-add the toggle — this is treated as a deliberate operator action equivalent to a fresh attach. Persistent removal across JMRI restarts is not currently supported automatically; the deferred-future "Restore toolbar toggle" workflow item in §8 covers the inverse case. Operators wanting to keep the toggle absent permanently should not re-trigger the Debug menu attach.
 
 ### 3.2 Stage 2 — Scenario picker
 
-**Goal:** the load multiplier visibly extends ramp Δt.
+**Goal:** scenario selection visibly changes accel and decel timing through real consist mass and driver-power adjustment.
 
-**Modified:** `SemiRealisticSettings.java` (add `scenario` + `customScenarioMultiplier`), `SemiRealisticSettingsPanel.java` (enable the Scenario row), `SemiRealisticThrottleEngine.java` (multiply `targetAcceleration` by `scenario.multiplier()` before scheduling).
-
-**Acceptance:**
-1. Picker shows all 6 scenarios; Custom shows a numeric field that's only honoured when Custom is selected.
-2. Switching from `Light engine` to `Unit train` makes a 0 → full-speed ramp take ~10 × longer (≈ 3 minutes).
-3. Switching mid-ramp picks up on the next `recompute()` (next lever movement or every brake update).
-
-### 3.3 Stage 3 — Independent brake → mechanical brake
-
-**Goal:** Indep-brake lever (Axis 3) shapes the target and Δt per [research §3.5].
-
-**Modified:** `SemiRealisticThrottleEngine.java` (add the `effectiveBrake` chain — but with `airLinePercent == 100` constant for now, so only the mechanical side is in play), `dispatchValueEvent` Axis 3 case (update `engine.indepBrakeStep`).
-
-Quantisation: `indepBrakeStep = round((calibratedFullRelease - byteValue) / (calibratedFullRelease - calibratedFullApplication) * brakeSteps)`. `brakeSteps` from settings (default 7).
+**Modified:** `SemiRealisticSettings.java` (add `scenario` field + per-scenario default lookup), `LoadScenario.java` (table from §2.4.1), `SemiRealisticSettingsPanel.java` (enable the Scenario row + the loco-mass/power/TE rows when `Custom` is selected), `SemiRealisticThrottleEngine.java` (resolve `locoMassKg` / `locoPowerW` / `locoTractiveEffortN` / `additionalMassKg` / `driverPowerPct` from the precedence rule in §2.4.1 on every settings reload and on attach).
 
 **Acceptance:**
-1. Indep brake at Full Release: throttle behaves as in stages 1-2 (ramp toward lever target).
-2. Indep brake mid-travel while throttle is at full: loco drops to a partial speed (the EngineDriver "throttle defeated by brake" curve) and decelerates to it on the brake-shaped Δt.
-3. Indep brake at Full Application + throttle at zero: loco stops on a fast deceleration (the regime-B curve, `Δt = base × −effectiveBrake` ≈ 90 ms with 70 % maxBrake).
-4. Releasing the indep brake while at speed: loco resumes accelerating toward the lever's target on the normal curve.
+1. Picker shows all 6 scenarios; selecting `Custom` enables the loco-mass/power/TE/consist/driver-power fields for editing.
+2. Switching from `Light engine` to `Unit train` makes a 0 → full-speed accel take dramatically longer (single loco trying to accelerate 10 130 t with 2200 kW: time-to-top dominated by `m·v²/(2·P) ≈ 130 000 s² / kg·m²` — practically several minutes prototype).
+3. Switching from `Unit train` to `Light engine` mid-accel: the integrator picks up the new mass on the next 50 ms tick — accel rate jumps immediately because `a = F_drive/m_total` recomputes from the smaller mass.
+4. With roster physics fields populated (`getPhysicsWeightKg() > 0` etc.), those values override the scenario defaults per §2.4.1's precedence rule. Operator can switch scenarios to layer in different consist masses while the loco's own physics stays roster-driven.
 
-### 3.4 Stage 4 — Auto brake → air line + bail-off restore
+### 3.3 Stage 3 — Independent brake → mechanical brake force
 
-**Goal:** Auto Brake (Axis 2) directly drives `airLinePercent`; bail-off (byte 4) restores it to 100 transiently.
+**Goal:** Indep-brake lever (Axis 3) adds a `F_brake_mech` term to the integration.
 
-**Modified:** `dispatchValueEvent` Axis 2 case (compute `airLinePercent = round((byteValue - calibratedEmg) / (calibratedReleased - calibratedEmg) * 100)`; clamp to 0..100); button dispatch for the bail-off switch (set `engine.bailoffPressed = true/false` based on byte-4 threshold-crossing); `SemiRealisticThrottleEngine.recompute()` honours `bailoffPressed` by treating the air line as 100 % regardless of Axis 2 position while the switch is held.
+**Modified:** `dispatchValueEvent` Axis 3 case (compute `indepBrakeFraction = (calibratedFullRelease - byteValue) / (calibratedFullRelease - calibratedFullApplication)`, clamped to 0..1; set `engine.indepBrakeFraction`), `SemiRealisticThrottleEngine.java` (the integration tick now includes `F_brake_mech = indepBrakeFraction · brakeMaxDecel · m_total` as a subtractive force).
+
+No regime detection. No quantisation steps. No "throttle fighting brake" branch. When both throttle and brake are applied, `F_drive` and `F_brake_mech` both contribute to the net force; the integrator computes `a = (F_drive − F_rr − F_brake_mech) / m_total` which can be positive, negative, or zero depending on the relative magnitudes — and the loco accelerates, decelerates, or holds as the physics dictate.
+
+**Acceptance:**
+1. Indep brake at Full Release: throttle behaves as in stages 1-2 (`F_brake_mech = 0`, integrator walks `v_fs` toward lever target).
+2. Indep brake at Full Application + throttle at zero, Light-engine defaults: loco decelerates at ≈ 1.0 m/s² (= `BRAKE_MAX_DECEL`). Time from 80 mph (35.8 m/s prototype) to 0 ≈ 36 s.
+3. Indep brake mid-travel while throttle is at full: integrator computes net force. With Light-engine defaults at low speed, `F_drive ≈ TE_avail = 350 kN`, `F_brake_mech` at 50 % = `0.5 · 1.0 · 130 000 = 65 kN`. Net force = +285 kN, loco continues to accelerate at ~2.2 m/s². At higher speeds where `F_drive = P/v` drops below `F_brake_mech`, loco settles at the equilibrium speed. **Emergent behaviour, not coded as a special case.**
+4. Releasing the indep brake while at speed: `F_brake_mech = 0` on the next tick; integrator resumes accelerating toward the lever's target.
+5. With Unit-train scenario (10 130 t total, brake force = 0.5 · 1.0 · 10 130 000 = 5 065 kN at 50 % indep): same brake decel rate (1.0 m/s² · brakePct), but accel rate is much smaller — heavy consist takes longer to start moving and exhibits prototypically long stopping distances.
+
+### 3.4 Stage 4 — Auto brake → air-line force + bail-off override
+
+**Goal:** Auto Brake (Axis 2) drives `airLineFraction`, contributing `F_brake_air`; bail-off (byte 4) zeroes the air term while held.
+
+**Modified:** `dispatchValueEvent` Axis 2 case (compute `airLineFraction = clamp((calibratedReleased - byteValue) / (calibratedReleased - calibratedEmg), 0, 1)`; Released → 0, EMG → 1; set `engine.airLineFraction`); button dispatch for the bail-off switch (set `engine.bailoffPressed = true/false` based on byte-4 threshold-crossing); `SemiRealisticThrottleEngine.java`'s integration tick now reads the air force via `air = bailoffPressed ? 0.0f : airLineFraction` and adds `F_brake_air = air · airBrakeMaxDecel · m_total` as another subtractive force.
 
 This replaces EngineDriver's reservoir-and-line repeater simulation [research §4.2] with a direct mapping. It's both simpler in code and more prototypical (the operator's hand position *is* the air pressure on a real RailDriver). The reservoir-with-recharge state machine is **out of scope** unless the operator specifically wants to simulate "running out of air" — which they don't on a console with a real Auto Brake handle.
 
 **Acceptance:**
-1. Auto brake at Released: throttle ramps to lever target as in stage 3.
-2. Auto brake at EMG: loco drops to zero on the air-line-as-brake curve, fast deceleration.
-3. Auto brake mid-travel + indep brake at Full Release: the air line dominates because it bites harder (`min(airLineAsBrakePcnt, brakePcnt)` per [research §3.4]).
-4. Auto brake at SUP/CS + bail-off pressed: loco accelerates again because air line is treated as 100 while bail-off is held — even though the lever is still applying.
-5. Releasing bail-off restores brake immediately.
+1. Auto brake at Released: `F_brake_air = 0`, integrator walks toward lever target as in stage 3.
+2. Auto brake at EMG, throttle at zero, Light-engine: loco decelerates at ≈ 1.5 m/s² (= `AIR_BRAKE_MAX_DECEL`). 80 mph → 0 in ≈ 24 s.
+3. Auto brake at 50 % + indep brake at Full Release: `F_brake_air = 0.5 · 1.5 · m_total`. Combined with `F_brake_mech = 0`, net decel ≈ 0.75 m/s². When indep brake is also applied at 50 %: `F_brake_total = 0.5·1.5·m + 0.5·1.0·m = 1.25·m`, decel ≈ 1.25 m/s² — **forces sum, no `min(...)` clipping. Stronger braking than either alone, which is the prototype reality**: the EngineDriver `min(airLineAsBrakePcnt, brakePcnt)` rule [research §3.4] was an arcade simplification we deliberately don't reproduce.
+4. Auto brake at SUP/CS + bail-off pressed: air-line term zeroes, only mechanical brake (if any) remains. Loco accelerates again under throttle if mechanical brake is also released.
+5. Releasing bail-off restores the air-line term immediately (next tick).
 
 ### 3.5 Stage 5 — Dynamic brake (lever UP)
 
-**Goal:** the half of the throttle lever above center (toward DYN BRAKE label) finally does something.
+**Goal:** the half of the throttle lever above center (toward DYN BRAKE label) finally does something — adds `F_brake_dyn` term that acts on loco mass only and tapers near zero speed.
 
-**Modified:** `dispatchValueEvent` Axis 1 case to compute `leverDynBrakeFraction = (calibratedIdleLow - byteValue) / (calibratedIdleLow - calibratedFullDynBrake)` clamped to 0..1 when the byte is below Idle Low (= the dyn-brake side); `SemiRealisticThrottleEngine.recompute()` adds a separate `dynBrakeAcceleration` term that's strictly subtractive, distinct from `effectiveBrake`. The `DBr` LED, currently a TODO from the existing RailDriver bring-up, becomes the indication that the dyn-brake region is active.
+**Modified:** `dispatchValueEvent` Axis 1 case to compute `leverDynBrakeFraction = clamp((calibratedIdleLow - byteValue) / (calibratedIdleLow - calibratedFullDynBrake), 0, 1)` when the byte is below Idle Low (= the dyn-brake side); `SemiRealisticThrottleEngine.java`'s integration tick adds `F_brake_dyn = leverDynBrakeFraction · dynBrakeMaxDecel · locoMassKg · speedTaper(v_fs)` where `speedTaper(v) = min(1.0, v / dynBrakeVMinMps)`. The `DBr` LED, currently a TODO from the existing RailDriver bring-up, becomes the indication that the dyn-brake region is active.
 
-Dyn brake doesn't use trainline air, so it stacks orthogonally with `airLinePercent` — both contribute deceleration. The combined effective `targetAcceleration` magnitude is the larger (i.e. shorter Δt) of the two terms when both are active.
+Two notable physics differences from mechanical/air brake:
+- Acts on `locoMassKg` only, not `m_total`. Real dyn brake doesn't propagate through trainline air [research §10 item 1] — only the loco's traction motors generate the braking torque, so the brake force is limited by loco mass × adhesion.
+- Speed-tapered. Real dyn brake fades to zero below ~5 mph because traction motors lose torque at low speed. `speedTaper(v)` is the linear approximation; below `dynBrakeVMinMps` (default 5 mph = 2.24 m/s) the term scales linearly to zero.
+
+Stacks with mechanical and air brake by simple force summation in the integration. No `max(...)` selection, no "reinforce" special case.
 
 **Acceptance:**
-1. Lever at Idle Low or above: dyn brake is inactive; behaviour identical to stage 4.
-2. Lever at full DYN BRAKE: loco decelerates to zero on a fast curve; LED shows `DBr`.
-3. Lever just past Idle Low: loco decelerates slowly, LED still shows `DBr`.
-4. Auto brake also applied while in dyn brake: deceleration is at least as fast as the most aggressive of the two — they don't cancel, they reinforce.
+1. Lever at Idle Low or above (in throttle region): `dynBrakeFraction = 0`, integrator behaves identically to stage 4.
+2. Lever at full DYN BRAKE, Light-engine, throttle and brakes off, at 60 mph: `F_brake_dyn = 1.0 · 0.4 · 130 000 · 1.0 = 52 kN`, decel ≈ 0.4 m/s². LED shows `DBr`.
+3. Same as #2 but at 3 mph (below taper threshold): `speedTaper(3 mph) = min(1, 1.34/2.24) = 0.6`, decel ≈ 0.24 m/s². Below ~0.5 mph dyn brake contributes essentially nothing.
+4. Lever at full DYN BRAKE + Auto brake at EMG simultaneously, Light-engine at 60 mph: `F_brake_dyn = 52 kN`, `F_brake_air = 1.0 · 1.5 · 130 000 = 195 kN`, total = 247 kN, decel ≈ 1.9 m/s² — emergent from force summation, no special-case code. Heavier (e.g. Unit train) consist scales `F_brake_air` up but not `F_brake_dyn`, so dyn brake's relative contribution is much smaller — prototypically correct (loco-only dyn brake on a heavy train is not the primary deceleration mechanism).
 
 ### 3.6 Stage 6 — Reverser interlock
 
 **Goal:** [research §5] direction can only change at speed 0.
 
-**Modified:** `dispatchValueEvent` Axis 0 case to suppress `setIsForward(...)` when `settings.enabled && engine.current > 0`. E-Stop SPDT keeps `setSpeedSetting(-1)`. Reverser to NEUTRAL at any speed forces a coast-down per [research §3.3].
+**Modified:** `dispatchValueEvent` Axis 0 case to suppress `setIsForward(...)` when `settings.enabled && engine.v_fs > epsilon`. E-Stop SPDT keeps `setSpeedSetting(-1)`. Reverser to NEUTRAL at any speed forces a coast-down per [research §3.3] (engine treats `v_target = 0` and zero `F_drive`; loco decelerates under `F_rr` plus any active brakes).
 
-The interlock consults `engine.current` (the engine's view of what the decoder was last commanded to) rather than `throttle.getSpeedSetting()`. The two are nearly identical in semi-realistic mode — `engine.current` is the value that was just `invokeLater`'d into `setSpeedSetting()` on the previous tick — but `engine.current` is a `volatile` field on the engine, readable from the polling thread without crossing the EDT. The `settings.enabled` guard ensures the field is only consulted while the engine is actively maintaining it (per the §2.3 handover contract: `engine.current` is set on OFF→ON and continuously updated thereafter; in OFF mode it is not consulted).
+The interlock consults `engine.v_fs` (the engine's view of current velocity) rather than `throttle.getSpeedSetting()`. The two are consistent in semi-realistic mode — `v_fs` is the value just integrated into `setSpeedSetting()` on the previous tick — but `v_fs` is a `volatile` field on the engine, readable from the polling thread without crossing the EDT. The `settings.enabled` guard ensures the field is only consulted while the engine is actively maintaining it (per the §2.3 handover contract: `v_fs` is set on OFF→ON and continuously updated thereafter; in OFF mode it is not consulted).
 
-**Pending-direction-change behaviour: byte-edge-triggered, not retried on stop.** When the operator moves the reverser lever during deceleration, the dispatch suppresses the direction change at the moment the byte changes. Once the loco reaches `current == 0`, the dispatch does NOT retroactively apply the held lever position — the operator must nudge the reverser lever again (any byte change re-evaluates the interlock) to actually flip the direction. This matches prototype behaviour: on a real locomotive the engineer holds the reverser handle in the new position while waiting for speed=0, then either the handle physically engages or the engineer moves it the rest of the way once the train is stopped. We don't add engine-side state for "pending direction change because that's not how the prototype works.
+**Pending-direction-change behaviour: byte-edge-triggered, not retried on stop.** When the operator moves the reverser lever during deceleration, the dispatch suppresses the direction change at the moment the byte changes. Once the loco reaches `v_fs == 0`, the dispatch does NOT retroactively apply the held lever position — the operator must nudge the reverser lever again (any byte change re-evaluates the interlock) to actually flip the direction. This matches prototype behaviour: on a real locomotive the engineer holds the reverser handle in the new position while waiting for speed=0, then either the handle physically engages or the engineer moves it the rest of the way once the train is stopped. We don't add engine-side state for "pending direction change" because that's not how the prototype works.
 
 **Acceptance:**
 1. Loco at speed > 0 + reverser moved to opposite direction: direction does NOT flip; an INFO log line records the suppression. Direction lever change with loco at speed 0 still works.
-2. Loco decelerating + reverser already moved to opposite direction (held there during the ramp-down): direction still does NOT flip when `current` reaches 0. Operator must release-and-re-move the reverser to trigger the byte-edge-driven direction change. Documented as expected behaviour, not a bug.
+2. Loco decelerating + reverser already moved to opposite direction (held there during the ramp-down): direction still does NOT flip when `v_fs` reaches 0. Operator must release-and-re-move the reverser to trigger the byte-edge-driven direction change. Documented as expected behaviour, not a bug.
 3. Reverser to NEUTRAL at any speed: loco coasts to a stop on the deceleration curve regardless of throttle/brake levers (per [research §3.3]).
 4. E-Stop SPDT at any speed: loco hard-stops via `setSpeedSetting(-1)`. Same as the existing RailDriver bring-up behaviour.
 
@@ -417,7 +685,7 @@ The interlock consults `engine.current` (the engine's view of what the decoder w
 
 **Goal:** for users with ESU decoders, mirror brake percent to F4/F5/F6 [research §4.3]. Off by default.
 
-**Modified:** `SemiRealisticSettings.java` (`decoderBrakeMode` enum; ESU function/threshold fields), `SemiRealisticSettingsPanel.java` (enable the Decoder-brake Mode dropdown + ESU-only sub-fields), `SemiRealisticThrottleEngine.recompute()` (after computing `effectiveBrake`, dispatch the function changes with the same three-pass logic from `setDecoderBrake` in [research §4.3]).
+**Modified:** `SemiRealisticSettings.java` (`decoderBrakeMode` enum; ESU function/threshold fields), `SemiRealisticSettingsPanel.java` (enable the Decoder-brake Mode dropdown + ESU-only sub-fields), `SemiRealisticThrottleEngine.java` integration tick (after computing forces, derive `effectiveBrakePct = clamp(indepBrakeFraction · 100 + airLineFraction · airBrakeMaxDecel/brakeMaxDecel · 100, 0, 100)` and dispatch the function changes with the same three-pass logic from `setDecoderBrake` in [research §4.3]).
 
 **Acceptance:**
 1. Decoder-brake mode = None: no F4/F5/F6 dispatch from semi-realistic logic.
@@ -429,9 +697,11 @@ The interlock consults `engine.current` (the engine's view of what the decoder w
 1. With semi-realistic mode OFF, behaviour is identical to the existing RailDriver bring-up (no regression).
 2. With mode ON, all per-stage acceptance criteria pass on a real DCC loco.
 3. Calibration XML round-trips through Save / Load with the new schema; pre-existing files (version `"1"`) still load cleanly with semi-realistic defaults.
-4. The `activeThrottleFrame == null` invariant from the existing RailDriver bring-up still holds — the engine acquires its `ThrottleProxy` from `activeThrottleFrame` at attach time and never holds the reference past the throttle's `"ancestor"` close.
+4. The `activeThrottleFrame == null` invariant from the existing RailDriver bring-up still holds — the engine acquires its `DccThrottle` from `activeThrottleFrame` at attach time and never holds the reference past the throttle's `"ancestor"` close.
 5. The pre-existing noise hysteresis filter still applies — the engine never sees byte-level jitter as a "lever moved".
 6. No new `messages.log` exceptions during a 30-minute ops session involving repeated brake / throttle work.
+7. **Empty-roster path:** with mode ON, no roster physics fields populated, default Light-engine scenario, the loco accelerates and decelerates under the scenario's defaults from §2.4.1. No "physics ramp disabled" warnings (the AutoEngineer fallback path is irrelevant — we always have valid scenario defaults).
+8. **Roster-physics-override path:** with `getPhysicsWeightKg() > 0` etc. on the active loco's `RosterEntry`, the engine uses those values instead of scenario defaults for `locoMassKg` / `locoPowerW` / `locoTractiveEffortN` per §2.4.1's precedence rule.
 
 ## 5. Deliverables
 
@@ -443,54 +713,59 @@ Per stage, listed in §3. Total across stages 1–7:
 - ~4 modified files (`RailDriverCalibration`, `RailDriverMenuItem`, `DebugMenu`, `Bundle.properties`).
 - New per-profile XML subtree (schema bumped to version `"2"`).
 - No changes to native libs, hid4java, udev rules, or build.xml / pom.xml.
+- **Reuse:** none. The new engine is an **independent, parallel implementation** of the same physics described in `jmri.jmrit.roster.RosterSpeedProfile.runPhysicsAccelerationToTargetThrottle()`. No code is shared, no helpers are extracted, no header cross-references are added, and the two files evolve independently. The brake-force layering (air, mechanical, dynamic) is RailDriver-specific and has no place in a general-purpose dispatcher physics planner; keeping the implementations parallel lets each evolve at its own pace. See §2.1.
 
 ## 6. Open design questions for review
 
-These are not yet resolved; please decide before stage 1 starts.
-
-1. **Settings-field validation ranges.** Proposed:
-   | Field | Min | Max |
-   |---|---|---|
-   | Acceleration delay (ms) | 50 | 5000 |
-   | Deceleration delay (ms) | 50 | 5000 |
-   | Speed step | 1 | 16 |
-   | Brake steps | 2 | 16 |
-   | Maximum brake percent | 10 | 100 |
-   | Maximum brake under power percent | 0 | (must be ≤ Maximum brake percent) |
-   | Custom scenario multiplier | 0.5 | 50.0 |
-   | ESU thresholds | 1 | 100 (and must be in monotonically increasing order) |
-   | ESU function numbers | 0 | 28 |
-
-2. **Jynstrument behaviour when not attached.** If the operator manually drag-and-drops the `.jyn` folder onto a throttle window that does NOT have RailDriver bound (i.e. wasn't opened via the Debug menu), what does the toggle do? Proposed: the icon greys out and the tooltip says "RailDriver not attached"; clicking it is a no-op. Alternative: clicking it triggers `ensureDeviceAndPolling()` + `attachThrottleWindow()` first, effectively turning the toggle into an "Attach + enable" button. The auto-install path means this scenario only happens when the operator has gone out of their way to install the Jynstrument manually — niche enough that no-op may be the right answer.
+All design questions for this feature have been resolved. See "Resolved decisions" below.
 
 ### Resolved decisions
 
-- **EDT discipline (decided 2026-05-02): Option B with worker-thread-math mitigation.** Every Swing-touching call from a non-EDT thread — both the new ramp dispatch AND the existing direct-dispatch path — is wrapped in `SwingUtilities.invokeLater`. The mitigation: the engine worker thread does all the speed-step math locally, then hands the final `int next` value to the EDT for application. This keeps ramp cadence governed by the `ScheduledExecutorService` (precise timing) and only the value-application bounces through the event queue (Swing consistency). Closes the parent §3 / §6 off-EDT latent issue. See §2.2 for the threading contract and §3.1 for the wrapping deliverables.
+- **Engine architecture (decided 2026-05-02): symmetric physics integration, an independent parallel implementation of the math in `RosterSpeedProfile.runPhysicsAccelerationToTargetThrottle()`.** A single integration loop computes net force `a = (F_drive − F_rr − F_brake_mech − F_brake_air − F_brake_dyn) / m_total` on a 50 ms tick; the same loop runs accelerating or decelerating with the sign of `a` falling out of which forces are active. Throttle, indep brake, auto brake, and dyn brake each contribute their own force term — no regime detection, no "throttle fighting brake" branch, no separate accel/decel paths. The new engine **does not share code with `RosterSpeedProfile`**: it is an independent rewrite with a continuously-scheduled tick (instead of the existing method's one-shot step queue), no `a < 0` clamp, brake-force terms layered in, and the `getPhysicsMaxSpeedKmh()` cap inherited as a hard ceiling on both `vTarget` and integrated `v_fs`. The two implementations evolve independently; there is no maintenance-sync contract between them. See §2.1 for the engine class skeleton, §2.1's "intentional parallel implementation" note for the rationale, and §2.2 for the threading contract.
+- **Physics defaults (decided 2026-05-02): scenario-driven, with Light-engine values as the universal fallback.** When `RosterEntry.getPhysicsWeightKg()`/`PowerKw()`/`TractiveEffortKn()` return 0 (the JMRI default), the engine substitutes the active scenario's loco-physics defaults from §2.4.1. The Light-engine scenario (130 t / 2200 kW / 350 kN / 0 t consist / 100 % driver power) is the default scenario, so a brand-new install with an empty roster gets prototype-realistic single-loco behaviour with zero configuration. Roster-populated values override scenario defaults when present per §2.4.1's precedence rule.
+- **Brake constants (decided 2026-05-02): scenario-independent physical-decel-rate constants.** `BRAKE_MAX_DECEL = 1.0 m/s²`, `AIR_BRAKE_MAX_DECEL = 1.5 m/s²`, `DYN_BRAKE_MAX_DECEL = 0.4 m/s²` (peak, before speed taper), `DYN_BRAKE_V_MIN = 5 mph`, `c_rr = 0.002`. All exposed as Settings-tab fields. Brake forces are `decelRate · m_total` (mechanical and air, scaling with consist mass) or `decelRate · m_loco · speedTaper(v)` (dyn brake, loco-only and tapered) — so heavier consist gets the same brake decel rate but smaller dyn-brake contribution, prototypically correct.
+- **EDT discipline (decided 2026-05-02): Option B with worker-thread-math mitigation, standardised on `jmri.util.ThreadingUtil`.** Every Swing-touching call from a non-EDT thread — both the new engine dispatch AND the existing direct-dispatch path — is wrapped in `ThreadingUtil.runOnGUIEventually(...)` (fire-and-forget setters) or `ThreadingUtil.runOnGUIwithReturn(...)` (synchronous getters whose return values feed decision logic). The single existing `SwingUtilities.invokeLater` call site in `RailDriverMenuItem.java` (line 244, in `attachThrottleWindow`) is migrated to `ThreadingUtil.runOnGUIEventually` for file-level uniformity and consistency with the rest of JMRI (`Engineer.java`, `AddressPanel.java`, etc.). The mitigation: the engine worker thread does all the integration math locally, then hands the final DCC step value to the EDT for application. This keeps tick cadence governed by the `ScheduledExecutorService` (precise timing) and only the value-application bounces through the event queue (Swing consistency). Closes the parent §3 / §6 off-EDT latent issue **and** the latent bug where the bring-up-era plan listed `getFunctions()` / `getFunctionMomentary()` / `getFunction()` alongside setters for `invokeLater` wrapping — those are now correctly routed through `runOnGUIwithReturn`. See §2.2 for the threading contract and §3.1 for the wrapping deliverables.
 - **UI surface (decided 2026-05-02): one unified `RailDriver Settings...` window with two tabs (Settings + Calibration), plus a new Apply button alongside Save and Cancel.** Replaces the standalone `RailDriver Calibration...` entry that ships with the existing RailDriver bring-up. See §2.4 for layout, dirty-tracking model, and Save/Apply/Cancel behaviour. Implementation is part of stage 1 (§3.1).
 - **Framing (decided 2026-05-02): this is a standalone feature, not a fourth phase of the RailDriver bring-up work.** Stages are numbered 1–7 within this document and don't extend the phase-1/2/3 numbering of the predecessor plans.
-- **Mode-toggle UI on the throttle window (decided 2026-05-02): Jynstrument-based toolbar button.** Adds a single icon to the throttle window's toolbar via JMRI's existing Jynstruments framework — no JMRI core modifications needed. Click toggles the mode + persists; right-click → `Settings...`. The Settings tab's `Enable semi-realistic mode` checkbox remains the authoritative toggle and stays in sync via PCS. Auto-installed by `RailDriverMenuItem.attachThrottleWindow()`. See §2.6 for full design.
-- **`maxBrakeUnderPower` (decided 2026-05-02): user-configurable setting with EngineDriver default.** Exposed as the `Maximum brake under power percent` field on the Settings tab; defaults to 50 (= EngineDriver's `maxBrake − 0.20`). Persisted as `<maxBrakeUnderPowerPercent>` in the v2 calibration XML.
-- **Settings defaults (decided 2026-05-02): match EngineDriver exactly, but expose every value as a user-configurable Settings-tab field.** Defaults are `accelerationDelayMs=300`, `decelerationDelayMs=800`, `speedStep=2`, `brakeSteps=7`, `maxBrakePercent=70`, `maxBrakeUnderPowerPercent=50`, `scenario=Light engine`, ESU-mode thresholds 30/60/98 on F4/F5/F6. The operator can tune any of these without restarting JMRI; the engine picks up changes via the existing Save/Apply reload flow.
-- **Bail-off semantics (decided 2026-05-02): latched while the byte is above the calibrated threshold.** Stage 4 sets `engine.bailoffPressed = true` whenever the byte 4 value exceeds `bailoffThreshold()` and `false` otherwise. The engine treats the air line as 100 % regardless of Auto Brake lever position while `bailoffPressed` is true. No edge detection / no one-shot pulse — direct level-triggered semantics that match how a real bail-off handle behaves on the prototype.
-- **Mode-switch handover at speed (decided 2026-05-02).** OFF → ON adopts the loco's current `throttle.getSpeedSetting()` as the engine's starting `current`, then ramps smoothly toward the lever-derived target. ON → OFF cancels the ramp scheduler and the next byte-change writes the lever-derived value directly via `setSpeedSetting()` — the loco may snap if the lever is far from the engine's last commanded speed. Operators are expected to either align the lever before flipping OFF or to accept the snap. See §2.3 for the implementation contract.
-- **Reverser-interlock speed source (decided 2026-05-02): `engine.current`, gated by `settings.enabled`.** The polling-thread Axis 0 dispatch reads `engine.current` (volatile, no EDT crossing) and suppresses `setIsForward()` when `settings.enabled && engine.current > 0`. The `settings.enabled` guard ensures the field is only consulted while the engine maintains it (per the §2.3 handover contract). See §3.6 for stage details.
-- **Pending direction change at stop (decided 2026-05-02): not retried on engine.current = 0.** When the operator moves the reverser during deceleration the dispatch suppresses the direction change at byte-change time and does NOT retroactively apply the lever's held position when the loco eventually stops. The operator must nudge the reverser to trigger another byte change. Matches prototype operator behaviour (engineer holds the handle in position then moves it the rest of the way at stop). See §3.6 acceptance bullet 2.
+- **Mode-toggle UI on the throttle window (decided 2026-05-02): Jynstrument-based toolbar button, session-only persistence semantics.** Adds a single icon to the throttle window's toolbar via JMRI's existing Jynstruments framework — no JMRI core modifications needed. Click toggles the mode **for the current session only** (no XML write); right-click → `Settings...`. The Settings tab's `Enable semi-realistic mode` checkbox is the only path that persists the flag to the calibration XML (Save/Apply); the Settings tab and the Jynstrument toggle stay in sync in memory via PCS, but only the Settings tab writes through. Auto-installed by `RailDriverMenuItem.attachThrottleWindow()`, gated solely by `hasJynstrumentInstalled` (no in-memory or on-disk suppression state). Removal-via-Quit sticks for the lifetime of that throttle window; re-clicking `Debug → RailDriver Throttle (built in)` re-adds the toggle (treated as a deliberate fresh-attach action). Cross-session persistence of toggle absence relies on saved-layout-XML restore happening before any auto-install fires. There is no `<jynstrumentAutoInstallSuppressed>` flag in the calibration XML. See §2.3 for the persistence model, §2.6 for the full Jynstrument design, and §3.1 acceptance bullets 14–16.
+
+- **Persistence split between Settings window and Jynstrument (decided 2026-05-02).** Settings-window changes (any field, including `Enable semi-realistic mode`) write to the calibration XML on Save/Apply. Jynstrument-click changes (the `enabled` flag only) are session-only — they update memory and notify observers but do not write to disk. This lets the operator opt in via the Settings window and then flip the mode mid-session without polluting the persisted preference; if the operator decides the new session value should stick, they open the Settings window and Save (the checkbox reflects the current in-memory value when the window opens). See §2.3.
+
+- **Attach-in-progress visibility on the Jynstrument (decided 2026-05-02).** `requestAttachToThrottle()` is asynchronous (the bind work is posted to the EDT via `ThreadingUtil.runOnGUIEventually`), so the Jynstrument cannot rely on the bind being complete by the time its click handler returns. A new `"attachInProgress"` PCS event brackets the async window, and the Jynstrument tracks an internal `pendingSessionToggle` flag: State-2 click sets the flag and triggers the attach, the `"activeThrottleFrame"` event delivers (transitioning to State 4), and the listener applies the deferred `setSemiRealisticEnabledSessionOnly` toggle. Extra clicks during the window are absorbed (State 2.5). See §2.6.
+
+- **`hidDeviceAttached` re-enabled (decided 2026-05-02).** The currently-disabled body at `RailDriverMenuItem.java:539–546` (originally gated on a now-removed `invokeOnMenuOnly` flag) is re-enabled in stage 1 with a minimal change: fire `"railDriverConnected"` PCS event on VID/PID match **without** auto-calling `setupRailDriver()`. The Debug-menu workflow keeps owning the polling lifecycle, so cold-plug behaviour for users without the Jynstrument is unchanged; only the Jynstrument's icon state reacts to hot-plug. See §3.1 step 4.
+- **Bail-off semantics (decided 2026-05-02): latched while the byte is above the calibrated threshold.** Stage 4 sets `engine.bailoffPressed = true` whenever the byte 4 value exceeds `bailoffThreshold()` and `false` otherwise. The engine zeros `F_brake_air` while `bailoffPressed` is true — direct level-triggered semantics that match how a real bail-off handle behaves on the prototype. Mechanical and dyn brake terms are unaffected.
+- **Mode-switch handover at speed (decided 2026-05-02).** OFF → ON adopts the loco's current `throttle.getSpeedSetting()` as the engine's starting `v_fs` (converted to full-scale velocity via the roster speed profile when available, linear fallback otherwise), then integrates smoothly toward the lever-derived target. ON → OFF pauses the integration task and the next byte-change writes the lever-derived value directly via `setSpeedSetting()` — the loco may snap if the lever is far from the engine's last commanded speed. Operators are expected to either align the lever before flipping OFF or to accept the snap. See §2.3 for the implementation contract.
+- **Reverser-interlock speed source (decided 2026-05-02): `engine.v_fs`, gated by `settings.enabled`.** The polling-thread Axis 0 dispatch reads `engine.v_fs` (volatile, no EDT crossing) and suppresses `setIsForward()` when `settings.enabled && v_fs > epsilon`. The `settings.enabled` guard ensures the field is only consulted while the engine maintains it (per the §2.3 handover contract). See §3.6 for stage details.
+- **Pending direction change at stop (decided 2026-05-02): not retried on `v_fs == 0`.** When the operator moves the reverser during deceleration the dispatch suppresses the direction change at byte-change time and does NOT retroactively apply the lever's held position when the loco eventually stops. The operator must nudge the reverser to trigger another byte change. Matches prototype operator behaviour (engineer holds the handle in position then moves it the rest of the way at stop). See §3.6 acceptance bullet 2.
+- **Settings-field validation ranges (decided 2026-05-02):** loco mass 1–500 t; loco power 1–10 000 kW; loco TE 1–2000 kN; additional consist mass 0–50 000 t; driver power 0–100 %; rolling resistance coefficient 0.0001–0.05; mechanical brake max decel 0.1–5.0 m/s²; air brake max decel 0.1–5.0 m/s²; dynamic brake max decel 0.0–2.0 m/s²; dynamic brake taper threshold 0–20 mph; ESU thresholds 1–100 monotonically increasing; ESU function numbers 0–28. Validation runs on Save and Apply per §2.4's flow; failures auto-select the offending tab and leave dirty set.
+- **Jynstrument click behaviour by state (decided 2026-05-02):** five states with distinct behaviours per §2.6's table —
+  - **State 1 (no device detected):** greyed, tooltip `"RailDriver not detected"`, click is no-op.
+  - **State 2 (device present, no throttle bound):** auto-bootstrap with deferred toggle on click — calls `requestAttachToThrottle` against the Jynstrument's own `ThrottleFrame`, sets `pendingSessionToggle = true`, transitions to State 2.5. The toggle is applied when the resulting `"activeThrottleFrame"` PCS event delivers and confirms this Jynstrument's frame is bound. Implicitly checks "not bound elsewhere" via the `activeThrottleFrame == null` precondition.
+  - **State 2.5 (attach in progress):** transient "binding…" icon, tooltip `"RailDriver attaching to this throttle…"`, click is no-op (extra clicks during the async attach window are absorbed).
+  - **State 3 (device present, bound to a different throttle):** greyed, tooltip `"RailDriver already bound to another throttle window"`, click is no-op.
+  - **State 4 (fully operational, this throttle is bound):** normal session-only toggle via `setSemiRealisticEnabledSessionOnly`.
+  Driven by the new `"railDriverConnected"`, `"activeThrottleFrame"`, and `"attachInProgress"` PCS events on `RailDriverMenuItem`.
 
 ## 7. Known limitations accepted in this feature
 
 - **Single-throttle only.** This feature doesn't introduce multi-loco support.
 - **Per-roster scenario default deferred** (see [research §9.2.5]).
 - **Reservoir-and-line refill model from EngineDriver §4.2 is replaced with the direct lever-driven model.** Operators who want "ran out of air, must release brake to recharge" gameplay will have to wait for a future feature that simulates a virtual reservoir behind the Auto Brake — this is out of scope here because the RailDriver's physical Auto Brake gives us the real signal.
+- **Brake constants are scenario-independent.** The plan exposes `BRAKE_MAX_DECEL` etc. as Settings-tab fields, but doesn't vary them per scenario (heavy freight cars and passenger cars both use the same default 1.0 m/s² mechanical brake max decel). Operators can edit them manually if needed; per-scenario brake-constant tables are deferred.
+- **Linear `v ↔ DCC step` fallback when no speed profile.** Without a calibrated `RosterSpeedProfile` for the loco, the engine maps `v_fs` to DCC step linearly. The integration is still correct (forces are real); only the absolute speed-step calibration is approximate. Users with calibrated profiles automatically get exact mapping via `getSpeed(...)`.
 - **No tests.** Parent §4.5 / deferred.
 - **No help-page documentation.** Parent §4.6 / deferred.
 - **All latent issues from parent §3 / §6 except the off-EDT mutation are still untouched.** The off-EDT issue is fixed in stage 1 (see §3.1, item 2 of `RailDriverMenuItem.java` modifications).
 
 ## 8. Future work
 
-- Tests (parent §4.5) — byte-parser, settings persistence round-trip, ramp scheduler determinism with a stub `ThrottleProxy`.
+- Tests (parent §4.5) — byte-parser, settings persistence round-trip, integration determinism with a stub DccThrottle (mirror existing JMRI test patterns for `AbstractThrottle` rather than introducing a new throttle proxy).
 - Per-roster scenario default via `RosterEntry.getAttribute("raildriver.scenario")`.
+- Per-scenario brake constants (e.g. passenger trains with shorter stopping distances).
 - Help / documentation updates (parent §4.6).
 - Optional: virtual reservoir / line model for users who want EngineDriver-style "run out of air" behaviour layered on top of the physical Auto Brake handle.
+- Optional: a Settings-tab "Restore toolbar toggle" button. Currently, if the operator removes the Jynstrument and saves the throttle layout, restoring the toggle requires drag-installing the `.jyn` folder again. A button on the Settings tab could re-trigger the auto-install path against the bound throttle frame.
 - Remaining latent-issue fixes from parent §3 / §6.
 
 ## 9. Cross-references
