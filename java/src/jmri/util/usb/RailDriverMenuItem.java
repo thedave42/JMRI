@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
+import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 import javax.swing.JMenuItem;
 import javax.swing.SwingUtilities;
@@ -50,10 +51,33 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     private ThrottleWindow throttleWindow = null;
     private ThrottleFrame activeThrottleFrame = null;
 
+    /**
+     * Per-profile calibration data for the analog controls. Populated lazily
+     * in {@link #setupRailDriver()} (or via {@link #reloadCalibration()} after
+     * the calibration frame writes a new file). Always non-null after first
+     * call to {@link #getCalibration()}.
+     */
+    private RailDriverCalibration calibration = null;
+
+    /**
+     * Static accessor for the most recently constructed RailDriverMenuItem,
+     * used by {@link RailDriverCalibrationFrame} to subscribe to live byte
+     * events and to trigger a calibration reload after Save. Returns null
+     * if the user has not yet constructed an instance (i.e. the Debug menu
+     * with the RailDriver entry has not been opened).
+     */
+    private static RailDriverMenuItem instance = null;
+
+    @CheckForNull
+    public static RailDriverMenuItem getInstance() {
+        return instance;
+    }
+
     public RailDriverMenuItem(String name) {
         super();
         initGUI(name);
         setupListeners();
+        instance = this;
     }
 
     public RailDriverMenuItem() {
@@ -133,6 +157,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             setLEDs("Pro");
             speakerOn();
 
+            // Load per-profile calibration once the device opens. This is the
+            // first point at which the user has actually launched the
+            // RailDriver feature, so deferring load until now keeps test paths
+            // that never open the device clean.
+            calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+
             testRailDriver(false);  // set true to test RailDriver functions
 
             ThrottleFrameManager tfManager = InstanceManager.getDefault(ThrottleFrameManager.class);
@@ -204,6 +234,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     // analog values
                                     // convert to unsigned int
                                     int vInt = 0xFF & buff_new[i];
+                                    // Fire a RawByte event first so listeners (e.g. the
+                                    // calibration frame) can display the unprocessed byte
+                                    // without having to invert the transform below.
+                                    String byteName = String.format("Byte %d", i);
+                                    firePropertyChange("RawByte", byteName, Integer.toString(vInt));
+
                                     // convert to double (0.0 thru 1.0)
                                     double vDouble = (256 - vInt) / 256.D;
                                     if (i == 1) {   // throttle
@@ -557,32 +593,33 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 }
                 switch (oldValue) {
                     case "Axis 0":
-                        // REVERSER is the state of the reverser lever, values greater
-                        // than 0.5 are forward, values near to 0.5 are neutral and
-                        // values (much) less than 0.5 are reverse.
+                        // REVERSER. Direction switches when the live value crosses
+                        // calibrated thresholds (midpoints between Neutral and the
+                        // two extremes per RailDriverCalibration).
                         log.info("REVERSER value: {}", value);
                         if (throttle != null) {
-                            if (value < 0.45) {
+                            RailDriverCalibration cal = getCalibration();
+                            if (value < cal.reverserReverseThreshold()) {
                                 throttle.setIsForward(false);
-                            } else if (value > 0.55) {
+                            } else if (value > cal.reverserForwardThreshold()) {
                                 throttle.setIsForward(true);
                             }
                         }
                         break;
                     case "Axis 1":
-                        // THROTTLE is the state of the Throttle (and dynamic brake).  Values
-                        // (much) greater than 0.0 are for throttle (maximum throttle is
-                        // values close to 1.0), values near 0.0 are at the center position
-                        // (idle/coasting), and values (much) less than 0.0 are for dynamic
-                        // braking, with values aproaching -1.0 for full dynamic braking.
+                        // THROTTLE / Dynamic Brake. Lever DOWN (toward THROTTLE label)
+                        // produces positive values that drive the loco; lever UP
+                        // (toward DYN BRAKE label) produces negative values that
+                        // currently only set the "DBr" LED (dyn-brake wiring is a
+                        // future phase). The min / max pin values come from the
+                        // calibrated Idle (+ user-configurable deadband) and full
+                        // Throttle byte values.
                         log.info("THROTTLE value: {}", value);
                         if (throttle != null) {
-                            // lever front is negative, back is positive
-                            // limit range to only positive side of lever
-                            double throttle_min = 0.125D;
-                            double throttle_max = 0.7D;
+                            RailDriverCalibration cal = getCalibration();
+                            double throttle_min = cal.throttleMin();
+                            double throttle_max = cal.throttleMax();
                             double v = MathUtil.pin(value, throttle_min, throttle_max);
-                            // compute fraction (0.0 to 1.0)
                             double fraction = (v - throttle_min) / (throttle_max - throttle_min);
                             throttle.setSpeedSetting((float)fraction);
                             if (value < 0) {
@@ -624,11 +661,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         // Per Java's `(256 - vInt)/256` transform, OFF (~0x52) yields the
                         // highest value (~0.68) and Full (~0x9c) the lowest (~0.39); Dim sits
                         // between them. Drive F0 (the conventional DCC headlight function)
-                        // off in OFF position, on in any other position. Threshold 0.6 sits
-                        // comfortably between OFF and the next detent.
+                        // off in OFF position, on in any other position. Threshold comes
+                        // from RailDriverCalibration (calibrated midpoint between OFF and
+                        // Dim, or OFF and Full if Dim isn't captured; defaults to ~0.6).
                         log.info("LIGHTS value: {}", value);
                         if (throttle != null) {
-                            boolean lightsOn = value < 0.6D;
+                            boolean lightsOn = value < getCalibration().lightsThreshold();
                             throttle.setFunction(0, lightsOn);
                         }
                         break;
@@ -800,6 +838,30 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 break;
         }
     }   // propertyChange
+
+    /**
+     * Returns the active per-profile calibration, lazily creating a default
+     * (non-null) instance the first time this is called before
+     * {@link #setupRailDriver()} has run. Callers can rely on a non-null
+     * return.
+     */
+    @Nonnull
+    public RailDriverCalibration getCalibration() {
+        if (calibration == null) {
+            calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+        }
+        return calibration;
+    }
+
+    /**
+     * Re-reads the calibration file from disk. Called by the calibration
+     * frame after Save so subsequent control movements use the new values
+     * without restarting JMRI.
+     */
+    public void reloadCalibration() {
+        calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+        log.info("RailDriver calibration reloaded.");
+    }
 
     //initialize logging
     private transient final static Logger log = LoggerFactory.getLogger(RailDriverMenuItem.class);
