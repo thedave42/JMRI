@@ -413,14 +413,26 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
     private void wireUpLiveListener() {
         RailDriverMenuItem mi = RailDriverMenuItem.getInstance();
         if (mi == null) {
+            // Should not happen — DebugMenu constructs the menu item on
+            // app startup so getInstance() is non-null by the time the
+            // calibration menu is reachable.
             for (JButton b : captureButtons) {
                 b.setEnabled(false);
             }
-            statusLabel.setText("Open the RailDriver throttle menu first "
-                    + "(Debug \u2192 RailDriver Throttle (built in)) to enable live readouts and Capture.");
-        } else {
-            mi.addPropertyChangeListener(this);
+            statusLabel.setText("Internal error: RailDriverMenuItem not initialised.");
+            return;
+        }
+        // Subscribe specifically for "RawByte" events so we don't get
+        // spurious property-change notifications (e.g. menu-popup
+        // ancestor events) on the AWT path.
+        mi.addPropertyChangeListener("RawByte", this);
+        if (mi.isPollingActive()) {
             statusLabel.setText("Move any control to verify the live cursor; click Capture when at the desired detent.");
+        } else {
+            for (JButton b : captureButtons) {
+                b.setEnabled(false);
+            }
+            statusLabel.setText("RailDriver device not detected — values can still be edited and saved by hand.");
         }
     }
 
@@ -462,7 +474,7 @@ public final class RailDriverCalibrationFrame extends JmriJFrame implements Prop
     public void dispose() {
         RailDriverMenuItem mi = RailDriverMenuItem.getInstance();
         if (mi != null) {
-            mi.removePropertyChangeListener(this);
+            mi.removePropertyChangeListener("RawByte", this);
         }
         super.dispose();
     }
