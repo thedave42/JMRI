@@ -133,7 +133,7 @@ operator.
 |----|-----------------------------|-------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|-------|
 | 8  | Reverser                    | Analog with 3 physical detents (Forward, Neutral, Reverse)  | byte 0 — full Forward `0x42`, full Reverse `0xcf`                                                                  | Lever physically locks at each detent. The Neutral byte value is intentionally not captured (calibrated at runtime). |
 | 9  | Throttle / Dynamic Brake    | Continuous analog, bipolar                                  | byte 1 — full Throttle `0xdd`, full Dynamic Brake `0x3a`                                                           | Down = throttle (centre→max). Centre = idle. Up = dynamic brake (centre→max). The Idle byte value is intentionally not captured (calibrated at runtime). |
-| 10 | Auto Brake                  | Continuous analog with specific positions SUP, CS, EMG      | byte 2 — fully RELEASED `0x4f`, EMG `0xb7`                                                                         | Continuous between the named positions. SUP/CS/REL byte values are intentionally not captured (calibrated at runtime). |
+| 10 | Auto Brake                  | Continuous analog with specific positions SUP, CS, EMG      | byte 2 — fully RELEASED `0xb7`, EMG `0x4f`                                                                         | Continuous between the named positions. SUP/CS/REL byte values are intentionally not captured (calibrated at runtime). |
 | 11 | Independent Brake           | Continuous analog plus two bail-off positions               | byte 3 (primary axis) — full release `0xc0`, full application `0x41`; byte 4 (secondary) — rest band `0x95..0xa8`, bail-off positions push byte 4 up to `0xd4` | Bail-off positions are captured as transient byte-4 excursions, not as discrete byte values. |
 | 12 | Wiper                       | Analog with 3 physical positions: Off, Slow, Full           | byte 5 — Off `0x66`, Full `0xba`                                                                                   | The Slow (middle) byte value is intentionally not captured. |
 | 13 | Lights                      | Analog with 3 physical positions: Off, Dim, Full            | byte 6 — Off `0x52`, Full `0x9c`                                                                                   | The Dim (middle) byte value is intentionally not captured. |
@@ -165,7 +165,7 @@ One-line summary of all 14 bytes of the device's input report (offsets
 |------|------|
 | 0  | Reverser (analog: `0x42` full Forward .. `0xcf` full Reverse) |
 | 1  | Throttle / Dynamic Brake (analog: `0xdd` full Throttle .. `0x3a` full Dynamic Brake) |
-| 2  | Auto Brake (analog: `0x4f` fully RELEASED .. `0xb7` EMG) |
+| 2  | Auto Brake (analog: `0x4f` fully EMG .. `0xb7` fully RELEASED) |
 | 3  | Independent Brake primary axis (analog: `0xc0` full release .. `0x41` full application) |
 | 4  | Independent Brake secondary / bail-off indicator (analog: rest band `0x95..0xa8`, bail-off `..0xd4`) |
 | 5  | Wiper (analog: `0x66` Off .. `0xba` Full) |
