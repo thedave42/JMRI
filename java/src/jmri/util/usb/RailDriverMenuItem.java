@@ -619,11 +619,18 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         log.info("HEADLIGHT value: {}", value);
                         break;
                     case "Axis 6":
-                        // WIPER is the state of the wiper switch.  Much like the headlight
-                        // switch, this is also an analog input w/detents, not a switch!
-                        // Small values (much less than 0.5) are off, values near 0.5 are
-                        // slow, and larger values are full.
-                        log.info("WIPER value: {}", value);
+                        // LIGHTS is the locomotive headlight rotary (#13 per
+                        // control-inventory.md): three physical positions Off / Dim / Full.
+                        // Per Java's `(256 - vInt)/256` transform, OFF (~0x52) yields the
+                        // highest value (~0.68) and Full (~0x9c) the lowest (~0.39); Dim sits
+                        // between them. Drive F0 (the conventional DCC headlight function)
+                        // off in OFF position, on in any other position. Threshold 0.6 sits
+                        // comfortably between OFF and the next detent.
+                        log.info("LIGHTS value: {}", value);
+                        if (throttle != null) {
+                            boolean lightsOn = value < 0.6D;
+                            throttle.setFunction(0, lightsOn);
+                        }
                         break;
                     default:
                         log.info("FUNCTION {} value: {}", oldValue, value);
@@ -643,6 +650,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     DccLocoAddress a = addressPanel.getCurrentAddress();
                                     ledString = "sel " + ((a != null) ? a.toString() : "null");
                                 }
+                                fNum = -1;  // case 28 handles its own action; suppress trailing setFunction
                                 break;
                             }
                             case 29: {  // zoom/rocker button down
@@ -651,6 +659,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     DccLocoAddress a = addressPanel.getCurrentAddress();
                                     ledString = "dis " + ((a != null) ? a.toString() : "null");
                                 }
+                                fNum = -1;
                                 break;
                             }
                             case 30: {  // four way panning up
@@ -661,6 +670,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                         ledString = String.format("Prev %d", selectedIndex - 1);
                                     }
                                 }
+                                fNum = -1;
                                 break;
                             }
                             case 31: {  // four way panning right
@@ -670,6 +680,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     }
                                     ledString = "NXT";
                                 }
+                                fNum = -1;
                                 break;
                             }
                             case 32: {  // four way panning down
@@ -691,6 +702,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                         }
                                     }
                                 }
+                                fNum = -1;
                                 break;
                             }
                             case 33: {  // four way panning left
@@ -700,6 +712,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     }
                                     ledString = "PRE";
                                 }
+                                fNum = -1;
                                 break;
                             }
                             case 34: {  // Gear Shift Up
@@ -754,6 +767,13 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                 break;
                             }
                             default: {
+                                // Front-edge user-assignable buttons (parser slots 0..27)
+                                // map to F1..F28 (slot N -> F(N+1)). F0 is driven by the
+                                // Lights rotary (Axis 6), freeing all 28 front-edge buttons
+                                // to cover F1..F28 cleanly on a 29-function loco.
+                                if (fNum >= 0 && fNum <= 27) {
+                                    fNum = fNum + 1;
+                                }
                                 break;
                             }
                         }
