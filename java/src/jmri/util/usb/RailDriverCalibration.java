@@ -50,10 +50,10 @@ public final class RailDriverCalibration {
     public static final int DEF_THROTTLE_FULLDYN   = 0x3a;   // lever UP per inventory
     public static final double DEF_IDLE_DEADBAND   = 0.05D;
 
-    public static final int DEF_AUTOBRAKE_RELEASED = 0x4f;
-    public static final int DEF_AUTOBRAKE_SUP      = 0x80;   // mid placeholder; not captured
-    public static final int DEF_AUTOBRAKE_CS       = 0xa0;   // mid placeholder; not captured
-    public static final int DEF_AUTOBRAKE_EMG      = 0xb7;
+    public static final int DEF_AUTOBRAKE_RELEASED = 0xb7;
+    public static final int DEF_AUTOBRAKE_SUP      = 0xa0;   // mid placeholder; not captured (closer to RELEASED)
+    public static final int DEF_AUTOBRAKE_CS       = 0x80;   // mid placeholder; not captured (closer to EMG)
+    public static final int DEF_AUTOBRAKE_EMG      = 0x4f;
 
     public static final int DEF_INDEPBRAKE_FULLRELEASE   = 0xc0;
     public static final int DEF_INDEPBRAKE_FULLAPP       = 0x41;
