@@ -89,6 +89,17 @@ public final class SemiRealisticSettings {
     public float dynBrakeMaxDecel = DEFAULT_DYN_BRAKE_MAX_DECEL;
     public float dynBrakeVMinMph  = DEFAULT_DYN_BRAKE_V_MIN_MPH;
 
+    /**
+     * Multiplier applied to all prototype-physics force terms (currently only
+     * rolling resistance) so they are visible at scale-time wall-clock per
+     * §1.0 of the plan. {@code null} means {@code auto} = resolve to JMRI's
+     * {@code SignalSpeedMap.getLayoutScale()} at engine attach. A numeric
+     * override lets the operator dial in a specific value (e.g. 1 for
+     * prototype 1:1 simulation, or 220 for Z scale on a layout that JMRI
+     * reports differently). Validation range when explicit: 0.1–1000.
+     */
+    @CheckForNull public Float physicsTimeScale = null;
+
     public DecoderBrakeMode decoderBrakeMode = DecoderBrakeMode.NONE;
     public int esuLowFunction  = DEFAULT_ESU_LOW_FUNCTION;
     public int esuMidFunction  = DEFAULT_ESU_MID_FUNCTION;
@@ -114,6 +125,7 @@ public final class SemiRealisticSettings {
         airBrakeMaxDecel = DEFAULT_AIR_BRAKE_MAX_DECEL;
         dynBrakeMaxDecel = DEFAULT_DYN_BRAKE_MAX_DECEL;
         dynBrakeVMinMph = DEFAULT_DYN_BRAKE_V_MIN_MPH;
+        physicsTimeScale = null; // auto = layoutScale
         decoderBrakeMode = DecoderBrakeMode.NONE;
         esuLowFunction = DEFAULT_ESU_LOW_FUNCTION;
         esuMidFunction = DEFAULT_ESU_MID_FUNCTION;
@@ -137,6 +149,7 @@ public final class SemiRealisticSettings {
         this.airBrakeMaxDecel = other.airBrakeMaxDecel;
         this.dynBrakeMaxDecel = other.dynBrakeMaxDecel;
         this.dynBrakeVMinMph = other.dynBrakeVMinMph;
+        this.physicsTimeScale = other.physicsTimeScale;
         this.decoderBrakeMode = other.decoderBrakeMode;
         this.esuLowFunction = other.esuLowFunction;
         this.esuMidFunction = other.esuMidFunction;
@@ -180,6 +193,7 @@ public final class SemiRealisticSettings {
         if (dm != null) dynBrakeMaxDecel = dm;
         Float vmin = readFloat(semiRealistic, "dynBrakeVMinMph");
         if (vmin != null) dynBrakeVMinMph = vmin;
+        physicsTimeScale = readAutoOrFloat(semiRealistic, "physicsTimeScale");
         String mode = readText(semiRealistic, "decoderBrakeMode");
         if (mode != null) decoderBrakeMode = DecoderBrakeMode.fromToken(mode);
         Integer i;
@@ -207,6 +221,7 @@ public final class SemiRealisticSettings {
         e.addContent(child("airBrakeMaxDecel", Float.toString(airBrakeMaxDecel)));
         e.addContent(child("dynBrakeMaxDecel", Float.toString(dynBrakeMaxDecel)));
         e.addContent(child("dynBrakeVMinMph", Float.toString(dynBrakeVMinMph)));
+        e.addContent(child("physicsTimeScale", autoOrFloat(physicsTimeScale)));
         e.addContent(child("decoderBrakeMode", decoderBrakeMode.token()));
         e.addContent(child("esuLowFunction", Integer.toString(esuLowFunction)));
         e.addContent(child("esuMidFunction", Integer.toString(esuMidFunction)));
