@@ -175,22 +175,12 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         working.liveEnabled = working.persistedEnabled;
         working.scenario = (LoadScenario) scenarioCombo.getSelectedItem();
 
-        // Loco mass / power / TE: per §2.4.1 precedence the operator-typed
-        // override only takes effect in the CUSTOM scenario. In non-Custom
-        // scenarios the loco-physics rows are read-only "auto" displays of
-        // the scenario default; persist them as null so the engine resolves
-        // them via the scenario fallback at runtime (otherwise switching
-        // scenarios later would incorrectly carry the previous scenario's
-        // displayed value as a sticky override).
-        if (working.scenario == LoadScenario.CUSTOM) {
-            working.locoMassKg          = parseAutoFloat(locoMassTonnesField, 1000f);
-            working.locoPowerKw         = parseAutoFloat(locoPowerKwField, 1f);
-            working.locoTractiveEffortKn = parseAutoFloat(locoTractiveEffortKnField, 1f);
-        } else {
-            working.locoMassKg          = null;
-            working.locoPowerKw         = null;
-            working.locoTractiveEffortKn = null;
-        }
+        // Loco mass: panel shows tonnes, working POJO stores kg per the
+        // <locoMassKg> XML element name. Multiply on commit.
+        working.locoMassKg          = parseAutoFloat(locoMassTonnesField, 1000f);
+        // Loco power and TE: panel shows kW/kN matching the POJO units.
+        working.locoPowerKw         = parseAutoFloat(locoPowerKwField, 1f);
+        working.locoTractiveEffortKn = parseAutoFloat(locoTractiveEffortKnField, 1f);
         working.additionalWeightTonnes = floatOf(additionalWeightField, SemiRealisticSettings.DEFAULT_ADDITIONAL_TONNES);
         working.driverPowerPercent     = floatOf(driverPowerField, SemiRealisticSettings.DEFAULT_DRIVER_POWER_PCT);
         working.rollingResistanceCoeff = floatOf(rollingResistanceField, SemiRealisticSettings.DEFAULT_ROLLING_RESISTANCE);
@@ -355,11 +345,8 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         try {
             enableCheckbox.setSelected(working.persistedEnabled);
             scenarioCombo.setSelectedItem(working.scenario);
-            // Scenario defaults are in persisted units (kg / W / N); the
-            // override scale converts them to user units (t / kW / kN) so
-            // they fit the field's formatter range. The override branch
-            // applies the same scale to the override value.
-            renderAutoField(locoMassTonnesField, working.locoMassKg, working.scenario.defaultLocoMassKg() * 0.001f, 0.001f);
+            // Mass field shows tonnes; working stores kg.
+            renderAutoField(locoMassTonnesField, working.locoMassKg, working.scenario.defaultLocoMassKg(), 0.001f);
             renderAutoField(locoPowerKwField, working.locoPowerKw, working.scenario.defaultLocoPowerW() / 1000f, 1f);
             renderAutoField(locoTractiveEffortKnField, working.locoTractiveEffortKn, working.scenario.defaultLocoTractiveEffortN() / 1000f, 1f);
             additionalWeightField.setValue((double) working.additionalWeightTonnes);
