@@ -38,8 +38,8 @@ import jmri.util.usb.SemiRealisticSettings.DecoderBrakeMode;
  *   <li>Loco mass 1–500 t; loco power 1–10 000 kW; loco TE 1–2000 kN.</li>
  *   <li>Additional consist mass 0–50 000 t; driver power 0–100 %.</li>
  *   <li>Rolling resistance 0.0001–0.05.</li>
- *   <li>Mechanical / air brake max decel 0.1–20.0 m/s² wall-clock.</li>
- *   <li>Dyn brake max decel 0.0–10.0 m/s² wall-clock; dyn brake taper 0–20 mph prototype.</li>
+ *   <li>Mechanical / air brake max decel 0.1–5.0 m/s².</li>
+ *   <li>Dyn brake max decel 0.0–2.0 m/s²; dyn brake taper 0–20 mph.</li>
  * </ul>
  * Stage 2 only enables {@code Decoder-brake mode = None}; the {@code ESU}
  * option is greyed out until stage 6 wires the decoder-brake passthrough.
@@ -87,9 +87,9 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         additionalWeightField      = makeFractionField(0f, 50_000f);
         driverPowerField           = makeFractionField(0f, 100f);
         rollingResistanceField     = makeFractionField(0.0001f, 0.05f);
-        brakeMaxDecelField         = makeFractionField(0.1f, 20.0f);
-        airBrakeMaxDecelField      = makeFractionField(0.1f, 20.0f);
-        dynBrakeMaxDecelField      = makeFractionField(0.0f, 10.0f);
+        brakeMaxDecelField         = makeFractionField(0.1f, 5.0f);
+        airBrakeMaxDecelField      = makeFractionField(0.1f, 5.0f);
+        dynBrakeMaxDecelField      = makeFractionField(0.0f, 2.0f);
         dynBrakeVMinField          = makeFractionField(0.0f, 20.0f);
         physicsTimeScaleField      = makeFractionField(0.1f, 1000f);
 
