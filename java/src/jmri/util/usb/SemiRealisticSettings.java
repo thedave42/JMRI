@@ -27,10 +27,16 @@ import org.jdom2.Element;
  */
 public final class SemiRealisticSettings {
 
-    /** Physical-decel-rate constants (§2.4.1, scenario-independent). */
-    public static final float DEFAULT_BRAKE_MAX_DECEL      = 1.0f;
-    public static final float DEFAULT_AIR_BRAKE_MAX_DECEL  = 1.5f;
-    public static final float DEFAULT_DYN_BRAKE_MAX_DECEL  = 0.4f;
+    /** Physical-decel-rate constants (§2.4.1, scenario-independent).
+     *  Brake values are in WALL-CLOCK m/s² (operator-perceived rate per
+     *  plan §1.0). Defaults chosen so brakes dominate rolling resistance
+     *  at typical layout scales — e.g. at N (physicsTimeScale = 160) the
+     *  coast term is ~3.14 m/s² wall-clock, so default mech brake at
+     *  4.0 wins by ~25% standalone and a stacked mech+air gives a hard
+     *  ~6 s 80-mph → 0 stop. */
+    public static final float DEFAULT_BRAKE_MAX_DECEL      = 4.0f;
+    public static final float DEFAULT_AIR_BRAKE_MAX_DECEL  = 6.0f;
+    public static final float DEFAULT_DYN_BRAKE_MAX_DECEL  = 1.6f;
     public static final float DEFAULT_DYN_BRAKE_V_MIN_MPH  = 5f;
     public static final float DEFAULT_ROLLING_RESISTANCE   = 0.002f;
     public static final float DEFAULT_DRIVER_POWER_PCT     = 100f;
