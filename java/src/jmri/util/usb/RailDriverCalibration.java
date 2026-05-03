@@ -35,7 +35,13 @@ import org.slf4j.LoggerFactory;
 public final class RailDriverCalibration {
 
     private static final String FILE_NAME = "raildriver-calibration.xml";
-    private static final String SCHEMA_VERSION = "1";
+    // Schema version bumped to "2" for the semi-realistic-throttle feature
+    // (see docs/rpi-raildriver/semi-realistic-throttle-plan.md). Stage 1 still
+    // writes only the existing six children and tolerates absence of the new
+    // <semiRealistic> subtree on read; stage 2 adds parsing/serialisation of
+    // that subtree. Pre-existing version="1" files load cleanly because the
+    // loader does not branch on version.
+    private static final String SCHEMA_VERSION = "2";
 
     // Defaults from control-inventory.md. Centre/middle positions that the
     // capture protocol intentionally does not measure are filled with sensible
@@ -139,6 +145,7 @@ public final class RailDriverCalibration {
     private final IndepBrakeCal indepBrake = new IndepBrakeCal();
     private final WiperCal      wiper      = new WiperCal();
     private final LightsCal     lights     = new LightsCal();
+    private final SemiRealisticSettings semiRealistic = new SemiRealisticSettings();
 
     public ReverserCal   reverser()   { return reverser; }
     public ThrottleCal   throttle()   { return throttle; }
@@ -146,6 +153,7 @@ public final class RailDriverCalibration {
     public IndepBrakeCal indepBrake() { return indepBrake; }
     public WiperCal      wiper()      { return wiper; }
     public LightsCal     lights()     { return lights; }
+    public SemiRealisticSettings semiRealistic() { return semiRealistic; }
 
     // -------- effective getters: calibrated value or default --------
 
@@ -277,14 +285,18 @@ public final class RailDriverCalibration {
         try {
             Document doc = new SAXBuilder().build(file);
             Element root = doc.getRootElement();
-            // Future-proofing: tolerate any version="1" or attribute absence.
-            // Unknown future versions still fall back to defaults silently.
+            // Tolerate any version (currently "1" or "2") or attribute absence:
+            // unknown children — including a future <semiRealistic> subtree
+            // populated by stage 2 of the semi-realistic throttle plan — are
+            // silently ignored at this stage so a forward-saved file still
+            // round-trips its known fields.
             populateReverser(cal.reverser,     root.getChild("reverser"));
             populateThrottle(cal.throttle,     root.getChild("throttle"));
             populateAutoBrake(cal.autoBrake,   root.getChild("autoBrake"));
             populateIndepBrake(cal.indepBrake, root.getChild("indepBrake"));
             populateWiper(cal.wiper,           root.getChild("wiper"));
             populateLights(cal.lights,         root.getChild("lights"));
+            cal.semiRealistic.loadFrom(         root.getChild("semiRealistic"));
         } catch (IOException | JDOMException ex) {
             log.warn("Failed to parse RailDriver calibration file '{}'; falling back to defaults", file, ex);
         }
@@ -308,12 +320,57 @@ public final class RailDriverCalibration {
         root.addContent(buildIndepBrake(indepBrake));
         root.addContent(buildWiper(wiper));
         root.addContent(buildLights(lights));
+        root.addContent(semiRealistic.writeTo());
         Document doc = new Document(root);
         XMLOutputter fmt = new XMLOutputter(Format.getPrettyFormat()
                 .setLineSeparator(System.lineSeparator()));
         try (FileWriter fw = new FileWriter(file)) {
             fmt.output(doc, fw);
         }
+    }
+
+    /**
+     * Copies every field from {@code other} into this instance. Used by
+     * the unified Settings frame to push pending in-window edits into a
+     * fresh persistence target on Save/Apply, and to reload tab state
+     * from disk after a successful round-trip.
+     */
+    /**
+     * Copies the analog-control calibration fields (reverser, throttle,
+     * auto-brake, indep brake, wiper, lights) from {@code other} into this
+     * instance, but leaves {@link #semiRealistic} unchanged. Used by
+     * {@code CalibrationTabPanel.validateAndApplyTo} so that a Save from
+     * the unified Settings frame does not overwrite the Settings-tab
+     * subtree the {@code SemiRealisticSettingsPanel.validateAndApplyTo}
+     * call already wrote a moment earlier.
+     */
+    public void copyCalibrationFieldsFrom(@Nonnull RailDriverCalibration other) {
+        this.reverser.forward = other.reverser.forward;
+        this.reverser.neutral = other.reverser.neutral;
+        this.reverser.reverse = other.reverser.reverse;
+        this.throttle.fullThrottle = other.throttle.fullThrottle;
+        this.throttle.idleLow      = other.throttle.idleLow;
+        this.throttle.idleHigh     = other.throttle.idleHigh;
+        this.throttle.fullDynBrake = other.throttle.fullDynBrake;
+        this.autoBrake.released = other.autoBrake.released;
+        this.autoBrake.sup      = other.autoBrake.sup;
+        this.autoBrake.cs       = other.autoBrake.cs;
+        this.autoBrake.emg      = other.autoBrake.emg;
+        this.indepBrake.fullRelease     = other.indepBrake.fullRelease;
+        this.indepBrake.fullApplication = other.indepBrake.fullApplication;
+        this.indepBrake.bailoffRest     = other.indepBrake.bailoffRest;
+        this.indepBrake.bailoffPressed  = other.indepBrake.bailoffPressed;
+        this.wiper.off  = other.wiper.off;
+        this.wiper.slow = other.wiper.slow;
+        this.wiper.full = other.wiper.full;
+        this.lights.off  = other.lights.off;
+        this.lights.dim  = other.lights.dim;
+        this.lights.full = other.lights.full;
+    }
+
+    public void copyFrom(@Nonnull RailDriverCalibration other) {
+        copyCalibrationFieldsFrom(other);
+        this.semiRealistic.copyFrom(other.semiRealistic);
     }
 
     /**
@@ -342,6 +399,7 @@ public final class RailDriverCalibration {
         lights.off = null;
         lights.dim = null;
         lights.full = null;
+        semiRealistic.resetToDefaults();
     }
 
     // -------- XML helpers --------

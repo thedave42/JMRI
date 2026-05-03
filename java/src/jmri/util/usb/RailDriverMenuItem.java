@@ -1,6 +1,8 @@
 package jmri.util.usb;
 
 
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.event.ActionEvent;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
@@ -12,17 +14,22 @@ import java.util.concurrent.TimeUnit;
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 import javax.swing.JMenuItem;
-import javax.swing.SwingUtilities;
+import javax.swing.JToolBar;
 
 import jmri.*;
+import jmri.jmrit.jython.Jynstrument;
+import jmri.jmrit.roster.RosterEntry;
 import jmri.jmrit.roster.swing.RosterEntryComboBox;
 import jmri.jmrit.roster.swing.RosterEntrySelectorPanel;
+import jmri.jmrit.throttle.AddressListener;
 import jmri.jmrit.throttle.AddressPanel;
 import jmri.jmrit.throttle.LoadXmlThrottlesLayoutAction;
 import jmri.jmrit.throttle.ThrottleFrame;
 import jmri.jmrit.throttle.ThrottleFrameManager;
 import jmri.jmrit.throttle.ThrottleWindow;
+import jmri.util.FileUtil;
 import jmri.util.MathUtil;
+import jmri.util.ThreadingUtil;
 
 import org.hid4java.*;
 import org.hid4java.event.HidServicesEvent;
@@ -43,6 +50,13 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     private HidServices hidServices = null;
     private HidDevice hidDevice = null;
 
+    /** Tracks physical RailDriver presence independently of whether the HID
+     *  handle has been opened. Set true on
+     *  {@link #hidDeviceAttached HidServicesEvent} matching VID/PID and on
+     *  successful device acquire in {@link #ensureDeviceAndPolling}; set
+     *  false on detach. {@link #isRailDriverConnected} reads this. */
+    private volatile boolean railDriverPresent = false;
+
 
     //TODO: Remove this if/when the RailDriver script is removed
     //private final boolean invokeOnMenuOnly = true;
@@ -50,18 +64,81 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     private Thread thread = null;
     private ThrottleWindow throttleWindow = null;
     private ThrottleFrame activeThrottleFrame = null;
+    private AddressPanel attachedAddressPanel = null;
+
+    /**
+     * Per-throttle semi-realistic physics engine. Lazily created in
+     * {@link #attachThrottleWindow()} after the {@code activeThrottleFrame}
+     * binding succeeds; disposed in {@link #propertyChange}'s
+     * {@code "ancestor"} case alongside the {@code throttleDispatcher}
+     * deregistration. {@code null} means no throttle window is open and
+     * the engine is unreachable.
+     */
+    private SemiRealisticThrottleEngine engine = null;
+
+    /**
+     * True between {@link #requestAttachToThrottle} and the matching
+     * {@code "activeThrottleFrame"} PCS event. Drives the Jynstrument's
+     * "binding…" State 2.5 visual.
+     */
+    private volatile boolean attachInProgress = false;
+
+    /**
+     * AddressListener that binds the engine's throttle/roster lifecycle to
+     * the address panel. {@code notifyAddressThrottleFound} attaches the
+     * engine; {@code notifyAddressReleased} detaches it. Per the rubber-duck
+     * critique on stage 2: the engine MUST track loco changes via this
+     * lifecycle channel, not via window attach/detach, because the throttle
+     * is acquired asynchronously after the window opens.
+     */
+    private final AddressListener addressListener = new AddressListener() {
+        @Override
+        public void notifyAddressChosen(LocoAddress address) {
+            // No-op: a new address has been requested but no throttle yet.
+        }
+
+        @Override
+        public void notifyAddressReleased(LocoAddress address) {
+            if (engine != null) {
+                engine.detachThrottle();
+            }
+        }
+
+        @Override
+        public void notifyAddressThrottleFound(DccThrottle t) {
+            if (engine == null) return;
+            RosterEntry re = (activeThrottleFrame != null)
+                    ? activeThrottleFrame.getRosterEntry() : null;
+            engine.attachThrottle(t, re);
+            engine.setLiveEnabled(getCalibration().semiRealistic().liveEnabled);
+        }
+
+        @Override
+        public void notifyConsistAddressChosen(LocoAddress address) {}
+
+        @Override
+        public void notifyConsistAddressReleased(LocoAddress address) {}
+
+        @Override
+        public void notifyConsistAddressThrottleFound(DccThrottle t) {
+            // Treat consist throttle the same as a single-throttle for the
+            // engine's purposes — the engine drives whichever throttle the
+            // address panel is exposing.
+            notifyAddressThrottleFound(t);
+        }
+    };
 
     /**
      * Per-profile calibration data for the analog controls. Populated lazily
      * in {@link #setupRailDriver()} (or via {@link #reloadCalibration()} after
-     * the calibration frame writes a new file). Always non-null after first
+     * the settings window writes a new file). Always non-null after first
      * call to {@link #getCalibration()}.
      */
     private RailDriverCalibration calibration = null;
 
     /**
      * Static accessor for the most recently constructed RailDriverMenuItem,
-     * used by {@link RailDriverCalibrationFrame} to subscribe to live byte
+     * used by {@link RailDriverSettingsFrame} to subscribe to live byte
      * events and to trigger a calibration reload after Save. Returns null
      * if the user has not yet constructed an instance (i.e. the Debug menu
      * with the RailDriver entry has not been opened).
@@ -176,7 +253,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      * if not already running. Does not open or attach a throttle window.
      * <p>
      * Both the throttle menu's action listener and
-     * {@link RailDriverCalibrationAction} call this to bring the device
+     * {@link RailDriverSettingsAction} call this to bring the device
      * live without needing a throttle window. Calibration can therefore
      * run with or without an active throttle.
      *
@@ -196,6 +273,13 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 return false;
             }
             log.info("Got RailDriver hidDevice: {}", hidDevice);
+            // Successful acquire: ensure connected state matches reality
+            // for callers that didn't see a hot-plug event (cold-plug).
+            boolean was = railDriverPresent;
+            railDriverPresent = true;
+            if (!was) {
+                firePropertyChange("railDriverConnected", false, true);
+            }
         }
         if (calibration == null) {
             calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
@@ -241,7 +325,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         // LoadXmlThrottlesLayoutAction uses an invokeLater to open the
         // default throttles layout, so listener wiring has to wait until
         // that has completed.
-        SwingUtilities.invokeLater(() -> {
+        ThreadingUtil.runOnGUIEventually(() -> {
             if (activeThrottleFrame == null) {
                 throttleWindow = tfManager.getCurrentThrottleFrame();
                 if (throttleWindow != null) {
@@ -249,6 +333,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 }
             }
             if (activeThrottleFrame != null) {
+                ThrottleFrame oldActive = null;
                 activeThrottleFrame.toFront();
                 throttleWindow.addPropertyChangeListener(this);
                 activeThrottleFrame.addPropertyChangeListener(this);
@@ -256,8 +341,100 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 // if the user opens the throttle menu more than once in a session.
                 removePropertyChangeListener("Value", throttleDispatcher);
                 addPropertyChangeListener("Value", throttleDispatcher);
+
+                // Stage 2: wire the semi-realistic engine to the throttle's
+                // AddressPanel. The engine itself starts in DETACHED state;
+                // it transitions to ATTACHED via notifyAddressThrottleFound
+                // (or, if a throttle is already acquired before we got here,
+                // the synthetic call below).
+                if (engine == null) {
+                    engine = new SemiRealisticThrottleEngine();
+                }
+                engine.updateSettings(getCalibration().semiRealistic());
+
+                AddressPanel addressPanel = activeThrottleFrame.getAddressPanel();
+                if (attachedAddressPanel != null && attachedAddressPanel != addressPanel) {
+                    attachedAddressPanel.removeAddressListener(addressListener);
+                }
+                addressPanel.removeAddressListener(addressListener); // idempotent
+                addressPanel.addAddressListener(addressListener);
+                attachedAddressPanel = addressPanel;
+                DccThrottle existing = addressPanel.getThrottle();
+                if (existing != null) {
+                    addressListener.notifyAddressThrottleFound(existing);
+                }
+
+                // Stage 2: auto-install the toolbar Jynstrument once the
+                // throttle window is fully bound. Idempotent — the helper
+                // walks the toolbar to detect a previously-installed copy
+                // (see plan §3.2 step 5).
+                autoInstallJynstrument(throttleWindow);
+
+                // Stage 2: notify the Jynstrument and any other listeners
+                // that the active throttle frame is now bound.
+                firePropertyChange("activeThrottleFrame", oldActive, activeThrottleFrame);
+                if (attachInProgress) {
+                    attachInProgress = false;
+                    firePropertyChange("attachInProgress", true, false);
+                }
+            } else if (attachInProgress) {
+                // Bind failed; release the in-progress flag so the
+                // Jynstrument's State 2.5 doesn't latch.
+                attachInProgress = false;
+                firePropertyChange("attachInProgress", true, false);
             }
         });
+    }
+
+    /**
+     * Recursively walks {@code container}'s descendants and returns true if
+     * any {@link Jynstrument} child has a class name ending in
+     * {@code classNameSuffix}. Used to keep the toolbar mode-toggle install
+     * idempotent across repeat {@link #attachThrottleWindow()} calls within
+     * a session, and to detect saved-layout XML restoration of the toggle.
+     * <p>
+     * The walk is necessary because {@code ThrottleWindow.throttleToolBar}
+     * is private with no public getter (verified at
+     * {@code ThrottleWindow.java:57}); the precedent for iterating
+     * {@code throttleToolBar.getComponents()} for {@code Jynstrument}
+     * instances is established at
+     * {@code ThrottleWindow.java:160-167} (close handler) and
+     * {@code ThrottleWindow.java:801-810} (save).
+     */
+    private static boolean hasJynstrumentInstalled(Container container, String classNameSuffix) {
+        Component[] comps = container.getComponents();
+        if (comps == null) return false;
+        for (Component c : comps) {
+            if (c instanceof Jynstrument) {
+                String n = c.getClass().getName();
+                if (n.endsWith(classNameSuffix) || n.endsWith("." + classNameSuffix)) {
+                    return true;
+                }
+            }
+            if (c instanceof JToolBar) {
+                if (hasJynstrumentInstalled((JToolBar) c, classNameSuffix)) return true;
+            } else if (c instanceof Container) {
+                if (hasJynstrumentInstalled((Container) c, classNameSuffix)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** Auto-install the {@code RailDriverModeToggle.jyn} Jynstrument onto the
+     *  throttle toolbar if not already present. Errors are tolerated — this
+     *  is a UX nicety, not a correctness requirement. */
+    private void autoInstallJynstrument(ThrottleWindow tw) {
+        if (tw == null) return;
+        try {
+            if (hasJynstrumentInstalled(tw.getContentPane(), "RailDriverModeToggle")) {
+                return; // already installed (saved-layout restore or repeat attach)
+            }
+            String jynPath = FileUtil.getProgramPath()
+                    + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn";
+            tw.ynstrument(jynPath);
+        } catch (RuntimeException ex) {
+            log.warn("Auto-install of RailDriverModeToggle Jynstrument failed", ex);
+        }
     }
 
     private void startPollingThread() {
@@ -268,11 +445,41 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             // depend on the outer `thread` field reference being stable
             // across thread restarts.
             while (!Thread.currentThread().isInterrupted()) {
-                if (!hidDevice.isOpen()) {
-                    hidDevice.open();
+                // Hot-plug defence (per stage 2 rubber-duck critique): the
+                // hidDeviceDetached listener nulls the shared hidDevice
+                // reference asynchronously. Snapshot it locally and bail
+                // out cleanly if the device went away — otherwise the
+                // next isOpen() call would NPE.
+                HidDevice dev = hidDevice;
+                if (dev == null) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(500);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                try {
+                    if (!dev.isOpen()) {
+                        dev.open();
+                    }
+                } catch (IllegalStateException ex) {
+                    log.warn("RailDriver HID device open failed; pausing polling", ex);
+                    try { TimeUnit.MILLISECONDS.sleep(500); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                    continue;
                 }
                 byte[] buff_new = new byte[14]; // read buffer
-                int ret = hidDevice.read(buff_new);
+                int ret;
+                try {
+                    ret = dev.read(buff_new);
+                } catch (IllegalStateException ex) {
+                    log.warn("RailDriver HID device read failed; pausing polling", ex);
+                    try { TimeUnit.MILLISECONDS.sleep(500); }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                    continue;
+                }
                 if (ret >= 0) {
                     for (int i = 0; i < buff_new.length; i++) {
                         // Per-axis change detection. Analog bytes (0..6) get
@@ -515,17 +722,27 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      * @param reportID  the report ID
      */
     private void sendMessage(byte[] message, byte reportID) {
+        HidDevice dev = hidDevice;
+        if (dev == null) {
+            log.debug("sendMessage: no HID device; ignoring");
+            return;
+        }
         // Ensure device is open after an attach/detach event
-        if (!hidDevice.isOpen()) {
-            hidDevice.open();
+        try {
+            if (!dev.isOpen()) {
+                dev.open();
+            }
+        } catch (IllegalStateException ex) {
+            log.error("hidDevice open Exception", ex);
+            return;
         }
 
         try {
-            int ret = hidDevice.write(message, message.length, reportID);
+            int ret = dev.write(message, message.length, reportID);
             if (ret >= 0) {
                 log.debug("hidDevice.write returned: {}", ret);
             } else {
-                log.error("hidDevice.write error: {}", hidDevice.getLastErrorMessage());
+                log.error("hidDevice.write error: {}", dev.getLastErrorMessage());
             }
         } catch (IllegalStateException ex) {
             log.error("hidDevice.write Exception", ex);
@@ -538,11 +755,21 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     @Override
     public void hidDeviceAttached(HidServicesEvent event) {
         log.info("hidDeviceAttached({})", event);
-/*        HidDevice tHidDevice = event.getHidDevice();
-        if ((tHidDevice.getVendorId() == VENDOR_ID) && (tHidDevice.getProductId() == PRODUCT_ID) && (!invokeOnMenuOnly) ) {
-//                && ((SERIAL_NUMBER == null) || (tHidDevice.getSerialNumber().equals(SERIAL_NUMBER))) {
-            setupRailDriver();
-        }*/
+        // Stage 2: VID/PID-matched hot-plug fires a PCS event so the
+        // toolbar Jynstrument can update its icon. The Debug-menu
+        // workflow keeps owning the polling lifecycle — we deliberately
+        // do NOT auto-call setupRailDriver() here so cold-plug behaviour
+        // is unchanged for users without the Jynstrument.
+        HidDevice tHidDevice = event.getHidDevice();
+        if (tHidDevice != null
+                && tHidDevice.getVendorId() == VENDOR_ID
+                && tHidDevice.getProductId() == PRODUCT_ID) {
+            boolean was = railDriverPresent;
+            railDriverPresent = true;
+            if (!was) {
+                firePropertyChange("railDriverConnected", false, true);
+            }
+        }
     }
 
     /*
@@ -553,6 +780,17 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         log.info("hidDeviceDetached({})", event);
         if (hidDevice == event.getHidDevice()) {
             hidDevice = null;
+        }
+        // VID/PID match (or our active device went away) → mark absent.
+        HidDevice tHidDevice = event.getHidDevice();
+        if (tHidDevice != null
+                && tHidDevice.getVendorId() == VENDOR_ID
+                && tHidDevice.getProductId() == PRODUCT_ID) {
+            boolean was = railDriverPresent;
+            railDriverPresent = false;
+            if (was) {
+                firePropertyChange("railDriverConnected", true, false);
+            }
         }
     }
 
@@ -585,9 +823,18 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 // Throttle window or active throttle frame is closing.
                 // Stop dispatching polling-thread "Value" events to it
                 // and clear our references. The polling thread itself
-                // continues so the calibration frame (if open) keeps
-                // receiving "RawByte" events.
+                // continues so the settings window's calibration tab (if
+                // open) keeps receiving "RawByte" events.
                 removePropertyChangeListener("Value", throttleDispatcher);
+                if (attachedAddressPanel != null) {
+                    attachedAddressPanel.removeAddressListener(addressListener);
+                    attachedAddressPanel = null;
+                }
+                if (engine != null) {
+                    engine.dispose();
+                    engine = null;
+                }
+                ThrottleFrame oldFrame = activeThrottleFrame;
                 if (throttleWindow != null) {
                     throttleWindow.removePropertyChangeListener(this);
                     throttleWindow = null;
@@ -595,6 +842,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 if (activeThrottleFrame != null) {
                     activeThrottleFrame.removePropertyChangeListener(this);
                     activeThrottleFrame = null;
+                }
+                if (oldFrame != null) {
+                    firePropertyChange("activeThrottleFrame", oldFrame, null);
                 }
                 break;
             case "ThrottleFrame":
@@ -663,11 +913,20 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 // two extremes per RailDriverCalibration).
                 log.info("REVERSER value: {}", value);
                 if (throttle != null) {
+                    final DccThrottle t = throttle;
                     RailDriverCalibration cal = getCalibration();
+                    SemiRealisticThrottleEngine.Direction dir;
                     if (value < cal.reverserReverseThreshold()) {
-                        throttle.setIsForward(false);
+                        dir = SemiRealisticThrottleEngine.Direction.REVERSE;
+                        ThreadingUtil.runOnGUIEventually(() -> t.setIsForward(false));
                     } else if (value > cal.reverserForwardThreshold()) {
-                        throttle.setIsForward(true);
+                        dir = SemiRealisticThrottleEngine.Direction.FORWARD;
+                        ThreadingUtil.runOnGUIEventually(() -> t.setIsForward(true));
+                    } else {
+                        dir = SemiRealisticThrottleEngine.Direction.NEUTRAL;
+                    }
+                    if (engine != null) {
+                        engine.setDirection(dir);
                     }
                 }
                 break;
@@ -676,17 +935,29 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 // produces positive values that drive the loco; lever UP
                 // (toward DYN BRAKE label) produces negative values that
                 // currently only set the "DBr" LED (dyn-brake wiring is a
-                // future phase). The min / max pin values come from the
+                // future stage). The min / max pin values come from the
                 // calibrated Idle (+ user-configurable deadband) and full
                 // Throttle byte values.
                 log.info("THROTTLE value: {}", value);
                 if (throttle != null) {
+                    final DccThrottle t = throttle;
                     RailDriverCalibration cal = getCalibration();
                     double throttle_min = cal.throttleMin();
                     double throttle_max = cal.throttleMax();
                     double v = MathUtil.pin(value, throttle_min, throttle_max);
                     double fraction = (v - throttle_min) / (throttle_max - throttle_min);
-                    throttle.setSpeedSetting((float)fraction);
+                    final float fractionF = (float) fraction;
+                    // Stage 2: when the engine is driving, route the lever
+                    // through it instead of writing setSpeedSetting directly.
+                    if (engine != null && engine.isDriving()) {
+                        engine.setThrottleFraction(fractionF);
+                        // Stage 5 will compute a non-zero dyn-brake fraction
+                        // when the lever is below Idle Low; for now keep
+                        // the input zeroed.
+                        engine.setDynBrakeFraction(0f);
+                    } else {
+                        ThreadingUtil.runOnGUIEventually(() -> t.setSpeedSetting(fractionF));
+                    }
                     if (value < 0) {
                         //TODO: dynamic braking
                         setLEDs("DBr");
@@ -703,10 +974,32 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 log.info("AUTOBRAKE value: {}", value);
                 break;
             case "Axis 3":
-                // INDEPENDBRK is the state of the Independent (engine only) brake.
-                // Like the Automatic brake: large values for no braking, small
-                // values for more braking.
+                // INDEPENDBRK is the state of the Independent (engine only)
+                // brake. Large value = no braking; small value = more braking.
+                // Stage 2 wires this into the semi-realistic engine's
+                // F_brake_mech force term. The fraction calculation works
+                // in byte-space per plan §3.2 step 2.
                 log.info("INDEPENDBRK value: {}", value);
+                if (engine != null) {
+                    RailDriverCalibration cal = getCalibration();
+                    int fullRelease = cal.indepBrake().fullRelease != null
+                            ? cal.indepBrake().fullRelease
+                            : RailDriverCalibration.DEF_INDEPBRAKE_FULLRELEASE;
+                    int fullApp = cal.indepBrake().fullApplication != null
+                            ? cal.indepBrake().fullApplication
+                            : RailDriverCalibration.DEF_INDEPBRAKE_FULLAPP;
+                    int range = fullRelease - fullApp;
+                    if (range != 0) {
+                        // Recover the byte value from the polling thread's
+                        // (256 - byte) / 256 transform. Math.round avoids
+                        // the off-by-one rounding artifacts of plain (int).
+                        int byteValue = (int) Math.round((1.0 - value) * 256.0);
+                        float fraction = (float) (fullRelease - byteValue) / (float) range;
+                        if (fraction < 0f) fraction = 0f;
+                        if (fraction > 1f) fraction = 1f;
+                        engine.setIndepBrakeFraction(fraction);
+                    }
+                }
                 break;
             case "Axis 4":
                 // BAILOFF is the Independent brake 'bailoff', this is the spring
@@ -731,8 +1024,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 // Dim, or OFF and Full if Dim isn't captured; defaults to ~0.6).
                 log.info("LIGHTS value: {}", value);
                 if (throttle != null) {
-                    boolean lightsOn = value < getCalibration().lightsThreshold();
-                    throttle.setFunction(0, lightsOn);
+                    final DccThrottle t = throttle;
+                    final boolean lightsOn = value < getCalibration().lightsThreshold();
+                    ThreadingUtil.runOnGUIEventually(() -> t.setFunction(0, lightsOn));
                 }
                 break;
             default:
@@ -749,7 +1043,8 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 switch (fNum) {
                     case 28: {  // zoom/rocker button up
                         if ((addressPanel != null) && isDown) {
-                            addressPanel.selectRosterEntry();
+                            final AddressPanel ap = addressPanel;
+                            ThreadingUtil.runOnGUIEventually(() -> ap.selectRosterEntry());
                             DccLocoAddress a = addressPanel.getCurrentAddress();
                             ledString = "sel " + ((a != null) ? a.toString() : "null");
                         }
@@ -758,7 +1053,8 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     }
                     case 29: {  // zoom/rocker button down
                         if ((addressPanel != null) && isDown) {
-                            addressPanel.dispatchAddress();
+                            final AddressPanel ap = addressPanel;
+                            ThreadingUtil.runOnGUIEventually(() -> ap.dispatchAddress());
                             DccLocoAddress a = addressPanel.getCurrentAddress();
                             ledString = "dis " + ((a != null) ? a.toString() : "null");
                         }
@@ -769,7 +1065,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         if ((addressPanel != null) && isDown) {
                             int selectedIndex = addressPanel.getRosterSelectedIndex();
                             if (selectedIndex > 1) {
-                                addressPanel.setRosterSelectedIndex(selectedIndex - 1);
+                                final AddressPanel ap = addressPanel;
+                                final int newIndex = selectedIndex - 1;
+                                ThreadingUtil.runOnGUIEventually(() -> ap.setRosterSelectedIndex(newIndex));
                                 ledString = String.format("Prev %d", selectedIndex - 1);
                             }
                         }
@@ -778,8 +1076,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     }
                     case 31: {  // four way panning right
                         if (isDown) {
-                            if (throttleWindow != null) {
-                                throttleWindow.nextThrottleFrame();
+                            ThrottleWindow tw = throttleWindow;
+                            if (tw != null) {
+                                ThreadingUtil.runOnGUIEventually(() -> tw.nextThrottleFrame());
                             }
                             ledString = "NXT";
                         }
@@ -796,7 +1095,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                                     int selectedIndex = addressPanel.getRosterSelectedIndex();
                                     if (selectedIndex + 1 < cnt) {
                                         try {
-                                            addressPanel.setRosterSelectedIndex(selectedIndex + 1);
+                                            final AddressPanel ap = addressPanel;
+                                            final int newIndex = selectedIndex + 1;
+                                            ThreadingUtil.runOnGUIEventually(() -> ap.setRosterSelectedIndex(newIndex));
                                             ledString = String.format("Next %d", selectedIndex + 1);
                                         } catch (ArrayIndexOutOfBoundsException ex) {
                                             // ignore this
@@ -810,8 +1111,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     }
                     case 33: {  // four way panning left
                         if (isDown) {
-                            if (throttleWindow != null) {
-                                throttleWindow.previousThrottleFrame();
+                            ThrottleWindow tw = throttleWindow;
+                            if (tw != null) {
+                                ThreadingUtil.runOnGUIEventually(() -> tw.previousThrottleFrame());
                             }
                             ledString = "PRE";
                         }
@@ -821,21 +1123,24 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     case 34: {  // Gear Shift Up
                         if ((throttle != null) && isDown) {
                             // shuntFn
-                            throttle.setFunction(3, false);
+                            final DccThrottle t = throttle;
+                            ThreadingUtil.runOnGUIEventually(() -> t.setFunction(3, false));
                         }
                         break;
                     }
                     case 35: {  // Gear Shift Down
                         if ((throttle != null) && isDown) {
                             // shuntFn
-                            throttle.setFunction(3, true);
+                            final DccThrottle t = throttle;
+                            ThreadingUtil.runOnGUIEventually(() -> t.setFunction(3, true));
                         }
                         break;
                     }
                     case 36:
                     case 37: {  // Emergency Brake up/down
                         if ((throttle != null) && isDown) {
-                            throttle.setSpeedSetting(-1);
+                            final DccThrottle t = throttle;
+                            ThreadingUtil.runOnGUIEventually(() -> t.setSpeedSetting(-1));
                         }
                         break;
                     }
@@ -880,13 +1185,21 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         break;
                     }
                 }
-                if (throttle != null && fNum >= 0 && fNum < throttle.getFunctions().length)  {
-                    if (! throttle.getFunctionMomentary(fNum)) {
-                        if (isDown) {
-                            throttle.setFunction(fNum, !throttle.getFunction(fNum) );
+                if (throttle != null && fNum >= 0) {
+                    final DccThrottle t = throttle;
+                    final int finalFNum = fNum;
+                    final boolean finalIsDown = isDown;
+                    int functionsLength = ThreadingUtil.runOnGUIwithReturn(() -> t.getFunctions().length);
+                    if (finalFNum < functionsLength) {
+                        boolean isMomentary = ThreadingUtil.runOnGUIwithReturn(() -> t.getFunctionMomentary(finalFNum));
+                        if (!isMomentary) {
+                            if (finalIsDown) {
+                                boolean current = ThreadingUtil.runOnGUIwithReturn(() -> t.getFunction(finalFNum));
+                                ThreadingUtil.runOnGUIEventually(() -> t.setFunction(finalFNum, !current));
+                            }
+                        } else {
+                            ThreadingUtil.runOnGUIEventually(() -> t.setFunction(finalFNum, finalIsDown));
                         }
-                    } else {
-                        throttle.setFunction(fNum, isDown);
                     }
                 }
                 if (isDown) {
@@ -915,13 +1228,137 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     }
 
     /**
-     * Re-reads the calibration file from disk. Called by the calibration
-     * frame after Save so subsequent control movements use the new values
-     * without restarting JMRI.
+     * Re-reads the calibration file from disk. Called by the unified
+     * settings frame after Save so subsequent control movements use the
+     * new values without restarting JMRI. Stage 2: also pushes the new
+     * settings to the engine and fires {@code "liveEnabledChanged"} /
+     * {@code "persistedEnabledChanged"} when those values changed across
+     * the reload.
      */
     public void reloadCalibration() {
+        boolean oldPersisted = false;
+        boolean oldLive = false;
+        if (calibration != null) {
+            oldPersisted = calibration.semiRealistic().persistedEnabled;
+            oldLive = calibration.semiRealistic().liveEnabled;
+        }
         calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+        SemiRealisticSettings s = calibration.semiRealistic();
         log.info("RailDriver calibration reloaded.");
+        if (engine != null) {
+            engine.updateSettings(s);
+            engine.setLiveEnabled(s.liveEnabled);
+        }
+        if (oldPersisted != s.persistedEnabled) {
+            firePropertyChange("persistedEnabledChanged", oldPersisted, s.persistedEnabled);
+        }
+        if (oldLive != s.liveEnabled) {
+            firePropertyChange("liveEnabledChanged", oldLive, s.liveEnabled);
+        }
+    }
+
+    // ==================== Stage 2 public API (settings + Jynstrument) ====================
+
+    /** @return current live enable state (engine + Jynstrument source of truth). */
+    public boolean isSemiRealisticLiveEnabled() {
+        return getCalibration().semiRealistic().liveEnabled;
+    }
+
+    /** @return current persisted enable state (Settings tab source of truth). */
+    public boolean isSemiRealisticPersistedEnabled() {
+        return getCalibration().semiRealistic().persistedEnabled;
+    }
+
+    /**
+     * Jynstrument toolbar click: mutates only {@code liveEnabled}. Does NOT
+     * write XML; persisted state is unchanged. The session-only flag resets
+     * to {@code persistedEnabled} on next launch.
+     * <p>
+     * The Settings-tab Save/Apply path is implemented inside
+     * {@link RailDriverSettingsFrame#doSaveOrApply(boolean)} as a direct
+     * {@code working.save(file)} + {@link #reloadCalibration()} sequence;
+     * there is no equivalent {@code applyPersistedEnabled} entry point on
+     * this class, because the Settings tab needs to persist the entire
+     * calibration (including the calibration tab's per-axis bytes), not
+     * just the {@code persistedEnabled} flag. {@code reloadCalibration}
+     * fires {@code persistedEnabledChanged} and {@code liveEnabledChanged}
+     * when the values change across the reload.
+     */
+    public void setSemiRealisticEnabledSessionOnly(boolean enabled) {
+        SemiRealisticSettings s = getCalibration().semiRealistic();
+        boolean wasLive = s.liveEnabled;
+        if (wasLive == enabled) return;
+        s.liveEnabled = enabled;
+        if (engine != null) engine.setLiveEnabled(enabled);
+        firePropertyChange("liveEnabledChanged", wasLive, enabled);
+    }
+
+    /** @return whether a RailDriver HID device is currently physically
+     *  present (set on hot-plug attach event with matching VID/PID, or
+     *  on successful cold-plug device acquire; cleared on detach). */
+    public boolean isRailDriverConnected() {
+        return railDriverPresent;
+    }
+
+    /** @return the throttle frame currently bound to RailDriver, or null. */
+    @CheckForNull
+    public ThrottleFrame getActiveThrottleFrame() {
+        return activeThrottleFrame;
+    }
+
+    /** @return true between {@link #requestAttachToThrottle} and the
+     *  matching {@code "activeThrottleFrame"} PCS event. */
+    public boolean isAttachInProgress() {
+        return attachInProgress;
+    }
+
+    /**
+     * Asynchronously bind the RailDriver to {@code tf}. No-op when
+     * {@code tf} is already the active frame. Otherwise sets
+     * {@code attachInProgress = true}, fires {@code "attachInProgress"}
+     * (true), schedules {@link #ensureDeviceAndPolling()} +
+     * {@link #attachThrottleWindow()} on the EDT. The post-attach lambda
+     * (inside {@code attachThrottleWindow}) fires
+     * {@code "activeThrottleFrame"} and clears
+     * {@code "attachInProgress"} (false) on success.
+     */
+    public void requestAttachToThrottle(@CheckForNull ThrottleFrame tf) {
+        if (tf != null && tf == activeThrottleFrame) {
+            return; // already bound
+        }
+        if (attachInProgress) {
+            return; // request already in flight
+        }
+        attachInProgress = true;
+        firePropertyChange("attachInProgress", false, true);
+        if (tf != null) {
+            // Adopt the requested frame as the target before
+            // attachThrottleWindow runs; the inner lambda will fire
+            // activeThrottleFrame against whatever tfManager surfaces.
+            activeThrottleFrame = tf;
+            throttleWindow = tf.getThrottleControllersContainer();
+        }
+        ThreadingUtil.runOnGUIEventually(() -> {
+            if (!ensureDeviceAndPolling()) {
+                attachInProgress = false;
+                firePropertyChange("attachInProgress", true, false);
+                return;
+            }
+            attachThrottleWindow();
+        });
+    }
+
+    /** Add a listener for the new stage-2 PCS events
+     *  ({@code "liveEnabledChanged"}, {@code "persistedEnabledChanged"},
+     *  {@code "railDriverConnected"}, {@code "activeThrottleFrame"},
+     *  {@code "attachInProgress"}). Listeners are invoked on whatever
+     *  thread fires the event (typically the EDT). */
+    public void addSettingsListener(@Nonnull PropertyChangeListener l) {
+        addPropertyChangeListener(l);
+    }
+
+    public void removeSettingsListener(@Nonnull PropertyChangeListener l) {
+        removePropertyChangeListener(l);
     }
 
     //initialize logging
