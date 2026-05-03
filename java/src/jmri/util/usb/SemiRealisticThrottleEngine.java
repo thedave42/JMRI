@@ -91,20 +91,15 @@ public final class SemiRealisticThrottleEngine {
         final float locoTractiveEffortN;
         final float additionalMassKg;
         final float driverPowerPct;          // 0.0..1.0
-        final float rollingResistanceCoeff;  // c_rr — prototype-physics, dimensionless
-        final float brakeMaxDecel;            // wall-clock m/s² @ 100% indep brake (operator-controlled)
-        final float airBrakeMaxDecel;         // wall-clock m/s² @ 100% air line   (operator-controlled)
-        final float dynBrakeMaxDecel;         // wall-clock m/s² @ 100% dyn brake  (operator-controlled, peak)
-        final float dynBrakeVMinMps;          // prototype velocity taper threshold (m/s)
+        final float rollingResistanceCoeff;
+        final float brakeMaxDecel;            // m/s² @ 100% indep brake
+        final float airBrakeMaxDecel;         // m/s² @ 100% air line
+        final float dynBrakeMaxDecel;         // m/s² @ 100% dyn brake (peak)
+        final float dynBrakeVMinMps;          // speed taper threshold
         final float vCapMps;                  // POSITIVE_INFINITY when uncapped
         final float designTopSpeedMps;        // linear-fallback denominator
         final boolean steamPowerCurve;
-        final float layoutScale;              // for layout mm/s ↔ prototype m/s (speed-profile lookup)
-        /** Multiplier applied to all prototype-physics force terms so they are
-         *  visible at scale-time wall-clock. Equals the operator's explicit
-         *  override when set, otherwise JMRI's {@code SignalSpeedMap.getLayoutScale()}.
-         *  See plan §1.0 for the two-class force model. */
-        final float physicsTimeScale;
+        final float layoutScale;              // for layout mm/s ↔ prototype m/s
         final boolean useSpeedProfileForward;
         final boolean useSpeedProfileReverse;
 
@@ -115,7 +110,6 @@ public final class SemiRealisticThrottleEngine {
                         float dynBrakeMaxDecel, float dynBrakeVMinMps,
                         float vCapMps, float designTopSpeedMps,
                         boolean steamPowerCurve, float layoutScale,
-                        float physicsTimeScale,
                         boolean useSpeedProfileForward, boolean useSpeedProfileReverse) {
             this.locoMassKg = locoMassKg;
             this.locoPowerW = locoPowerW;
@@ -131,7 +125,6 @@ public final class SemiRealisticThrottleEngine {
             this.designTopSpeedMps = designTopSpeedMps;
             this.steamPowerCurve = steamPowerCurve;
             this.layoutScale = layoutScale;
-            this.physicsTimeScale = physicsTimeScale;
             this.useSpeedProfileForward = useSpeedProfileForward;
             this.useSpeedProfileReverse = useSpeedProfileReverse;
         }
@@ -403,15 +396,6 @@ public final class SemiRealisticThrottleEngine {
             layoutScale = 87f; // HO fallback
         }
 
-        // Resolve physicsTimeScale per plan §2.4.1: explicit numeric override
-        // wins; otherwise "auto" (= null) resolves to JMRI's layoutScale. Per
-        // plan §1.0 this multiplier applies only to prototype-physics force
-        // terms (currently rolling resistance) so they are visible at
-        // scale-time wall-clock — operator-controlled forces (drive, brakes)
-        // are NOT multiplied.
-        float physicsTimeScale = (s.physicsTimeScale != null) ? s.physicsTimeScale : layoutScale;
-        if (physicsTimeScale <= 0f) physicsTimeScale = layoutScale;
-
         boolean useSpFwd = false;
         boolean useSpRev = false;
         if (speedProfile != null) {
@@ -427,7 +411,6 @@ public final class SemiRealisticThrottleEngine {
                 s.dynBrakeMaxDecel, s.dynBrakeVMinMph * MPH_TO_MPS,
                 vCapMps, scenario.designTopSpeedMps(),
                 scenario.steamPowerCurve(), layoutScale,
-                physicsTimeScale,
                 useSpFwd, useSpRev);
     }
 
@@ -492,11 +475,7 @@ public final class SemiRealisticThrottleEngine {
 
         boolean drive = (lever > 0f) && (v_fs >= 0f);
 
-        // 2. Compute forces — TWO-CLASS FORCE MODEL (plan §1.0).
-        //    Operator-controlled forces (drive, brakes) produce wall-clock
-        //    perceived deceleration directly: F = wall-clock-decel × mass.
-        //    Prototype-physics forces (rolling resistance) are multiplied by
-        //    physicsTimeScale so they are visible at scale-time wall-clock.
+        // 2. Compute forces
         float massTotal = p.totalMass();
         if (massTotal <= 0f) return; // pathological config; nothing to do
         float pAvail  = p.locoPowerW * p.driverPowerPct;
@@ -504,15 +483,12 @@ public final class SemiRealisticThrottleEngine {
         float vGuard  = Math.max(V_GUARD_MIN_MPS, v_fs);
         float pCurve = p.steamPowerCurve ? (float) Math.pow(vGuard / Math.max(0.01f, p.designTopSpeedMps), 0.85f) : 1.0f;
 
-        // Operator-controlled — no time-scale multiplier:
         float fDrive  = drive ? Math.min(teAvail, pAvail * pCurve / vGuard) : 0.0f;
+        float fRr     = p.rollingResistanceCoeff * massTotal * G_MPS2;
         float fBrakeM = brakeM * p.brakeMaxDecel * massTotal;
         float fBrakeA = air    * p.airBrakeMaxDecel * massTotal;
         float taper   = p.dynBrakeVMinMps > 0 ? Math.min(1.0f, v_fs / p.dynBrakeVMinMps) : 1.0f;
         float fBrakeD = dyn * p.dynBrakeMaxDecel * p.locoMassKg * taper;
-
-        // Prototype-physics — × physicsTimeScale to be visible at scale-time wall-clock:
-        float fRr     = p.rollingResistanceCoeff * massTotal * G_MPS2 * p.physicsTimeScale;
 
         // 3. Integrate (no clamp on sign of a — same code path accel & decel)
         float a = (fDrive - fRr - fBrakeM - fBrakeA - fBrakeD) / massTotal;

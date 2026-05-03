@@ -62,9 +62,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
     private final JFormattedTextField airBrakeMaxDecelField;
     private final JFormattedTextField dynBrakeMaxDecelField;
     private final JFormattedTextField dynBrakeVMinField;
-    /** physicsTimeScale field — empty text = "auto" (= JMRI layoutScale at attach);
-     *  numeric value 0.1..1000 = explicit override per plan §1.0 / §2.4.1. */
-    private final JFormattedTextField physicsTimeScaleField;
 
     private final JComboBox<DecoderBrakeMode> decoderBrakeCombo = new JComboBox<>(DecoderBrakeMode.values());
 
@@ -91,7 +88,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         airBrakeMaxDecelField      = makeFractionField(0.1f, 5.0f);
         dynBrakeMaxDecelField      = makeFractionField(0.0f, 2.0f);
         dynBrakeVMinField          = makeFractionField(0.0f, 20.0f);
-        physicsTimeScaleField      = makeFractionField(0.1f, 1000f);
 
         // Bind change listeners for dirty tracking.
         enableCheckbox.addItemListener(e -> { if (!populating) markDirty(); refreshEnableState(); });
@@ -131,7 +127,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         attachDirtyOnEdits(airBrakeMaxDecelField);
         attachDirtyOnEdits(dynBrakeMaxDecelField);
         attachDirtyOnEdits(dynBrakeVMinField);
-        attachDirtyOnEdits(physicsTimeScaleField);
 
         JScrollPane scroll = new JScrollPane(buildBody());
         scroll.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -170,8 +165,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
             !commitField(brakeMaxDecelField, "Mechanical brake max decel", false) ||
             !commitField(airBrakeMaxDecelField, "Air brake max decel", false) ||
             !commitField(dynBrakeMaxDecelField, "Dynamic brake max decel", false) ||
-            !commitField(dynBrakeVMinField, "Dynamic brake taper threshold", false) ||
-            !commitField(physicsTimeScaleField, "Physics time scale", true)) {
+            !commitField(dynBrakeVMinField, "Dynamic brake taper threshold", false)) {
             return false;
         }
 
@@ -204,9 +198,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         working.airBrakeMaxDecel = floatOf(airBrakeMaxDecelField, SemiRealisticSettings.DEFAULT_AIR_BRAKE_MAX_DECEL);
         working.dynBrakeMaxDecel = floatOf(dynBrakeMaxDecelField, SemiRealisticSettings.DEFAULT_DYN_BRAKE_MAX_DECEL);
         working.dynBrakeVMinMph  = floatOf(dynBrakeVMinField, SemiRealisticSettings.DEFAULT_DYN_BRAKE_V_MIN_MPH);
-        // physicsTimeScale: empty/blank = "auto" (= null Float); numeric = explicit
-        // override per §2.4.1. parseAutoFloat handles the empty-text → null path.
-        working.physicsTimeScale = parseAutoFloat(physicsTimeScaleField, 1f);
 
         DecoderBrakeMode mode = (DecoderBrakeMode) decoderBrakeCombo.getSelectedItem();
         // ESU is not yet wired; force NONE in stage 2 even if the dropdown
@@ -253,12 +244,11 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         addLabeled(body, gc, "Loco tractive effort (kN):", locoTractiveEffortKnField);
         addLabeled(body, gc, "Additional consist mass (t):", additionalWeightField);
         addLabeled(body, gc, "Driver power (%):", driverPowerField);
-        addLabeled(body, gc, "Mechanical brake max decel (m/s\u00b2 wall-clock):", brakeMaxDecelField);
-        addLabeled(body, gc, "Air brake max decel (m/s\u00b2 wall-clock):", airBrakeMaxDecelField);
-        addLabeled(body, gc, "Dynamic brake max decel (m/s\u00b2 wall-clock):", dynBrakeMaxDecelField);
-        addLabeled(body, gc, "Dynamic brake taper threshold (mph prototype):", dynBrakeVMinField);
-        addLabeled(body, gc, "Rolling resistance coefficient (c_rr):", rollingResistanceField);
-        addLabeled(body, gc, "Physics time scale (blank = auto = layout scale):", physicsTimeScaleField);
+        addLabeled(body, gc, "Rolling resistance coefficient:", rollingResistanceField);
+        addLabeled(body, gc, "Mechanical brake max decel (m/s\u00b2):", brakeMaxDecelField);
+        addLabeled(body, gc, "Air brake max decel (m/s\u00b2):", airBrakeMaxDecelField);
+        addLabeled(body, gc, "Dynamic brake max decel (m/s\u00b2):", dynBrakeMaxDecelField);
+        addLabeled(body, gc, "Dynamic brake taper threshold (mph):", dynBrakeVMinField);
         addLabeled(body, gc, "Decoder brake mode:", decoderBrakeCombo);
 
         // Filler so the grid stays top-aligned in a tall window.
@@ -379,15 +369,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
             airBrakeMaxDecelField.setValue((double) working.airBrakeMaxDecel);
             dynBrakeMaxDecelField.setValue((double) working.dynBrakeMaxDecel);
             dynBrakeVMinField.setValue((double) working.dynBrakeVMinMph);
-            // physicsTimeScale: null means "auto" — show empty text so the
-            // operator sees the auto state. A numeric override displays as
-            // the explicit value.
-            if (working.physicsTimeScale == null) {
-                physicsTimeScaleField.setValue(null);
-                physicsTimeScaleField.setText("");
-            } else {
-                physicsTimeScaleField.setValue((double) working.physicsTimeScale.floatValue());
-            }
             decoderBrakeCombo.setSelectedItem(working.decoderBrakeMode);
         } finally {
             populating = false;
@@ -426,7 +407,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         airBrakeMaxDecelField.setEnabled(enabled);
         dynBrakeMaxDecelField.setEnabled(enabled);
         dynBrakeVMinField.setEnabled(enabled);
-        physicsTimeScaleField.setEnabled(enabled);
         decoderBrakeCombo.setEnabled(enabled);
     }
 }
