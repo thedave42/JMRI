@@ -176,13 +176,21 @@ public final class RailDriverSettingsFrame extends JmriJFrame {
         RailDriverCalibration working = new RailDriverCalibration();
 
         // Order matters per the plan §2.4: Settings tab first, Calibration
-        // tab second. If either fails, auto-select that tab and bail.
+        // tab second. If either fails, auto-select that tab, surface the
+        // failure on the status line so the user understands what
+        // happened, log it for the messages.log, and bail.
         if (!settingsTab.validateAndApplyTo(working)) {
             tabs.setSelectedComponent(settingsTab);
+            String msg = "Save failed: a Settings field is invalid or out of range.";
+            showStatus(msg);
+            log.warn(msg);
             return;
         }
         if (!calibrationTab.validateAndApplyTo(working)) {
             tabs.setSelectedComponent(calibrationTab);
+            String msg = "Save failed: a Calibration field is invalid.";
+            showStatus(msg);
+            log.warn(msg);
             return;
         }
 
