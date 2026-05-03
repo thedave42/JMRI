@@ -9,7 +9,6 @@ import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.List;
 
-import javax.annotation.Nonnull;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -29,17 +28,17 @@ import jmri.util.usb.SemiRealisticSettings.DecoderBrakeMode;
 
 /**
  * Settings tab content for the unified RailDriver settings window. Exposes
- * the semi-realistic-throttle physics fields described in
+ * the wall-clock-only feel-tuning fields described in
  * {@code docs/rpi-raildriver/semi-realistic-throttle-plan.md} §2.4 and the
  * scenario-driven defaults from §2.4.1.
  * <p>
- * Validation ranges (§6 resolved decisions):
+ * Validation ranges (§6 resolved decisions, wall-clock-only model):
  * <ul>
- *   <li>Loco mass 1–500 t; loco power 1–10 000 kW; loco TE 1–2000 kN.</li>
- *   <li>Additional consist mass 0–50 000 t; driver power 0–100 %.</li>
- *   <li>Rolling resistance 0.0001–0.05.</li>
- *   <li>Mechanical / air brake max decel 0.1–5.0 m/s².</li>
- *   <li>Dyn brake max decel 0.0–2.0 m/s²; dyn brake taper 0–20 mph.</li>
+ *   <li>maxAccelAtRest 0.1–10.0 m/s²; vCorner 1.0–100.0 m/s.</li>
+ *   <li>driver power 0–100 %; designTopSpeed 1.0–100.0 m/s.</li>
+ *   <li>resistStatic 0.0–10.0 m/s²; resistLinear 0.0–1.0 1/s; resistQuadratic 0.0–0.1 1/m.</li>
+ *   <li>mechanical / air brake 0.1–20.0 m/s²; dyn brake 0.0–10.0 m/s².</li>
+ *   <li>dynBrakeMassFraction 0.0–1.0; dyn brake taper 0–20 mph.</li>
  * </ul>
  * Stage 2 only enables {@code Decoder-brake mode = None}; the {@code ESU}
  * option is greyed out until stage 6 wires the decoder-brake passthrough.
@@ -51,16 +50,23 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
     private final JCheckBox enableCheckbox = new JCheckBox("Enable semi-realistic mode");
     private final JComboBox<LoadScenario> scenarioCombo = new JComboBox<>(LoadScenario.values());
 
-    private final JFormattedTextField locoMassTonnesField;
-    private final JFormattedTextField locoPowerKwField;
-    private final JFormattedTextField locoTractiveEffortKnField;
-    private final JFormattedTextField additionalWeightField;
+    // Drive coefficients
+    private final JFormattedTextField maxAccelAtRestField;
+    private final JFormattedTextField vCornerField;
     private final JFormattedTextField driverPowerField;
-    private final JFormattedTextField rollingResistanceField;
+    private final JFormattedTextField designTopSpeedField;
+    private final JCheckBox steamCheckbox = new JCheckBox("Steam locomotive (a_drive \u00d7 (v/vTop)^0.85)");
 
+    // Davis-shape coast resistance
+    private final JFormattedTextField resistStaticField;
+    private final JFormattedTextField resistLinearField;
+    private final JFormattedTextField resistQuadField;
+
+    // Brakes
     private final JFormattedTextField brakeMaxDecelField;
     private final JFormattedTextField airBrakeMaxDecelField;
     private final JFormattedTextField dynBrakeMaxDecelField;
+    private final JFormattedTextField dynBrakeMassFractionField;
     private final JFormattedTextField dynBrakeVMinField;
 
     private final JComboBox<DecoderBrakeMode> decoderBrakeCombo = new JComboBox<>(DecoderBrakeMode.values());
@@ -73,27 +79,39 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        // Working starts at defaults so a user opening the dialog before
-        // stage-1 has loaded any persisted settings still sees sensible
-        // values.
+        // Working starts at Light-engine defaults so a user opening the
+        // dialog before stage-1 has loaded any persisted settings still
+        // sees sensible values.
         working.resetToDefaults();
 
-        locoMassTonnesField        = makeFractionField(1f, 500f);
-        locoPowerKwField           = makeFractionField(1f, 10_000f);
-        locoTractiveEffortKnField  = makeFractionField(1f, 2_000f);
-        additionalWeightField      = makeFractionField(0f, 50_000f);
-        driverPowerField           = makeFractionField(0f, 100f);
-        rollingResistanceField     = makeFractionField(0.0001f, 0.05f);
-        brakeMaxDecelField         = makeFractionField(0.1f, 5.0f);
-        airBrakeMaxDecelField      = makeFractionField(0.1f, 5.0f);
-        dynBrakeMaxDecelField      = makeFractionField(0.0f, 2.0f);
-        dynBrakeVMinField          = makeFractionField(0.0f, 20.0f);
+        maxAccelAtRestField     = makeFractionField(0.1f, 10.0f);
+        vCornerField            = makeFractionField(1.0f, 100.0f);
+        driverPowerField        = makeFractionField(0f, 100f);
+        designTopSpeedField     = makeFractionField(1.0f, 100.0f);
+        resistStaticField       = makeFractionField(0.0f, 10.0f);
+        resistLinearField       = makeFractionField(0.0f, 1.0f);
+        resistQuadField         = makeFractionField(0.0f, 0.1f);
+        brakeMaxDecelField      = makeFractionField(0.1f, 20.0f);
+        airBrakeMaxDecelField   = makeFractionField(0.1f, 20.0f);
+        dynBrakeMaxDecelField   = makeFractionField(0.0f, 10.0f);
+        dynBrakeMassFractionField = makeFractionField(0.0f, 1.0f);
+        dynBrakeVMinField       = makeFractionField(0.0f, 20.0f);
 
         // Bind change listeners for dirty tracking.
         enableCheckbox.addItemListener(e -> { if (!populating) markDirty(); refreshEnableState(); });
+        steamCheckbox.addItemListener(e -> { if (!populating) markDirty(); });
         scenarioCombo.addItemListener(e -> {
             if (e.getStateChange() == ItemEvent.SELECTED) {
-                if (!populating) markDirty();
+                if (!populating) {
+                    // Snap all per-coefficient fields to the new scenario's
+                    // defaults so the operator sees the preset's values.
+                    LoadScenario sel = (LoadScenario) scenarioCombo.getSelectedItem();
+                    if (sel != null) {
+                        working.applyScenarioDefaults(sel);
+                        renderToFields();
+                    }
+                    markDirty();
+                }
                 refreshEnableState();
             }
         });
@@ -102,7 +120,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
                 if (!populating) markDirty();
             }
         });
-        // ESU option: present in dropdown but disabled in stage 2 — wired in stage 6.
         decoderBrakeCombo.setRenderer(new javax.swing.DefaultListCellRenderer() {
             @Override
             public java.awt.Component getListCellRendererComponent(
@@ -117,15 +134,17 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
             }
         });
 
-        attachDirtyOnEdits(locoMassTonnesField);
-        attachDirtyOnEdits(locoPowerKwField);
-        attachDirtyOnEdits(locoTractiveEffortKnField);
-        attachDirtyOnEdits(additionalWeightField);
+        attachDirtyOnEdits(maxAccelAtRestField);
+        attachDirtyOnEdits(vCornerField);
         attachDirtyOnEdits(driverPowerField);
-        attachDirtyOnEdits(rollingResistanceField);
+        attachDirtyOnEdits(designTopSpeedField);
+        attachDirtyOnEdits(resistStaticField);
+        attachDirtyOnEdits(resistLinearField);
+        attachDirtyOnEdits(resistQuadField);
         attachDirtyOnEdits(brakeMaxDecelField);
         attachDirtyOnEdits(airBrakeMaxDecelField);
         attachDirtyOnEdits(dynBrakeMaxDecelField);
+        attachDirtyOnEdits(dynBrakeMassFractionField);
         attachDirtyOnEdits(dynBrakeVMinField);
 
         JScrollPane scroll = new JScrollPane(buildBody());
@@ -151,21 +170,18 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
 
     @Override
     public boolean validateAndApplyTo(RailDriverCalibration target) {
-        // Range validation comes for free from JFormattedTextField's
-        // NumberFormatter; if a field's value is null after parsing it
-        // means the user typed something out of range or non-numeric.
-        // The three "auto" fields (loco mass / power / TE) accept empty
-        // text → null (= auto), so they get the nullable code path.
-        if (!commitField(locoMassTonnesField, "Loco mass", true) ||
-            !commitField(locoPowerKwField, "Loco power", true) ||
-            !commitField(locoTractiveEffortKnField, "Loco tractive effort", true) ||
-            !commitField(additionalWeightField, "Additional consist mass", false) ||
-            !commitField(driverPowerField, "Driver power", false) ||
-            !commitField(rollingResistanceField, "Rolling resistance", false) ||
-            !commitField(brakeMaxDecelField, "Mechanical brake max decel", false) ||
-            !commitField(airBrakeMaxDecelField, "Air brake max decel", false) ||
-            !commitField(dynBrakeMaxDecelField, "Dynamic brake max decel", false) ||
-            !commitField(dynBrakeVMinField, "Dynamic brake taper threshold", false)) {
+        if (!commitField(maxAccelAtRestField, "Max accel at rest") ||
+            !commitField(vCornerField, "Power fall-off corner speed") ||
+            !commitField(driverPowerField, "Driver power") ||
+            !commitField(designTopSpeedField, "Design top speed") ||
+            !commitField(resistStaticField, "Static rolling resistance") ||
+            !commitField(resistLinearField, "Linear mechanical resistance") ||
+            !commitField(resistQuadField, "Aerodynamic drag") ||
+            !commitField(brakeMaxDecelField, "Mechanical brake max decel") ||
+            !commitField(airBrakeMaxDecelField, "Air brake max decel") ||
+            !commitField(dynBrakeMaxDecelField, "Dynamic brake max decel") ||
+            !commitField(dynBrakeMassFractionField, "Dynamic brake mass fraction") ||
+            !commitField(dynBrakeVMinField, "Dynamic brake taper threshold")) {
             return false;
         }
 
@@ -173,35 +189,29 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         working.persistedEnabled = enableCheckbox.isSelected();
         // After Save, liveEnabled := persistedEnabled per §2.3.
         working.liveEnabled = working.persistedEnabled;
-        working.scenario = (LoadScenario) scenarioCombo.getSelectedItem();
+        LoadScenario sel = (LoadScenario) scenarioCombo.getSelectedItem();
+        working.scenario = sel != null ? sel : LoadScenario.LIGHT_ENGINE;
+        working.steam    = steamCheckbox.isSelected();
 
-        // Loco mass / power / TE: per §2.4.1 precedence the operator-typed
-        // override only takes effect in the CUSTOM scenario. In non-Custom
-        // scenarios the loco-physics rows are read-only "auto" displays of
-        // the scenario default; persist them as null so the engine resolves
-        // them via the scenario fallback at runtime (otherwise switching
-        // scenarios later would incorrectly carry the previous scenario's
-        // displayed value as a sticky override).
-        if (working.scenario == LoadScenario.CUSTOM) {
-            working.locoMassKg          = parseAutoFloat(locoMassTonnesField, 1000f);
-            working.locoPowerKw         = parseAutoFloat(locoPowerKwField, 1f);
-            working.locoTractiveEffortKn = parseAutoFloat(locoTractiveEffortKnField, 1f);
-        } else {
-            working.locoMassKg          = null;
-            working.locoPowerKw         = null;
-            working.locoTractiveEffortKn = null;
-        }
-        working.additionalWeightTonnes = floatOf(additionalWeightField, SemiRealisticSettings.DEFAULT_ADDITIONAL_TONNES);
-        working.driverPowerPercent     = floatOf(driverPowerField, SemiRealisticSettings.DEFAULT_DRIVER_POWER_PCT);
-        working.rollingResistanceCoeff = floatOf(rollingResistanceField, SemiRealisticSettings.DEFAULT_ROLLING_RESISTANCE);
-        working.brakeMaxDecel    = floatOf(brakeMaxDecelField, SemiRealisticSettings.DEFAULT_BRAKE_MAX_DECEL);
-        working.airBrakeMaxDecel = floatOf(airBrakeMaxDecelField, SemiRealisticSettings.DEFAULT_AIR_BRAKE_MAX_DECEL);
-        working.dynBrakeMaxDecel = floatOf(dynBrakeMaxDecelField, SemiRealisticSettings.DEFAULT_DYN_BRAKE_MAX_DECEL);
-        working.dynBrakeVMinMph  = floatOf(dynBrakeVMinField, SemiRealisticSettings.DEFAULT_DYN_BRAKE_V_MIN_MPH);
+        // All per-coefficient fields are committed to working regardless of
+        // scenario. In non-Custom scenarios the fields are read-only on the
+        // UI, so they always reflect the scenario's preset values; in
+        // Custom they reflect the operator's edits. Either way the persisted
+        // values are what the engine reads at runtime.
+        working.maxAccelAtRestMs2    = floatOf(maxAccelAtRestField, sel != null ? sel.maxAccelAtRestMs2() : 2.5f);
+        working.vCornerMps           = floatOf(vCornerField,        sel != null ? sel.vCornerMps()        : 35.76f);
+        working.driverPowerPercent   = floatOf(driverPowerField,    sel != null ? sel.driverPowerPct()*100f : 100f);
+        working.designTopSpeedMps    = floatOf(designTopSpeedField, sel != null ? sel.designTopSpeedMps() : 35.76f);
+        working.resistStaticMs2      = floatOf(resistStaticField,   sel != null ? sel.resistStaticMs2()   : 1.0f);
+        working.resistLinearPerSec   = floatOf(resistLinearField,   sel != null ? sel.resistLinearPerSec(): 0.0f);
+        working.resistQuadPerMeter   = floatOf(resistQuadField,     sel != null ? sel.resistQuadPerMeter(): 0.001f);
+        working.brakeMaxDecelMs2     = floatOf(brakeMaxDecelField,  sel != null ? sel.brakeMaxDecelMs2()  : 4.0f);
+        working.airBrakeMaxDecelMs2  = floatOf(airBrakeMaxDecelField, sel != null ? sel.airBrakeMaxDecelMs2() : 6.0f);
+        working.dynBrakeMaxDecelMs2  = floatOf(dynBrakeMaxDecelField, sel != null ? sel.dynBrakeMaxDecelMs2() : 1.6f);
+        working.dynBrakeMassFraction = floatOf(dynBrakeMassFractionField, sel != null ? sel.dynBrakeMassFraction() : 1.0f);
+        working.dynBrakeVMinMph      = floatOf(dynBrakeVMinField, SemiRealisticSettings.DEFAULT_DYN_BRAKE_V_MIN_MPH);
 
         DecoderBrakeMode mode = (DecoderBrakeMode) decoderBrakeCombo.getSelectedItem();
-        // ESU is not yet wired; force NONE in stage 2 even if the dropdown
-        // somehow surfaces ESU.
         working.decoderBrakeMode = (mode == null || mode == DecoderBrakeMode.ESU)
                 ? DecoderBrakeMode.NONE : mode;
 
@@ -238,17 +248,31 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         gc.gridwidth = 1;
         gc.gridy++;
 
+        addSectionLabel(body, gc, "Loco scenario");
         addLabeled(body, gc, "Scenario:", scenarioCombo);
-        addLabeled(body, gc, "Loco mass (t):", locoMassTonnesField);
-        addLabeled(body, gc, "Loco power (kW):", locoPowerKwField);
-        addLabeled(body, gc, "Loco tractive effort (kN):", locoTractiveEffortKnField);
-        addLabeled(body, gc, "Additional consist mass (t):", additionalWeightField);
+
+        addSectionLabel(body, gc, "Drive coefficients (wall-clock m/s\u00b2 and m/s)");
+        addLabeled(body, gc, "Max accel at rest (m/s\u00b2):", maxAccelAtRestField);
+        addLabeled(body, gc, "Power fall-off corner speed (m/s):", vCornerField);
         addLabeled(body, gc, "Driver power (%):", driverPowerField);
-        addLabeled(body, gc, "Rolling resistance coefficient:", rollingResistanceField);
+        addLabeled(body, gc, "Design top speed (m/s):", designTopSpeedField);
+        gc.gridx = 0; gc.gridwidth = 2;
+        body.add(steamCheckbox, gc);
+        gc.gridwidth = 1; gc.gridy++;
+
+        addSectionLabel(body, gc, "Coast resistance (Davis-shape, wall-clock units)");
+        addLabeled(body, gc, "Static rolling resistance (m/s\u00b2):", resistStaticField);
+        addLabeled(body, gc, "Linear mechanical resistance (1/s):", resistLinearField);
+        addLabeled(body, gc, "Aerodynamic drag (1/m):", resistQuadField);
+
+        addSectionLabel(body, gc, "Brakes (wall-clock m/s\u00b2)");
         addLabeled(body, gc, "Mechanical brake max decel (m/s\u00b2):", brakeMaxDecelField);
         addLabeled(body, gc, "Air brake max decel (m/s\u00b2):", airBrakeMaxDecelField);
         addLabeled(body, gc, "Dynamic brake max decel (m/s\u00b2):", dynBrakeMaxDecelField);
+        addLabeled(body, gc, "Dynamic brake mass fraction (0\u20131):", dynBrakeMassFractionField);
         addLabeled(body, gc, "Dynamic brake taper threshold (mph):", dynBrakeVMinField);
+
+        addSectionLabel(body, gc, "Decoder integration");
         addLabeled(body, gc, "Decoder brake mode:", decoderBrakeCombo);
 
         // Filler so the grid stays top-aligned in a tall window.
@@ -257,12 +281,13 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         return body;
     }
 
-    private void addLabeled(JPanel body, GridBagConstraints gc, String label, JPanel field) {
-        gc.gridx = 0; gc.fill = GridBagConstraints.NONE;
-        body.add(new JLabel(label), gc);
-        gc.gridx = 1; gc.fill = GridBagConstraints.HORIZONTAL;
-        body.add(field, gc);
-        gc.gridy++;
+    private void addSectionLabel(JPanel body, GridBagConstraints gc, String text) {
+        gc.gridx = 0; gc.gridwidth = 2; gc.fill = GridBagConstraints.HORIZONTAL;
+        JLabel l = new JLabel(text);
+        l.setFont(l.getFont().deriveFont(java.awt.Font.BOLD));
+        l.setBorder(BorderFactory.createEmptyBorder(8, 0, 2, 0));
+        body.add(l, gc);
+        gc.gridwidth = 1; gc.gridy++;
     }
 
     private void addLabeled(JPanel body, GridBagConstraints gc, String label, java.awt.Component field) {
@@ -283,7 +308,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         formatter.setValueClass(Double.class);
         formatter.setMinimum((double) min);
         formatter.setMaximum((double) max);
-        formatter.setAllowsInvalid(true); // allow transient invalid input; we validate on commit
+        formatter.setAllowsInvalid(true);
         formatter.setCommitsOnValidEdit(false);
         JFormattedTextField f = new JFormattedTextField(formatter);
         f.setColumns(10);
@@ -298,17 +323,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         });
     }
 
-    /** Commit the field's edited text and verify the result is in range.
-     *  When {@code nullable} is true, an empty text body is accepted (it
-     *  means "auto" for the loco-physics override fields). On failure,
-     *  request focus on the offending field. */
-    private boolean commitField(JFormattedTextField f, String description, boolean nullable) {
-        if (nullable) {
-            String text = f.getText();
-            if (text == null || text.trim().isEmpty()) {
-                return true;
-            }
-        }
+    private boolean commitField(JFormattedTextField f, String description) {
         try {
             f.commitEdit();
         } catch (java.text.ParseException ex) {
@@ -331,43 +346,23 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         return fallback;
     }
 
-    /**
-     * Parse an "auto" sentinel-aware field. When the user has cleared the
-     * field text we persist {@code null} (= auto). When they typed a
-     * number we persist that number multiplied by {@code unitScale}
-     * (e.g. tonnes → kg for the mass row, 1.0 for kW / kN rows that need
-     * no unit conversion).
-     */
-    private static @javax.annotation.CheckForNull Float parseAutoFloat(JFormattedTextField f, float unitScale) {
-        String text = f.getText();
-        if (text == null || text.trim().isEmpty()) {
-            return null;
-        }
-        Object v = f.getValue();
-        if (v instanceof Number) {
-            return ((Number) v).floatValue() * unitScale;
-        }
-        return null;
-    }
-
     private void renderToFields() {
         populating = true;
         try {
             enableCheckbox.setSelected(working.persistedEnabled);
             scenarioCombo.setSelectedItem(working.scenario);
-            // Scenario defaults are in persisted units (kg / W / N); the
-            // override scale converts them to user units (t / kW / kN) so
-            // they fit the field's formatter range. The override branch
-            // applies the same scale to the override value.
-            renderAutoField(locoMassTonnesField, working.locoMassKg, working.scenario.defaultLocoMassKg() * 0.001f, 0.001f);
-            renderAutoField(locoPowerKwField, working.locoPowerKw, working.scenario.defaultLocoPowerW() / 1000f, 1f);
-            renderAutoField(locoTractiveEffortKnField, working.locoTractiveEffortKn, working.scenario.defaultLocoTractiveEffortN() / 1000f, 1f);
-            additionalWeightField.setValue((double) working.additionalWeightTonnes);
+            steamCheckbox.setSelected(working.steam);
+            maxAccelAtRestField.setValue((double) working.maxAccelAtRestMs2);
+            vCornerField.setValue((double) working.vCornerMps);
             driverPowerField.setValue((double) working.driverPowerPercent);
-            rollingResistanceField.setValue((double) working.rollingResistanceCoeff);
-            brakeMaxDecelField.setValue((double) working.brakeMaxDecel);
-            airBrakeMaxDecelField.setValue((double) working.airBrakeMaxDecel);
-            dynBrakeMaxDecelField.setValue((double) working.dynBrakeMaxDecel);
+            designTopSpeedField.setValue((double) working.designTopSpeedMps);
+            resistStaticField.setValue((double) working.resistStaticMs2);
+            resistLinearField.setValue((double) working.resistLinearPerSec);
+            resistQuadField.setValue((double) working.resistQuadPerMeter);
+            brakeMaxDecelField.setValue((double) working.brakeMaxDecelMs2);
+            airBrakeMaxDecelField.setValue((double) working.airBrakeMaxDecelMs2);
+            dynBrakeMaxDecelField.setValue((double) working.dynBrakeMaxDecelMs2);
+            dynBrakeMassFractionField.setValue((double) working.dynBrakeMassFraction);
             dynBrakeVMinField.setValue((double) working.dynBrakeVMinMph);
             decoderBrakeCombo.setSelectedItem(working.decoderBrakeMode);
         } finally {
@@ -375,38 +370,28 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         }
     }
 
-    /** "auto" override fields show the resolved scenario default when null
-     *  (rendered in user-facing units) and the explicit override otherwise.
-     *  {@code overrideUnitScale} converts the persisted-unit override into
-     *  the user-facing display unit (e.g. 0.001 for kg→t). */
-    private static void renderAutoField(JFormattedTextField f,
-                                        @javax.annotation.CheckForNull Float override,
-                                        float scenarioDefaultUserUnit,
-                                        float overrideUnitScale) {
-        if (override == null) {
-            f.setValue((double) scenarioDefaultUserUnit);
-        } else {
-            f.setValue((double) (override.floatValue() * overrideUnitScale));
-        }
-    }
-
     /** Field enable/disable rules per §2.4: when the master checkbox is
-     *  off, all rows are disabled; otherwise, loco-physics rows are
-     *  editable only when scenario = Custom. */
+     *  off, all rows are disabled; otherwise, per-coefficient rows are
+     *  editable only when scenario = Custom. The scenario picker itself is
+     *  always editable (so the operator can switch presets). */
     private void refreshEnableState() {
         boolean enabled = enableCheckbox.isSelected();
         boolean isCustom = scenarioCombo.getSelectedItem() == LoadScenario.CUSTOM;
         scenarioCombo.setEnabled(enabled);
-        locoMassTonnesField.setEnabled(enabled && isCustom);
-        locoPowerKwField.setEnabled(enabled && isCustom);
-        locoTractiveEffortKnField.setEnabled(enabled && isCustom);
-        additionalWeightField.setEnabled(enabled);
-        driverPowerField.setEnabled(enabled);
-        rollingResistanceField.setEnabled(enabled);
-        brakeMaxDecelField.setEnabled(enabled);
-        airBrakeMaxDecelField.setEnabled(enabled);
-        dynBrakeMaxDecelField.setEnabled(enabled);
-        dynBrakeVMinField.setEnabled(enabled);
+        boolean tunable = enabled && isCustom;
+        maxAccelAtRestField.setEnabled(tunable);
+        vCornerField.setEnabled(tunable);
+        driverPowerField.setEnabled(tunable);
+        designTopSpeedField.setEnabled(tunable);
+        steamCheckbox.setEnabled(tunable);
+        resistStaticField.setEnabled(tunable);
+        resistLinearField.setEnabled(tunable);
+        resistQuadField.setEnabled(tunable);
+        brakeMaxDecelField.setEnabled(tunable);
+        airBrakeMaxDecelField.setEnabled(tunable);
+        dynBrakeMaxDecelField.setEnabled(tunable);
+        dynBrakeMassFractionField.setEnabled(tunable);
+        dynBrakeVMinField.setEnabled(tunable);
         decoderBrakeCombo.setEnabled(enabled);
     }
 }

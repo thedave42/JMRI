@@ -23,8 +23,9 @@ import org.slf4j.LoggerFactory;
  * <p>
  * Owns one worker thread that runs a 50 ms fixed-rate integration tick. Each
  * tick reads the current input snapshot (volatile fields written by the
- * polling thread), computes a net force from drive / rolling-resistance /
- * brake terms, integrates {@code v_fs} (prototype full-scale velocity in
+ * polling thread), computes net wall-clock acceleration from drive + Davis-shape
+ * resistance + brake terms (all in m/s² space — no mass, no force, no scale
+ * factor per §1.0), integrates {@code v_fs} (prototype full-scale velocity in
  * m/s), quantises to a DCC throttle setting via the loco's
  * {@link RosterSpeedProfile} when available (linear fallback otherwise),
  * and posts the result to the EDT for {@code setSpeedSetting}.
@@ -34,7 +35,7 @@ import org.slf4j.LoggerFactory;
  *   <li>Construct in {@code attachThrottleWindow} after listener wiring.
  *       Engine starts in DETACHED state — no throttle, no tick scheduled.
  *   <li>{@link #attachThrottle} on {@code AddressListener.notifyAddressThrottleFound}:
- *       resolves physics from settings + roster, transitions to
+ *       resolves coefficients from settings + active scenario, transitions to
  *       ATTACHED_DISABLED.
  *   <li>{@link #setLiveEnabled}{@code (true)}: reads current
  *       {@code throttle.getSpeedSetting()} on the EDT, seeds {@code v_fs},
@@ -47,9 +48,9 @@ import org.slf4j.LoggerFactory;
  *   <li>{@link #dispose} on throttle-window close: shuts down the worker
  *       thread.
  * </ol>
- * Stage 2 wires only the throttle-driven {@code F_drive} and the
- * indep-brake-driven {@code F_brake_mech}; the air-brake and dyn-brake
- * input fields exist on this class but stay zero until stages 4 and 5.
+ * Stage 2 wires only the throttle-driven {@code aDrive} and the
+ * indep-brake-driven {@code aBrakeM}; the air-brake and dyn-brake input
+ * fields exist on this class but stay zero until stages 4 and 5.
  * <p>
  * See {@code docs/rpi-raildriver/semi-realistic-throttle-plan.md} §2.1
  * for the engine spec and §2.2 for the threading contract.
@@ -61,12 +62,9 @@ public final class SemiRealisticThrottleEngine {
      *  stages can reach into it. */
     public enum Direction { FORWARD, NEUTRAL, REVERSE }
 
-    /** Linear-fallback minimum velocity guard for the {@code P/v} drive
-     *  computation: at very low speed, raw {@code P/v} can blow up. */
+    /** Linear-fallback minimum velocity guard for the {@code vCorner/v}
+     *  drive computation: at very low speed, raw division can blow up. */
     private static final float V_GUARD_MIN_MPS = 0.01f;
-
-    /** Standard gravity, m/s². */
-    private static final float G_MPS2 = 9.80665f;
 
     /** Conversion: 1 mph = 0.44704 m/s. */
     private static final float MPH_TO_MPS = 0.44704f;
@@ -80,56 +78,66 @@ public final class SemiRealisticThrottleEngine {
     private static final float EPS_VFS = 0.005f;
 
     /**
-     * Immutable snapshot of all physics-tunable parameters resolved from
-     * settings + roster. Published by {@link #rebuildPhysics()} via a
-     * single {@code volatile} reference swap so each tick reads a
+     * Immutable snapshot of all feel-tuning coefficients resolved from the
+     * settings + active scenario. Published by {@link #rebuildPhysicsLocked}
+     * via a single {@code volatile} reference swap so each tick reads a
      * coherent configuration even if the operator edits settings mid-run.
+     * <p>
+     * Every field is in wall-clock m/s² (or 1/s, 1/m, m/s) units per §1.0
+     * — there is no mass, no force, no scale factor anywhere in the
+     * tick body.
      */
     private static final class ResolvedPhysics {
-        final float locoMassKg;
-        final float locoPowerW;
-        final float locoTractiveEffortN;
-        final float additionalMassKg;
-        final float driverPowerPct;          // 0.0..1.0
-        final float rollingResistanceCoeff;
-        final float brakeMaxDecel;            // m/s² @ 100% indep brake
-        final float airBrakeMaxDecel;         // m/s² @ 100% air line
-        final float dynBrakeMaxDecel;         // m/s² @ 100% dyn brake (peak)
-        final float dynBrakeVMinMps;          // speed taper threshold
-        final float vCapMps;                  // POSITIVE_INFINITY when uncapped
-        final float designTopSpeedMps;        // linear-fallback denominator
+        // Drive coefficients
+        final float maxAccelAtRestMs2;
+        final float vCornerMps;
+        final float driverPowerPct;          // 0..1
+        final float designTopSpeedMps;
         final boolean steamPowerCurve;
-        final float layoutScale;              // for layout mm/s ↔ prototype m/s
+        // Davis-shape coast resistance (wall-clock units)
+        final float resistStaticMs2;
+        final float resistLinearPerSec;
+        final float resistQuadPerMeter;
+        // Brake decels (wall-clock m/s²)
+        final float brakeMaxDecelMs2;
+        final float airBrakeMaxDecelMs2;
+        final float dynBrakeMaxDecelMs2;
+        final float dynBrakeMassFraction;    // 0..1 dilution
+        final float dynBrakeVMinMps;         // taper threshold
+        // Speed-cap and profile plumbing
+        final float vCapMps;                 // POSITIVE_INFINITY when uncapped
+        final float layoutScale;             // for layout mm/s ↔ prototype m/s in speed-profile lookup
         final boolean useSpeedProfileForward;
         final boolean useSpeedProfileReverse;
 
-        ResolvedPhysics(float locoMassKg, float locoPowerW, float locoTractiveEffortN,
-                        float additionalMassKg, float driverPowerPct,
-                        float rollingResistanceCoeff,
-                        float brakeMaxDecel, float airBrakeMaxDecel,
-                        float dynBrakeMaxDecel, float dynBrakeVMinMps,
-                        float vCapMps, float designTopSpeedMps,
-                        boolean steamPowerCurve, float layoutScale,
+        ResolvedPhysics(float maxAccelAtRestMs2, float vCornerMps,
+                        float driverPowerPct, float designTopSpeedMps,
+                        boolean steamPowerCurve,
+                        float resistStaticMs2, float resistLinearPerSec,
+                        float resistQuadPerMeter,
+                        float brakeMaxDecelMs2, float airBrakeMaxDecelMs2,
+                        float dynBrakeMaxDecelMs2, float dynBrakeMassFraction,
+                        float dynBrakeVMinMps,
+                        float vCapMps, float layoutScale,
                         boolean useSpeedProfileForward, boolean useSpeedProfileReverse) {
-            this.locoMassKg = locoMassKg;
-            this.locoPowerW = locoPowerW;
-            this.locoTractiveEffortN = locoTractiveEffortN;
-            this.additionalMassKg = additionalMassKg;
-            this.driverPowerPct = driverPowerPct;
-            this.rollingResistanceCoeff = rollingResistanceCoeff;
-            this.brakeMaxDecel = brakeMaxDecel;
-            this.airBrakeMaxDecel = airBrakeMaxDecel;
-            this.dynBrakeMaxDecel = dynBrakeMaxDecel;
-            this.dynBrakeVMinMps = dynBrakeVMinMps;
-            this.vCapMps = vCapMps;
-            this.designTopSpeedMps = designTopSpeedMps;
-            this.steamPowerCurve = steamPowerCurve;
-            this.layoutScale = layoutScale;
+            this.maxAccelAtRestMs2    = maxAccelAtRestMs2;
+            this.vCornerMps           = vCornerMps;
+            this.driverPowerPct       = driverPowerPct;
+            this.designTopSpeedMps    = designTopSpeedMps;
+            this.steamPowerCurve      = steamPowerCurve;
+            this.resistStaticMs2      = resistStaticMs2;
+            this.resistLinearPerSec   = resistLinearPerSec;
+            this.resistQuadPerMeter   = resistQuadPerMeter;
+            this.brakeMaxDecelMs2     = brakeMaxDecelMs2;
+            this.airBrakeMaxDecelMs2  = airBrakeMaxDecelMs2;
+            this.dynBrakeMaxDecelMs2  = dynBrakeMaxDecelMs2;
+            this.dynBrakeMassFraction = dynBrakeMassFraction;
+            this.dynBrakeVMinMps      = dynBrakeVMinMps;
+            this.vCapMps              = vCapMps;
+            this.layoutScale          = layoutScale;
             this.useSpeedProfileForward = useSpeedProfileForward;
             this.useSpeedProfileReverse = useSpeedProfileReverse;
         }
-
-        float totalMass() { return locoMassKg + additionalMassKg; }
     }
 
     private final ScheduledExecutorService scheduler =
@@ -355,39 +363,18 @@ public final class SemiRealisticThrottleEngine {
         }
         LoadScenario scenario = s.scenario != null ? s.scenario : LoadScenario.LIGHT_ENGINE;
 
-        // Resolve loco physics per §2.4.1 precedence: Custom override → roster → scenario default.
-        float locoMassKg = resolveLocoFloat(s.locoMassKg, scenario.defaultLocoMassKg(),
-                rosterEntry == null ? 0f : rosterEntry.getPhysicsWeightKg(),
-                scenario == LoadScenario.CUSTOM);
-        float locoPowerW = resolveLocoFloat(
-                s.locoPowerKw == null ? null : s.locoPowerKw * 1000f,
-                scenario.defaultLocoPowerW(),
-                rosterEntry == null ? 0f : rosterEntry.getPhysicsPowerKw() * 1000f,
-                scenario == LoadScenario.CUSTOM);
-        float locoTractiveEffortN = resolveLocoFloat(
-                s.locoTractiveEffortKn == null ? null : s.locoTractiveEffortKn * 1000f,
-                scenario.defaultLocoTractiveEffortN(),
-                rosterEntry == null ? 0f : rosterEntry.getPhysicsTractiveEffortKn() * 1000f,
-                scenario == LoadScenario.CUSTOM);
-
-        // Roster max speed → vCap, only when populated.
+        // Roster max speed → vCap, only when populated. The roster
+        // getPhysicsMaxSpeedKmh() value is wall-clock-felt (a "this loco
+        // never goes faster than X" cap), so we honour it directly. Other
+        // roster physics fields (weight / power / TE) are NOT consulted —
+        // the wall-clock-only model has no use for prototype values.
         float vCapMps = Float.POSITIVE_INFINITY;
         if (rosterEntry != null && rosterEntry.getPhysicsMaxSpeedKmh() > 0f) {
             vCapMps = rosterEntry.getPhysicsMaxSpeedKmh() / 3.6f;
         }
 
-        float additionalMassKg = scenario == LoadScenario.CUSTOM
-                ? s.additionalWeightTonnes * 1000f
-                // Scenario non-Custom: blend scenario default with operator additional-mass tweak.
-                // Per §2.4 the operator can tune additional mass for one-off heavy/light trains
-                // without changing scenario, so the persisted value overrides the scenario default
-                // when it differs from the scenario's table value.
-                : (s.additionalWeightTonnes != SemiRealisticSettings.DEFAULT_ADDITIONAL_TONNES
-                        ? s.additionalWeightTonnes * 1000f
-                        : scenario.defaultAdditionalMassKg());
-
-        float driverPowerPct = (s.driverPowerPercent / 100f);
-
+        // Layout scale used only for speed-profile mm/s ↔ m/s conversion;
+        // does NOT enter the physics math.
         float layoutScale;
         try {
             layoutScale = InstanceManager.getDefault(SignalSpeedMap.class).getLayoutScale();
@@ -403,32 +390,21 @@ public final class SemiRealisticThrottleEngine {
             useSpRev = speedProfile.hasReverseSpeeds();
         }
 
-        this.physics = new ResolvedPhysics(
-                locoMassKg, locoPowerW, locoTractiveEffortN,
-                additionalMassKg, driverPowerPct,
-                s.rollingResistanceCoeff,
-                s.brakeMaxDecel, s.airBrakeMaxDecel,
-                s.dynBrakeMaxDecel, s.dynBrakeVMinMph * MPH_TO_MPS,
-                vCapMps, scenario.designTopSpeedMps(),
-                scenario.steamPowerCurve(), layoutScale,
-                useSpFwd, useSpRev);
-    }
+        // designTopSpeedMps comes from the persisted settings (default =
+        // active scenario's value); allows operator override per scenario
+        // without leaving Custom mode.
+        float designTop = s.designTopSpeedMps > 0f ? s.designTopSpeedMps : scenario.designTopSpeedMps();
 
-    /** Resolve the precedence "Custom override > roster > scenario default"
-     *  per §2.4.1. The Custom override only applies when the active scenario
-     *  IS Custom (the override values are persisted across scenario switches
-     *  but only consulted when Custom is active). */
-    private static float resolveLocoFloat(@CheckForNull Float customOverride,
-                                          float scenarioDefault,
-                                          float rosterValue,
-                                          boolean scenarioIsCustom) {
-        if (scenarioIsCustom && customOverride != null) {
-            return customOverride;
-        }
-        if (rosterValue > 0f) {
-            return rosterValue;
-        }
-        return scenarioDefault;
+        this.physics = new ResolvedPhysics(
+                s.maxAccelAtRestMs2, s.vCornerMps,
+                s.driverPowerPercent / 100f, designTop,
+                s.steam,
+                s.resistStaticMs2, s.resistLinearPerSec, s.resistQuadPerMeter,
+                s.brakeMaxDecelMs2, s.airBrakeMaxDecelMs2,
+                s.dynBrakeMaxDecelMs2, s.dynBrakeMassFraction,
+                s.dynBrakeVMinMph * MPH_TO_MPS,
+                vCapMps, layoutScale,
+                useSpFwd, useSpRev);
     }
 
     /**
@@ -469,34 +445,43 @@ public final class SemiRealisticThrottleEngine {
         // Stage 4–5: airLineFraction / dynBrakeFraction are zero until those
         // stages wire the polling-thread setters; the integration body
         // includes them as zero-valued summands so the same code path
-        // handles every stage's force composition.
+        // handles every stage's term composition.
         float air = bailoffPressed ? 0.0f : airLineFraction;
         float dyn = dynBrakeFraction;
 
         boolean drive = (lever > 0f) && (v_fs >= 0f);
 
-        // 2. Compute forces
-        float massTotal = p.totalMass();
-        if (massTotal <= 0f) return; // pathological config; nothing to do
-        float pAvail  = p.locoPowerW * p.driverPowerPct;
-        float teAvail = p.locoTractiveEffortN * p.driverPowerPct;
+        // 2. Compute wall-clock decel/accel — pure m/s² arithmetic, no
+        //    mass, no force, no scale factor (§1.0).
         float vGuard  = Math.max(V_GUARD_MIN_MPS, v_fs);
-        float pCurve = p.steamPowerCurve ? (float) Math.pow(vGuard / Math.max(0.01f, p.designTopSpeedMps), 0.85f) : 1.0f;
+        // Drive: constant maxAccelAtRest below vCorner, falls 1/v above
+        // (mimics the constant-power physics shape but in wall-clock units).
+        float aDriveMax = (v_fs < p.vCornerMps)
+                ? p.maxAccelAtRestMs2
+                : p.maxAccelAtRestMs2 * (p.vCornerMps / vGuard);
+        float steamMul = p.steamPowerCurve
+                ? (float) Math.pow(vGuard / Math.max(0.01f, p.designTopSpeedMps), 0.85f)
+                : 1.0f;
+        float aDrive  = drive ? lever * p.driverPowerPct * steamMul * aDriveMax : 0.0f;
 
-        float fDrive  = drive ? Math.min(teAvail, pAvail * pCurve / vGuard) : 0.0f;
-        float fRr     = p.rollingResistanceCoeff * massTotal * G_MPS2;
-        float fBrakeM = brakeM * p.brakeMaxDecel * massTotal;
-        float fBrakeA = air    * p.airBrakeMaxDecel * massTotal;
+        // Coast resistance: Davis-shape decel in wall-clock units.
+        float aResist = p.resistStaticMs2
+                + p.resistLinearPerSec * v_fs
+                + p.resistQuadPerMeter * v_fs * v_fs;
+
+        // Brakes: simple multiplications, all in wall-clock m/s².
+        float aBrakeM = brakeM * p.brakeMaxDecelMs2;
+        float aBrakeA = air    * p.airBrakeMaxDecelMs2;
         float taper   = p.dynBrakeVMinMps > 0 ? Math.min(1.0f, v_fs / p.dynBrakeVMinMps) : 1.0f;
-        float fBrakeD = dyn * p.dynBrakeMaxDecel * p.locoMassKg * taper;
+        float aBrakeD = dyn * p.dynBrakeMaxDecelMs2 * p.dynBrakeMassFraction * taper;
 
         // 3. Integrate (no clamp on sign of a — same code path accel & decel)
-        float a = (fDrive - fRr - fBrakeM - fBrakeA - fBrakeD) / massTotal;
+        float a = aDrive - aResist - aBrakeM - aBrakeA - aBrakeD;
         v_fs += a * TICK_SECONDS;
         if (v_fs < 0.0f) v_fs = 0.0f;
         if (v_fs > vCap) v_fs = vCap;
         // Pin to target when very close to avoid cosmetic oscillation once
-        // we've reached steady-state; only when not actively diverging.
+        // we've reached steady-state.
         if (Math.abs(v_fs - vTarget) < EPS_VFS) {
             v_fs = vTarget;
         }
@@ -510,18 +495,14 @@ public final class SemiRealisticThrottleEngine {
 
         // 5. Quantise to throttle setting and emit
         float setting = vfsToFraction(v_fs, isForward);
-        // Track whether we just emitted a non-zero so the next idle tick
-        // can emit one final zero before going quiet.
         if (setting > 0f) {
             emittedNonZero = true;
         } else if (v_fs == 0f) {
-            // emitting a zero now — next idle tick can be skipped.
             emittedNonZero = false;
         }
 
         final float settingFinal = setting;
         ThreadingUtil.runOnGUIEventually(() -> {
-            // Re-read throttle under monitor to handle the rare detach race
             DccThrottle current;
             synchronized (this) {
                 current = this.throttle;
