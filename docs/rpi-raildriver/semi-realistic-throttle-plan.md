@@ -1,50 +1,130 @@
 # RailDriver Semi-Realistic Throttle Support
 
 > **Research source:** [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md). All section references prefixed `[research §X]` resolve there.
-> **Feature goal:** add semi-realistic throttle behaviour to the RailDriver path on a **model railroad layout**. Speed is no longer set directly from the throttle lever; instead the lever sets a target velocity and a single integration loop walks the live decoder speed toward it under net wall-clock acceleration `a = a_drive(v) − a_resist(v) − a_brake_mech − a_brake_air − a_brake_dyn`. Throttle position drives `a_drive`; Independent, Auto, and Dynamic brakes each contribute their own subtractive deceleration; bail-off zeros the air-line term while held; a named-scenario picker selects the loco-feel coefficients that feed the integration. The same loop runs in both directions — sign of `a` falls out of which terms are active, so accelerating, coasting, "throttle fighting brake", and stacked brakes are all the same code path with different terms turned on.
+> **Feature goal:** add semi-realistic throttle behaviour to the RailDriver path on a **model railroad layout**. The throttle lever no longer maps directly to the DCC speed step; it sets a *target* setting and the engine ramps the live setting toward it at rate-limited speeds determined by operator-tunable constants. Acceleration, coast deceleration, brake response, and the Westinghouse air-brake reservoir/line dynamics are simulated entirely in **DCC throttle-fraction space** (`s` ∈ [0, 1]); there is no mass, no force, no prototype velocity, no scale factor anywhere in the engine math.
 
 ## 1. Scope
 
-### 1.0 Physics framing — wall-clock feel-tuning
+### 1.0 Operating model — throttle-fraction control with operator-tunable rates
 
-**This is a model-railroad simulation, not a prototype simulator.** Every coefficient in the engine is stated in **wall-clock m/s² (operator-perceived rate of velocity change)**. The engine has no prototype frame, no scale factor, no physicsTimeScale — every term in every equation produces wall-clock acceleration directly. The operator tunes what the operator sees.
+This is a model-railroad simulation, not a prototype simulator. The engine works entirely in **DCC throttle-setting space**: `s` is the live `setSpeedSetting` fraction (0..1) the engine emits to the decoder, and `sTarget` is the throttle-lever-derived target. Each tick, `s` advances toward `sTarget` at a rate determined by lever positions, brake states, and per-scenario operator-tunable constants. **There is no mass, no force, no prototype velocity, no scale factor anywhere.** The decoder + speed profile remain the sole authority for physical loco speed; the engine never imposes a top-speed cap.
 
-The integration is **mass-free**: every coefficient is already a deceleration rate, so the engine arithmetic is purely in m/s² space. There is no `F = m·a` step. Mass cancels out everywhere because we never enter force-space. Drop a unit-train scenario in and the loco feels sluggish not because mass increased, but because the scenario's tuned coefficients say so.
+Operator expectations the engine matches:
 
-Three categories of coefficients, all in wall-clock m/s² units:
+- Throttle lever at X % → loco eventually reaches `setSpeedSetting(X / 100)`, regardless of any internal "physics."
+- Acceleration takes wall-clock time, not instant snap. Default rate is mass-independent ("feel" parameter); operators can customise on the Settings tab.
+- Reducing throttle → loco coasts down on a single operator-tunable rolling-drag rate (no aerodynamic term — operators don't care about air resistance; they want a simple coast curve).
+- Brakes (independent, automatic, dynamic) decelerate the loco. Full indep + full auto brake produces a decel rate higher than max accel — so full-throttle-against-full-brake = no motion. This is a hard constraint enforced by the rate-vs-rate arithmetic.
+- Heavier consists accelerate more slowly, decelerate more slowly from drag, and respond less to the *independent* brake (because indep is loco-only) but full-strength to the *automatic* brake (because pipe pressure propagates through the trainline to all cars).
+- Auto brake on a consist simulates the **Westinghouse air-brake** functionality: brake-pipe pressure, aux-reservoir charge, and cylinder pressure dynamics produce the prototypical "running out of air after repeated applications" feel. Light-engine scenarios (no consist) bypass the Westinghouse model and use a direct lever → cylinder-pressure mapping.
 
-- **Drive coefficients** — `maxAccelAtRest` (m/s² at v=0 under full throttle), `vCorner` (velocity above which `a_drive` falls off as `vCorner / v`, mimicking constant-power physics shape), `driverPowerPct` (0–1 throttle multiplier). The operator advances the lever and the loco accelerates at the chosen wall-clock rate.
-- **Coast resistance coefficients** (Davis-equation *shape*, wall-clock units) — `resistStatic` (m/s² constant, dominates near halt), `resistLinear` (1/s, linear-in-v term), `resistQuadratic` (1/m, quadratic-in-v term — aerodynamic-drag shape). `a_resist(v) = resistStatic + resistLinear·v + resistQuadratic·v²`. Operator-tunable for desired coast feel.
-- **Brake coefficients** — `brakeMaxDecel`, `airBrakeMaxDecel`, `dynBrakeMaxDecel` (each m/s² at full lever); `dynBrakeMassFraction` (per-scenario dilution capturing that real dyn brake acts on loco mass only, not consist); `dynBrakeVMin` (mph, taper threshold).
+Key separation from the rejected Newton's-law model:
 
-The Davis-equation *shape* (static + linear + quadratic) is preserved because it captures the prototypically correct character — aggressive coast from speed, gentle approach to halt — that operators recognize as "real-train feel." The *coefficients* are wall-clock decel values tuned for the operator experience, **not** prototype Davis values. Real-world prototype data (e.g. EMD NW2: 1000 HP / 256 kN TE / Davis A ≈ 0.0008, B ≈ 0.0005, C ≈ 3 N·s²/m²) is useful as *reference* for the *ratios* between terms (A:B:C) and which terms dominate at which speeds — but the absolute values for the engine are operator-feel-tuned, not derived from prototype physics. See §2.4.1 for the tuned defaults per scenario.
+- **Drive and brake do not "compete" via force summation.** Drive raises `s` at a fixed operator-tunable rate when `sTarget > s`. Brakes lower `s` at their own rates. The integrator subtracts brake rates from drive rate; if the result is non-positive while `s < sTarget`, `s` simply doesn't increase — no asymptote, no "drive force can't beat resistance" surprise.
+- **Acceleration rate is mass-independent by default.** A simple "feel" parameter (e.g. 0.10 fraction/s wall-clock = 0 → full in 10 s) tuned for desired operator UX, not derived from prototype HP/TE. Per-scenario constants modulate it for "heavy train accelerates more slowly" UX.
+- **Coast resistance is a single linear-in-`s` rate.** No quadratic aerodynamic term — eliminated per operator request. Decel from coast = `dragCoeff · s · consistDragFactor`.
+- **Top speed is whatever the decoder produces at `s = 1.0`.** The engine never caps `s` below 1.0 unless brakes overcome drive. There is no `designTopSpeed` field, no scenario top-speed parameter, no `getPhysicsMaxSpeedKmh()` clamp inside the engine.
 
-**Why not prototype-physics × scale factor?** An earlier draft tried "operator-controlled forces wall-clock; prototype-physics × physicsTimeScale" so coast would be scale-aware. It is mathematically broken: prototype Davis × scale ratio S produces resistance forces that overwhelm operator-tunable drive forces at any model scale, regardless of coefficient values. Even with verified real-NW2 numbers, F_resist × 160 at 45 mph exceeds F_drive at 45 mph by 4×, and the loco can never reach design top speed at N. Both forces would have to be scaled by S simultaneously, but that makes wall-clock acceleration values unphysically large (50+ m/s²). The wall-clock-only model has no such constraint because everything lives in the same units; a coefficient that works at one scale works at every scale because there is no scale dimension in the math.
+#### 1.0.1 Per-tick body sketch
 
-The integration runs in **prototype velocity** (`v_fs` in m/s prototype) so the roster speed profile, `getPhysicsMaxSpeedKmh()` cap, and the lever-derived `vTarget` continue to work in prototype terms. Time advances against wall-clock dt. Coefficients are wall-clock decel rates. See §2.1 for the tick body.
+```java
+// 1. Lever-derived target
+float sTarget = throttleAboveIdleFraction;        // 0..1; below idle → 0
+float dynApply = throttleBelowIdleFraction;        // 0..1 only when in dyn-brake region
+
+// 2. Westinghouse air-brake simulation (stage 4; light engine bypasses)
+//    See §1.0.2 for the state machine. Result: cylinderPressure ∈ [0, 1].
+float cylinderPressure = updateWestinghouseAndGetCylinderPressure(autoBrakeLever, dt);
+float autoForce = bailoffPressed ? 0.0f : cylinderPressure;
+
+// 3. Rate composition (all values dimensionless: fraction/sec wall-clock)
+float driveRate = (sTarget > s) ? p.accelRate * p.consistAccelFactor : 0.0f;
+float dragRate  = p.dragCoeff * s * p.consistDragFactor;
+float mechRate  = indepBrakeLever * p.indepBrakeRate * p.indepConsistFactor;
+float autoRate  = autoForce * p.autoBrakeRate;                          // not consist-scaled; pipe propagates through trainline
+float dynRate   = (s > 0) ? dynApply * p.dynBrakeRate * p.dynConsistFactor * dynTaper(s) : 0.0f;
+
+// 4. Integrate (no clamp on sign of dsdt — rate-of-change is what we want)
+float dsdt = driveRate - dragRate - mechRate - autoRate - dynRate;
+s += dsdt * TICK_SECONDS;
+s = clamp01(s);
+
+// 5. Emit on EDT
+ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(s));
+```
+
+The engine emits `s` directly. No fraction ↔ velocity conversion, no roster speed profile lookup inside the engine, no top-speed clamp. The roster speed profile and `getPhysicsMaxSpeedKmh()` are decoder-layer concerns the engine doesn't touch.
+
+#### 1.0.2 Westinghouse air-brake state machine (stage 4)
+
+When a consist is present, the auto brake handle drives a 3-state pneumatic model:
+
+- **`pipePressure`** ∈ [0, 1] — brake-pipe pressure (1 = released full pressure, 0 = empty / emergency).
+- **`auxCharge`** ∈ [0, 1] — average auxiliary-reservoir charge across cars.
+- **`cylinderPressure`** ∈ [0, 1] — average brake-cylinder pressure across cars.
+
+Per-tick update with operator-tunable time constants (`T_pipe`, `T_recharge`, `T_cylinderRelease`, `T_auxDrain`, `cylinderMagnification`):
+
+```java
+// Pipe approaches target set by handle position.
+float pipeTarget = 1.0f - autoBrakeLever;  // released = 1, EMG = 0
+pipePressure += (pipeTarget - pipePressure) * dt / T_pipe;
+
+if (pipePressure < auxCharge) {
+    // Triple valve in apply position: aux feeds cylinder.
+    float desiredCyl = clamp01((auxCharge - pipePressure) * cylinderMagnification);
+    cylinderPressure += (desiredCyl - cylinderPressure) * dt / T_cylinderApply;
+    auxCharge -= cylinderPressure * dt / T_auxDrain;     // aux drains as it feeds cylinder
+} else {
+    // Triple valve in release/recharge position: cylinder vents fast, aux recharges slow.
+    cylinderPressure -= dt / T_cylinderRelease;
+    auxCharge += (pipePressure - auxCharge) * dt / T_recharge;
+}
+auxCharge       = clamp01(auxCharge);
+cylinderPressure = clamp01(cylinderPressure);
+```
+
+Operator-felt consequences (which the model reproduces by construction):
+
+- Service application: handle to "Min Service" or beyond → pipe drops slightly → cylinder fills proportionally to (aux − pipe) × magnification → cars apply brake. Aux drains.
+- Emergency: handle to EMG → pipe target = 0 → pipe drops fast → triple valve apply. Cylinder reaches max. Aux fully drains.
+- Release: handle back to Released → pipe target = 1 → pipe recovers (T_pipe) → triple valve release → cylinder vents (fast, T_cylinderRelease) → aux recharges from main (slow, T_recharge ≈ 60+ s for a long train).
+- "Running out of air": after several full-service applications without enough recovery time, `auxCharge` is well below 1 → next application produces weaker `cylinderPressure` → less braking. Operator must release and wait for recharge.
+
+Bail-off zeros the auto-brake's contribution to the rate equation while held (matches §3.4 stage-4 behaviour and the §6 bail-off semantics decision); it does NOT touch `pipePressure` or `auxCharge`. So aux continues draining through cylinder while bail-off is held — release the bail-off and the (still-elevated) cylinder pressure is reapplied.
+
+Light-engine scenarios (no consist) bypass the state machine entirely:
+```java
+cylinderPressure = autoBrakeLever;   // direct mapping; no pipe/aux dynamics
+auxCharge = 1.0f;                    // always full; light engine has direct main → cylinder
+pipePressure = 1.0f - autoBrakeLever;  // tracked for status/display only
+```
+
+This simulation lives in stage 4 (auto-brake stage); stages 2–3 keep `cylinderPressure = 0` so the auto-brake summand is inert.
 
 ### 1.1 In scope (split into stages 1–6, each independently shippable)
 
-**Stage 1 — Refactor & off-EDT bug fix.** Pure refactoring with no new feature behaviour. Wraps every Swing-touching call in `RailDriverMenuItem.dispatchValueEvent` via `ThreadingUtil.runOnGUIEventually` (setters) or `ThreadingUtil.runOnGUIwithReturn` (getters that feed decision logic), closing the off-EDT-mutation latent issue from the existing RailDriver bring-up. Replaces the standalone `RailDriverCalibrationFrame` / `RailDriverCalibrationAction` with the unified two-tab `RailDriverSettingsFrame` (described in §2.4); the Calibration tab holds the existing visual-bar UI verbatim, the Settings tab is present but disabled (its fields land in stage 2). Migrates the Bundle key (`RdCalibrate` → `RdSettings`), updates `DebugMenu`, and bumps the calibration XML schema to `version="2"` with the `<semiRealistic>` element tolerated as absent. **No physics engine, no Jynstrument, no behaviour change for users** beyond the renamed Debug-menu entry and the (invisible) EDT bug fix. The migration of the existing `SwingUtilities.invokeLater` call site in `RailDriverMenuItem.java:244` to `ThreadingUtil.runOnGUIEventually` happens here.
+**Stage 1 — Refactor & off-EDT bug fix.** Pure refactoring with no new feature behaviour. Wraps every Swing-touching call in `RailDriverMenuItem.dispatchValueEvent` via `ThreadingUtil.runOnGUIEventually` (setters) or `ThreadingUtil.runOnGUIwithReturn` (getters that feed decision logic), closing the off-EDT-mutation latent issue from the existing RailDriver bring-up. Replaces the standalone `RailDriverCalibrationFrame` / `RailDriverCalibrationAction` with the unified two-tab `RailDriverSettingsFrame` (described in §2.4); the Calibration tab holds the existing visual-bar UI verbatim, the Settings tab is present but disabled (its fields land in stage 2). Migrates the Bundle key (`RdCalibrate` → `RdSettings`), updates `DebugMenu`, and bumps the calibration XML schema to `version="2"` with the `<semiRealistic>` element tolerated as absent. **No physics engine, no Jynstrument, no behaviour change for users** beyond the renamed Debug-menu entry and the (invisible) EDT bug fix.
 
-**Stage 2 — Wall-clock physics integration engine + bypass switch + scenario picker + independent brake + toolbar mode toggle.** First stage where the operator can opt in and run the loco under physics. Adds the `SemiRealisticThrottleEngine` class with the **wall-clock-only force model from §1.0 baked in from day one**: drive, coast resistance, and indep brake all live in wall-clock m/s² space — no mass, no prototype scaling, no `F = m·a` step. 50 ms tick on a worker thread, full integration body including `a_brake_mech` so the operator has a working brake. The Settings tab exposes the drive coefficients (`maxAccelAtRest`, `vCorner`, `driverPowerPct`), the Davis-shape coast resistance coefficients (static / linear / quadratic, all in wall-clock units), and the brake decel rates. Adds the `LoadScenario` enum and Settings-tab picker (all 7 scenarios incl. Custom — each scenario is a feel-coefficient preset), the persisted-vs-live `enabled` split (§2.3), the toolbar Jynstrument (§2.6), and the `hidDeviceAttached` re-enable for hot-plug PCS firing. Continuously-scheduled tick (no `a < 0` clamp) so the same code runs accelerating or decelerating. Brake terms `a_brake_air` and `a_brake_dyn` are present in the integration equation as zero-valued summands until stages 4–5. When semi-realistic mode is OFF (default), behaviour is identical to stage 1's bypass path. When ON, the throttle lever (Axis 1 above Idle High) sets `v_target`, the calibrated indep-brake position (Axis 3) drives `a_brake_mech`, and the integrator walks `v` toward target under the resulting net acceleration. Defaults match a "Light engine" feel preset out of the box (see §2.4.1) so users with empty rosters get sensible behaviour with zero configuration.
+**Stage 2 — Throttle-fraction physics engine + bypass switch + scenario picker + independent brake + toolbar mode toggle.** First stage where the operator can opt in and run the loco under physics. Adds the `SemiRealisticThrottleEngine` class with the **throttle-fraction-rate model from §1.0 baked in from day one**: per tick computes drive / drag / mech-brake rates in fraction/sec wall-clock, integrates `s` toward `sTarget`. 50 ms tick on a worker thread, full integration body including `mechRate` so the operator has a working brake. The Settings tab exposes the operator-tunable rates (drive, drag, indep brake) and the consist parameter. Adds the `LoadScenario` enum and Settings-tab picker (all 7 scenarios incl. Custom — each scenario is a feel-rate preset with consist parameters), the persisted-vs-live `enabled` split (§2.3), the toolbar Jynstrument (§2.6), and the `hidDeviceAttached` re-enable for hot-plug PCS firing. Brake terms `autoRate` and `dynRate` are present in the integration as zero-valued summands until stages 4–5. When semi-realistic mode is OFF (default), behaviour is identical to stage 1's bypass path. When ON, the throttle lever (Axis 1 above Idle High) sets `sTarget`, the calibrated indep-brake position (Axis 3) drives `mechRate`, and the integrator walks `s` toward target under the resulting net rate. Defaults match a "Light engine" feel preset out of the box (see §2.4.1).
 
-**Stage 3 — Reverser interlock.** Direction-change-only-at-speed-0 interlock per [research §5]. E-Stop SPDT keeps its current `setSpeedSetting(-1)` behaviour. (EngineDriver's "soft stop button" mode is intentionally not adopted — the RailDriver's physical Independent Brake handle already gives the operator a more prototypical controlled-stop than a one-touch button would.) Independent of brake terms; only requires the engine's `v_fs` field, which exists from stage 2 onwards.
+**Stage 3 — Reverser interlock.** Direction-change-only-at-zero-`s` interlock per [research §5]. E-Stop SPDT keeps its current `setSpeedSetting(-1)` behaviour. Independent of brake terms; only requires the engine's `s` field.
 
-**Stage 4 — Auto brake (Axis 2) → air-line decel term + bail-off (byte 4) override.** The Auto Brake lever drives `airLinePct` (Released → 0, EMG → 100, monotonic between — no derived-from-mechanical model per [research §10] item 2), which drives `a_brake_air = (airLinePct/100) · airBrakeMaxDecel`. `airBrakeMaxDecel` is in wall-clock m/s², summed with the mechanical brake decel in the integration. The bail-off switch (byte 4 transient) zeroes `a_brake_air` while held — direct level-triggered override on the air term, without affecting mechanical or dyn-brake terms. Replaces EngineDriver's reservoir-and-line refill repeaters [research §4.2] with a direct mapping (the operator's hand on the lever is the prototype).
+**Stage 4 — Auto brake (Axis 2) → Westinghouse air-brake simulation + bail-off override.** The Auto Brake lever drives the Westinghouse state machine from §1.0.2. Pipe pressure tracks the lever's released-to-EMG position with time constant `T_pipe`. Triple-valve logic transfers air between aux reservoir and brake cylinder. The cylinder-pressure output drives the `autoRate` term in the per-tick integration. Light-engine scenarios bypass the state machine and use a direct lever → cylinder mapping. Bail-off (byte 4 transient) zeros `autoRate` while held without touching the underlying state. Per-scenario time constants (`T_pipe`, `T_recharge`, etc.) make consist-length-driven feel automatic — longer trains have longer pipe charge times and slower aux recharges by tuning, not by car-counting code.
 
-**Stage 5 — Dynamic brake side of throttle lever (Axis 1 below Idle Low).** Below the calibrated Idle Low, the throttle lever produces `a_brake_dyn = (dynPct/100) · dynBrakeMaxDecel · dynBrakeMassFraction · speedTaper(v)` where `speedTaper(v) = min(1, v / V_dyn_min)` and `V_dyn_min ≈ 5 mph` (prototype velocity threshold). `dynBrakeMassFraction` is per-scenario (1.0 for Light Engine, ≈ 0.1 for Unit Train) and captures the prototype reality that dyn brake doesn't propagate through trainline air [research §10 item 1] — the heavier the consist relative to the loco, the smaller the dyn-brake share. `dynBrakeMaxDecel` is in wall-clock m/s². Tapers to zero near stop (real dyn brake fades below ~5 mph). Stacks with mechanical and air brake by simple decel summation — no min/max selection, no "reinforce" special case. LED display shows `DBr` while in dyn-brake region.
+**Stage 5 — Dynamic brake side of throttle lever (Axis 1 below Idle Low).** Below the calibrated Idle Low, the throttle lever produces `dynRate = dynApply · dynBrakeRate · dynConsistFactor · dynTaper(s)` where `dynTaper(s) = min(1, s / dynTaperThreshold)` and `dynTaperThreshold ≈ 0.05` (`s = 5 %`, roughly the RailDriver's calibrated low-speed cut-off; not scale-coupled because there is no scale). Acts on loco-only (dyn brake doesn't propagate through trainline air per [research §10] item 1) so its consist factor is small (e.g. 0.1 for a unit train). Stacks with mech and auto brake by simple rate summation. LED display shows `DBr` while in dyn-brake region.
 
-**Stage 6 — ESU decoder-brake passthrough (optional, gated by user preference).** Per [research §4.3], computes brake-percent from the calibrated indep-brake position and forwards F4/F5/F6 dispatch when the user opts in. Defaults to OFF.
+**Stage 6 — ESU decoder-brake passthrough (optional, gated by user preference).** Per [research §4.3], computes effective brake percent from the indep + auto cylinder pressure and forwards F4/F5/F6 dispatch when the user opts in. Defaults to OFF.
 
 ### 1.2 Out of scope (deferred to future work)
 
 - **Per-roster scenario default.** This feature ships with a session-level picker; reading `RosterEntry.getAttribute("raildriver.scenario")` to override the session default is deferred per [research §9.2.5].
 - **Multi-throttle support.** EngineDriver runs up to 6 locos in parallel; we keep the existing single-throttle assumption from the RailDriver bring-up phases.
-- **Gradient gravity, curve resistance, journal-bearing breakaway** — additional decel/accel terms layered on top of the existing wall-clock arithmetic. (Aerodynamic-drag *shape* is in scope as the quadratic Davis term in stage 2; gradient/curve/breakaway are deferred.)
-- **Per-roster physics overrides.** `RosterEntry.getPhysicsWeightKg()` / `getPhysicsPowerKw()` / `getPhysicsTractiveEffortKn()` are **not consulted** by the engine — the wall-clock-only model has no use for prototype mass / power / TE values. Scenarios drive everything. `getPhysicsMaxSpeedKmh()` IS consulted as a wall-clock cap on `v_fs` (it's already a wall-clock-felt value, not a prototype-physics quantity). Per-loco wall-clock feel-tuning overrides (e.g. a roster attribute providing a per-loco `maxAccelAtRest` override) are deferred.
-- **Deeper integration parameters configurable via UI.** The Settings tab exposes `maxAccelAtRest`, `vCorner`, `driverPowerPct`, `designTopSpeed`, the three Davis-shape coefficients (`resistStatic`, `resistLinear`, `resistQuadratic`), the three brake decels (`brakeMaxDecel`, `airBrakeMaxDecel`, `dynBrakeMaxDecel`), `dynBrakeMassFraction`, and `dynBrakeVMin` as user-editable fields (in scope). Lower-level integration parameters (50 ms slice time, gear-pause thresholds 15/27/41 mph and 3.5 s coast duration) stay hardcoded (out of scope).
-- **EngineDriver's `Stop` button and its four behaviour modes.** The Stop button is an Android-touch UX device — useful when your only inputs are screen taps. On a RailDriver console the operator already has E-Stop (hard) and the Independent Brake handle (controlled) within reach. None of EngineDriver's four stop modes (`THROTTLE_STOP`, `THROTTLE_STOP_BRAKE_FULL`, `SPEED_ZERO`, `SPEED_ZERO_BRAKE_ZERO`) is adopted; the existing E-Stop SPDT keeps its current behaviour.
+- **Aerodynamic drag.** Per operator direction, coast resistance is a single linear-in-`s` term — no quadratic / aerodynamic component. Operators don't care about air resistance for model railroad simulation.
+- **Gradient gravity, curve resistance, journal-bearing breakaway.** Out of scope. The architecture admits additional rate terms cleanly if a future stage wants them.
+- **Per-roster physics overrides.** `RosterEntry.getPhysicsWeightKg()` / `getPhysicsPowerKw()` / `getPhysicsTractiveEffortKn()` / `getPhysicsMaxSpeedKmh()` are **not consulted** by the engine — the throttle-fraction-rate model has no use for prototype mass / power / TE / top-speed values. The decoder + speed profile already handle physical top speed at `s = 1.0`. Per-loco rate-tuning overrides via roster attributes are deferred future work.
+- **Deeper integration parameters configurable via UI.** The Settings tab exposes the per-scenario rate constants, the consist parameter, and the Westinghouse time constants as user-editable fields (in scope). Lower-level integration parameters (50 ms slice time, gear-pause thresholds and 3.5 s coast duration if used) stay hardcoded (out of scope).
+- **EngineDriver's `Stop` button and its four behaviour modes.** The Stop button is an Android-touch UX device — useful when your only inputs are screen taps. On a RailDriver console the operator already has E-Stop (hard) and the Independent Brake handle (controlled) within reach. None of EngineDriver's four stop modes is adopted; the existing E-Stop SPDT keeps its current behaviour.
 - **Tests.** Parent §4.5. Deferred.
 - **Help / documentation updates.** Parent §4.6. Deferred.
 - **Cross-platform verification** — community testers, not in scope.
