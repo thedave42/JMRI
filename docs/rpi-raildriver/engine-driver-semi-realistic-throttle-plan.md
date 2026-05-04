@@ -1633,6 +1633,11 @@ actually enforced (today they are flat).
   in the Jython class.
 - `RailDriverMenuItem.attachThrottleWindow()` auto-installs the
   toggle on first bind via `hasJynstrumentInstalled`.
+- **Javadoc (§12.6).** Document the new public Jynstrument-support
+  API on `RailDriverMenuItem` (event names, state semantics).
+- **Help page (§12.6).** Write
+  `help/en/html/tools/usb/RailDriverModeToggle.shtml` covering the
+  five Jynstrument states and persistent-vs-session semantics.
 
 ### Phase 7 — Stop modes (optional)
 
@@ -1854,6 +1859,73 @@ No schema migration is performed for v2 inputs beyond the
 discard over migration. The test files exist to lock that
 contract in place so future code changes cannot silently
 re-introduce a lossy migration.
+
+### 12.6 Javadoc and help-page deliverables
+
+Per `.github/instructions/jmri-plugins.instructions.md`, new
+functionality should ship with CI unit tests, Javadoc, and help
+pages. The first two are covered by §12.1–§12.5; this section
+covers Javadoc and help pages explicitly so they don't slip past
+the implementation phases.
+
+**Javadoc.** Every new public or protected API gets a class-level
+and per-method Javadoc block before the phase that introduces it
+ships. Concretely:
+
+- `SemiRealisticThrottleEngine` — class header summarising the
+  EngineDriver-aligned algorithm with a link to
+  [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md);
+  per-method Javadoc on every public lever-input setter, lifecycle
+  method, and on `setTargetSpeed` (private but worth documenting
+  given its role).
+- `SemiRealisticSettings`, `RailDriverHardwareCalibration` — POJO
+  field tables describing units, valid ranges, default values,
+  and which `<rd:*>` element each persists into.
+- `LoadScenario`, `DecoderBrakeMode` — enum constant Javadoc
+  pointing at the matching XML form (`name()`) and the user-facing
+  display string in the bundle.
+- `RailDriverSettingsPane` (the new `JmriPanel`) and the two tab
+  panels — Javadoc on the `DirtyTrackingTab` interface methods
+  and on `initComponents` / `dispose` (life-cycle contract).
+- `RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml` —
+  Javadoc covering which `AuxiliaryConfiguration` space the
+  fragment lives in (private vs shared) and the `EnumIoNames`
+  helpers used.
+- New / changed public methods on `RailDriverMenuItem`
+  (`isSemiRealisticLiveEnabled`, `applyPersistedEnabled`,
+  `setSemiRealisticEnabledSessionOnly`, `addSettingsListener`,
+  `requestAttachToThrottle`, etc.) — fully documented with the
+  PCS event names they fire (§10.2).
+
+The Javadoc tasks are scheduled on the same phase that lands the
+class itself (Phase 1 for the engine, Phase 2 for the
+settings UI / persistence, Phase 6 for the Jynstrument
+support API).
+
+**Help pages.** Two new pages and one update to existing content:
+
+- `help/en/html/tools/usb/RailDriverSemiRealistic.shtml` *(new)*
+  — overview of the semi-realistic throttle, the lever mapping
+  (§4), the Settings tab fields (§9.6), the `Light engine` →
+  `Unit train` scenarios, and a short troubleshooting guide
+  (e.g. "Loco accelerates immediately when I move the throttle
+  → check Step size per ramp tick / acceleration repeat").
+- `help/en/html/tools/usb/RailDriverModeToggle.shtml` *(new)*
+  — explains the toolbar Jynstrument's five states (§10.3),
+  what right-click → Settings does, and the persistent-vs-session
+  semantics (§9.1 / §9.2).
+- `help/en/html/tools/usb/RailDriverSettings.shtml` *(updated to
+  reflect the §9.5 unified pane, the new fields, the Save /
+  Apply / Cancel semantics, and the legacy-file migration in
+  §9.13.)*
+
+The two new pages are written in Phase 2 (Settings UI lands) and
+Phase 6 (Jynstrument lands) respectively. The updated existing
+page is touched as part of Phase 2 alongside the Settings UI
+changes.
+
+The Javadoc and help-page work items are surfaced explicitly in
+the per-phase bullet lists in §11 so they don't slip.
 
 ---
 
