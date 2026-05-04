@@ -47,8 +47,7 @@ engine (`SemiRealisticThrottleEngine`, `LoadScenario`,
 `SemiRealisticSettings`, `SemiRealisticSettingsPanel`). The first
 three are **rewritten** under this plan; the fourth is **retired**
 and replaced by an SPI `PreferencesPanel` (§9.5). All RailDriver
-classes also relocate from `jmri.util.usb` to `jmri.jmrit.usb`
-(§11.0).
+classes also relocate from `jmri.util.usb` to `jmri.jmrit.usb`.
 
 | File                             | Today (physics-based)                                             | Under this plan (EngineDriver-aligned)                                                                            |
 |----------------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
@@ -600,7 +599,7 @@ Guidelines that follow from those levels:
   `Log4JUtil.warnOnce(log, ...)` / `Log4JUtil.infoOnce(log, ...)`.
   Tests that exercise these paths follow the JMRI JUnit-page
   guidance for resetting the one-shot state between tests (see
-  the §12 preamble); a unit test that fires `warnOnce` twice without
+  the §11 preamble); a unit test that fires `warnOnce` twice without
   resetting will only see the first invocation.
 - Every `catch` clause that logs and continues uses the form
   `log.error("<context>: " + ex.getLocalizedMessage(), ex)` so
@@ -813,7 +812,7 @@ The Settings UI now ships as two `jmri.swing.PreferencesPanel`
 providers grouped under "RailDriver" in the standard JMRI Preferences
 window (§9.5), and persistence moves onto a new
 `jmri.spi.PreferencesManager` provider, `RailDriverPreferencesManager`
-(§9.4 / §11.0).
+(§9.4).
 
 **Universal deferred-application rule (Decision 6).** Every
 `<rd:semiRealistic>` field and every `<rd:hardwareCalibration>`
@@ -890,7 +889,7 @@ ramp cancellation, and no in-flight handover to specify.
 
 ### 9.4 API entry points (on `RailDriverPreferencesManager`)
 
-The `RailDriverPreferencesManager` SPI provider (§11.0) exposes
+The `RailDriverPreferencesManager` SPI provider exposes
 the setters that the two Settings panels call into. Per the
 universal deferred-application rule (§9 intro), **none** of these
 setters touch a running engine or a bound `RailDriverMenuItem`
@@ -938,7 +937,7 @@ manager via
 The manager is loaded by the standard `ServiceLoader` SPI path
 (`@ServiceProvider(service = jmri.spi.PreferencesManager.class)`)
 and exposes itself under its own concrete class via
-`getProvides()` (Issue 7 — see §11.0); no separate
+`getProvides()` (Issue 7); no separate
 `InstanceManagerAutoDefault` registration is used.
 
 ### 9.5 Settings UI as `PreferencesPanel` SPI providers
@@ -1351,7 +1350,7 @@ The `mode` attribute on `<rd:decoderBrake>` carries the
 constant name. Both are persisted via an `EnumIoNames` subclass that
 calls the adapter's `handleException(...)` on unknown input so the
 parse path matches the integer / boolean attribute helpers and the
-§12.5 `ErrorHandler` assertions hold (Issue 3).
+§11.5 `ErrorHandler` assertions hold (Issue 3).
 
 The `enabled` attribute is the single persisted `enabled` flag
 from §9.1. There is no separate "live" field — the dispatch
@@ -1385,7 +1384,7 @@ cross-field validation:
   that calls `handleException(...)` when the input string is
   non-null, non-empty, and doesn't map to any enum constant —
   matching the behaviour of the integer / boolean helpers and
-  satisfying the §12.5 `ErrorHandler` assertions.
+  satisfying the §11.5 `ErrorHandler` assertions.
 - **Cross-field invalid combination** (e.g.
   `speedStep > maxThrottleStep`, ESU thresholds out of order):
   identical to the unparseable case — error-level `ErrorHandler`,
@@ -1497,7 +1496,7 @@ The per-fragment work breaks down as:
   ```
 
 - **Validate sample fragment files.** The test fixtures in
-  `valid/` (§12.4) are stand-alone fragment files (i.e. one
+  `valid/` (§11.4) are stand-alone fragment files (i.e. one
   fragment XML per fixture), each with the appropriate
   `xsi:schemaLocation`. For each file:
 
@@ -1530,7 +1529,7 @@ The per-fragment work breaks down as:
   </xs:annotation>
   ```
 
-  Both FQNs match the post-relocation package layout in §11.0
+  Both FQNs match the post-relocation package layout
   (`jmri.jmrit.usb.configurexml`, not the historical
   `jmri.util.usb.*` or any speculative `jmri.jmrix.raildriver.*`).
 - **Schema-filename suffix.** XSD filenames are suffixed with the
@@ -1814,302 +1813,7 @@ not leak listener subscriptions.
 
 ---
 
-## 11. Implementation phases
-
-### 11.0 Package locations
-
-All new and existing RailDriver code lives under **`jmri.jmrit.usb`**.
-The pre-existing classes are relocated from `jmri.util.usb` as part
-of Phase 2; no new code is added under `jmri.util.usb`. This is a
-**deliberate departure from the historical placement**, motivated by
-two structural constraints from `jmri-structure.instructions.md`:
-
-- The `util` tree is reserved for "general service classes that are
-  not user-level tools". The RailDriver feature is a user-level tool
-  (Settings UI, throttle-toolbar status indicator, Debug-menu
-  calibration window, scenario picker), so `jmrit` is the correct
-  home.
-- `util` code "must not depend on `jmri.jmrit` or `jmri.jmrix`". The
-  engine and `RailDriverMenuItem` integrate with
-  `jmri.jmrit.throttle.ThrottleFrame` (Jynstrument auto-install,
-  active-frame tracking). Under `jmrit` those references are
-  legal; under `util` they would fail the ArchUnit checks
-  (`jmri.ArchitectureCheck` / `jmri.ArchitectureTest`).
-
-The RailDriver does **not** become a `jmri.jmrix.<vendor>` system
-connection: it is a USB-HID peripheral that drives an existing
-`DccThrottle` rather than implementing its own layout connection,
-so it has no `SystemConnectionMemo`, no `ConnectionTypeList`, and no
-`PortAdapter` / `ConnectionConfig` chain. Future maintainers should
-not retrofit one.
-
-Concrete package locations under this plan:
-
-| Class                                                           | Package                                  | Notes                                                     |
-|-----------------------------------------------------------------|------------------------------------------|------------------------------------------------------------|
-| `SemiRealisticThrottleEngine`, `SemiRealisticSettings`, `LoadScenario`, `DecoderBrakeMode`, `RailDriverHardwareCalibration` | `jmri.jmrit.usb` *(relocated)* | Engine + settings POJOs; **no Swing imports**. ESU configuration is read from `SemiRealisticSettings` only — there is no per-roster override path. |
-| `RailDriverCalibration` (legacy facade + new helpers)           | `jmri.jmrit.usb` *(relocated)*            | Existing class; new `loadHardware*` / `loadSemiRealistic*` helpers stay non-Swing. |
-| `RailDriverPreferencesManager`                                  | `jmri.jmrit.usb` *(new)*                  | `jmri.spi.PreferencesManager` SPI provider. Owns the single `enabled` flag, the in-memory `SemiRealisticSettings` and `RailDriverHardwareCalibration`, the §9.13 legacy migration, and PCS event dispatch (`"enabledChanged"`). Acquired via `InstanceManager.getDefault(RailDriverPreferencesManager.class)` — exposed under that concrete class via `getProvides()` (Issue 7). |
-| `RailDriverMenuItem`                                            | `jmri.jmrit.usb` *(relocated)*            | Existing location. Posts polling-thread events to the engine via `ThreadingUtil.runOnLayoutEventually` (Issue 1 / Option D); decides engine-vs-direct dispatch strategy once at `notifyAddressThrottleFound` based on the persisted `enabled` flag and keeps it fixed for the throttle frame's lifetime. Public API uses `ThrottleFrame` directly (legal jmrit→jmrit). |
-| `RailDriverSemiRealisticPreferencesPanel`, `RailDriverCalibrationPreferencesPanel`, `CalibrationBar` | `jmri.jmrit.usb.swing` *(new)* | All Swing UI. The two panels are `jmri.swing.PreferencesPanel` SPI providers grouped under a "RailDriver" group hint; both appear in the standard JMRI Preferences window (§9.5). |
-| `RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml`  | `jmri.jmrit.usb.configurexml` *(new)*     | Per-fragment `*Xml` adapters extending `jmri.configurexml.AbstractXmlAdapter`. Own the XML read/write logic for the `AuxiliaryConfiguration` fragments (§9.11). The runtime classes stay free of XML logic. |
-| `RailDriverModeToggle.jyn`                                      | `jython/Jynstruments/ThrottleWindowToolBar/` | Distribution content; remains exactly where the Jynstrument loader expects it. |
-
-The two new subpackages (`jmri.jmrit.usb.swing`,
-`jmri.jmrit.usb.configurexml`) are created in Phase 2. Phase 2 also
-performs the **relocation** of every existing class from
-`jmri.util.usb` to `jmri.jmrit.usb`, including `RailDriverCalibration`
-and `RailDriverMenuItem`. Existing call sites are updated wholesale;
-no compatibility shim is left behind under `jmri.util.usb` because
-those classes have no third-party consumers (RailDriver is a
-self-contained feature). The pre-existing `SemiRealisticSettingsPanel`,
-`RailDriverSettingsFrame`, `RailDriverSettingsAction`, and
-`CalibrationTabPanel` classes are **retired** as part of the SPI
-migration (§9.5) — their function moves into the two new
-`PreferencesPanel` providers and the `RailDriverPreferencesManager`.
-
-**Persistence-class lineage.** Both new `*Xml` adapters
-(`RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml`)
-extend `jmri.configurexml.AbstractXmlAdapter` so they pick up the
-standard parsing helpers (`getAttributeIntegerValue`,
-`getAttributeBooleanValue`, etc.) and the `EnumIO` infrastructure
-(`EnumIoNames` for `LoadScenario` / `DecoderBrakeMode`) used
-elsewhere in the plan. Persistence is invoked through
-`RailDriverPreferencesManager`'s `load*` / `save*` paths rather
-than through `ConfigXmlManager`'s automatic `*Xml` lookup, so the
-`a.b.Foo` → `a.b.configurexml.FooXml` naming convention is
-followed for human readability rather than for dispatch.
-
-**SPI registration.** Three SPI bindings ship as part of this
-feature, all generated automatically from `@ServiceProvider`
-annotations into `target/classes/META-INF/services/`:
-
-- `@ServiceProvider(service = jmri.spi.PreferencesManager.class)`
-  on `RailDriverPreferencesManager`.
-- `@ServiceProvider(service = jmri.swing.PreferencesPanel.class)`
-  on `RailDriverSemiRealisticPreferencesPanel` and
-  `RailDriverCalibrationPreferencesPanel`.
-
-There is no `StartupActionFactory`, `ConnectionTypeList`, or
-`ToolsMenuAction` provider — the operator-facing entry points are
-the standard JMRI Preferences window plus the throttle-toolbar
-connectivity Jynstrument (which itself just opens that same
-Preferences window).
-
-### Phase 1 — Engine port
-
-- Rewrite `SemiRealisticThrottleEngine` with the §5 class outline.
-- Reduce `LoadScenario` to the named-scenario picker per §7.1.
-- Reduce `SemiRealisticSettings` to the §9.11 field set.
-- Unit tests: replicate EngineDriver's expected outputs for
-  `getBrakeDecimalPcnt`, `getLoadPcnt`-equivalent (whatever §7
-  resolves to), and a couple of `setTargetSpeed` table-driven cases
-  taken from the EngineDriver source ([research §3](semi-realistic-throttle-info.md#3-settargetspeed--the-heart-of-the-semi-realistic-logic)).
-- No RailDriver hardware changes yet; new engine compiles and is
-  exercised solely from the test harness.
-- **Logging (§5.6).** Add the standard `private static final
-  org.slf4j.Logger log = ...` field to every new engine class.
-  Per-tick scheduler and per-axis recompute output land at
-  `TRACE` and `DEBUG` respectively; do **not** add `INFO` from
-  steady-state code paths.
-- **Javadoc (§12.6).** Author Javadoc for every new public /
-  protected method on the engine, settings record, and helper
-  classes added in this phase.
-
-### Phase 2 — Relocation, SPI Settings UI, persistence rebuild
-
-- **Relocation (§11.0).** Move every existing class from
-  `jmri.util.usb` to `jmri.jmrit.usb`. Update every call site
-  wholesale; do not leave compatibility shims under
-  `jmri.util.usb`. Add the two new subpackages
-  `jmri.jmrit.usb.swing` and `jmri.jmrit.usb.configurexml`. Run
-  `jmri.ArchitectureCheck` after the move to confirm no
-  cross-tree violations remain.
-- **Land §9.1 / §9.2 / §9.4** on the new
-  `RailDriverPreferencesManager` (not on `RailDriverMenuItem`):
-  - Add `jmri.jmrit.usb.RailDriverPreferencesManager`
-    implementing `jmri.spi.PreferencesManager` and registered
-    with `@ServiceProvider(service = jmri.spi.PreferencesManager.class)`.
-    `getProvides()` returns `[RailDriverPreferencesManager.class]`
-    so `InstanceManager.getDefault(RailDriverPreferencesManager.class)`
-    resolves to the SPI-loaded instance (Issue 7).
-  - Manager owns the single `enabled` flag, the in-memory
-    `SemiRealisticSettings` and `RailDriverHardwareCalibration`
-    records, the §9.13 legacy migration trigger, and the
-    `addSettingsListener` / `removeSettingsListener` PCS dispatch
-    (`"enabledChanged"`).
-  - `RailDriverMenuItem` becomes a consumer (acquires the
-    manager via `InstanceManager`); `notifyAddressThrottleFound`
-    reads `enabled` once and selects the dispatch strategy for
-    the throttle frame's lifetime.
-- **SPI Settings UI (§9.5).** Retire `RailDriverSettingsFrame`,
-  `RailDriverSettingsAction`, `SemiRealisticSettingsPanel`, and
-  `CalibrationTabPanel`. Remove the Debug-menu wiring entirely
-  (no `JmriNamedPaneAction`). Replace with two
-  `jmri.swing.PreferencesPanel` SPI providers in
-  `jmri.jmrit.usb.swing`:
-  - `RailDriverSemiRealisticPreferencesPanel` — content per
-    §9.6, scenario picker per §9.7, `Bundle.getMessage(...)` for
-    every visible label, `WrapLayout` for any wrapping rows.
-  - `RailDriverCalibrationPreferencesPanel` — wraps the existing
-    visual-bar UI (`CalibrationBar`) with no functional change.
-  - Both classes annotated
-    `@ServiceProvider(service = jmri.swing.PreferencesPanel.class)`,
-    return `"RailDriver"` from `getPreferencesItem()` so they
-    group together in the JMRI Preferences window, and give
-    distinct tab titles via `getTabbedPreferencesTitle()` (e.g.
-    `Bundle.getMessage("PreferencesTabSemiRealistic")` /
-    `…("PreferencesTabCalibration")`).
-  - Each panel implements its own `isDirty()` /
-    `markDirty()` plumbing (§9.9) and runs the §9.10 validation
-    inside `savePreferences()` before delegating to the
-    `RailDriverPreferencesManager` save helpers.
-  - **Post-save alert (Decision 6 / §9.8).** Each panel's
-    `savePreferences()`, after a successful manager call, invokes
-    `JmriJOptionPane.showMessageDialog(...)` with the localised
-    "close and reopen the throttle" message. The alert fires on
-    every save regardless of which fields changed; there is no
-    field-by-field live-vs-deferred distinction. **No call to
-    `engine.updateSettings(...)` or `RailDriverMenuItem.reloadCalibration()`
-    is made from the save path** — settings and calibration are
-    never pushed to running code.
-- **Migrate persistence to `AuxiliaryConfiguration`** (§9.11):
-  - Add a `RailDriverHardwareCalibration` type holding the seven
-    detent records, separate from `SemiRealisticSettings`.
-  - Implementation in
-    `jmri.jmrit.usb.configurexml.RailDriverHardwareCalibrationXml`
-    and `jmri.jmrit.usb.configurexml.SemiRealisticSettingsXml`,
-    both extending `jmri.configurexml.AbstractXmlAdapter`.
-  - Expose `loadHardwareCalibration` / `saveHardwareCalibration`
-    (private space) and `loadSemiRealisticSettings` /
-    `saveSemiRealisticSettings` (shared space) on
-    `RailDriverPreferencesManager`, all using
-    `ProfileUtils.getAuxiliaryConfiguration(profile)` per the
-    `StartupActionsManager` precedent.
-  - Replace every existing call site of
-    `RailDriverCalibration.loadOrDefault(getDefaultFile())` and
-    `cal.save(getDefaultFile())` with the manager's new pair.
-  - Route the v3 fragment load — plus the §9.13 legacy
-    `<semiRealistic>` discard — through `ErrorHandler` per
-    §9.11.3.
-- **Implement §9.13 legacy-file migration** inside
-  `RailDriverPreferencesManager.initialize(...)`. If
-  `<rd:hardwareCalibration>` is missing **and**
-  `<profile-root>/profile/raildriver-calibration.xml` exists, parse the
-  legacy file with the existing v1 / v2 path, populate the two
-  new fragments (with the §9.13 best-effort field mapping), and
-  rename the legacy file to `*.xml.bak`. Idempotent on
-  subsequent runs.
-- **XSDs.** Add `xml/schema/raildriver/raildriver-hardware-calibration-3.xsd`
-  and `xml/schema/raildriver/raildriver-semi-realistic-3.xsd`. Each follows
-  the Venetian-Blinds pattern, reuses shared types from
-  `types/general.xsd` (notably `trueFalseType` for the
-  `enabled` attribute), defines inline `xs:enumeration`
-  simpleTypes for the `scenario` (on `<rd:load>`) and `mode` (on
-  `<rd:decoderBrake>`) attributes matching the Java enum constant
-  names, and is annotated with the responsible `*Xml`
-  reader/writer class via `<xs:annotation>`/`<xs:appinfo>`. The
-  fragment writer emits the matching `xsi:schemaLocation` on
-  each fragment root.
-- **Schema validation.** Run
-  `xmllint -noout -schema http://www.w3.org/2001/XMLSchema.xsd
-  xml/schema/raildriver/raildriver-hardware-calibration-3.xsd` and
-  `xml/schema/raildriver/raildriver-semi-realistic-3.xsd`, plus the
-  per-fixture `xmllint -noout <fixture>.xml` checks against every
-  file under `valid/` / `invalid/` / `load/` (§12.4) before
-  commit.
-- **`EnumIoNames`-style enum persistence.** Wire `LoadScenario`
-  and `DecoderBrakeMode` through `AbstractXmlAdapter.EnumIoNames`
-  so the on-disk form is the constant name and bad values land in
-  `ErrorHandler`.
-- **Test fixtures (§12.4 / §12.5).** Add the per-fragment
-  validation samples, intentionally-invalid samples, the v1 / v2
-  legacy-file migration fixtures, and the matching `SchemaTest`
-  and `LoadAndStoreTest` classes.
-- **Logging (§5.6).** Add `private static final
-  org.slf4j.Logger log = ...` to every new class, place attach /
-  detach / migration / save messages at `INFO`, the v2 discard
-  + malformed-child events at `WARN` (paired with `ErrorHandler`),
-  and any per-axis recompute trace at `DEBUG`.
-- **Javadoc (§12.6).** Author Javadoc for every new public /
-  protected API on `RailDriverPreferencesManager`, the two
-  `PreferencesPanel` classes, the engine, the settings /
-  calibration records, and the new `*Xml` adapters before the
-  phase ships. Update `RailDriverMenuItem`'s Javadoc to reflect
-  its slimmer post-relocation API.
-- **Help pages (§12.6).** Add the Settings-tab and migration-notes
-  help pages so the operator-facing documentation lands with the
-  feature.
-
-### Phase 3 — RailDriver lever wiring
-
-- Patch `RailDriverMenuItem.dispatchValueEvent` per §5.4 (one case
-  per axis). Each setter just stores into a `volatile` field on the
-  engine and triggers `setTargetSpeed(true)`.
-- Wire `setLEDs` integration for the dyn-brake region (today's TODO
-  at `RailDriverMenuItem.java:962`).
-- Bail-off threshold & polarity are read from the existing
-  `RailDriverCalibration` block.
-- Manual smoke test on a real RailDriver: each lever produces the
-  expected engine state per the per-tick log line.
-
-### Phase 4 — Air system & dyn brake
-
-- Implement the reservoir + air-line repeaters using
-  `ThreadingUtil.runOnLayoutDelayed` self-rescheduling chains
-  guarded by an `airEpoch` cancellation counter (Issue 1 / Option D).
-  Repeater specifics (start/stop conditions, single-vs-two-chain
-  shape, lever-vs-reservoir semantics) follow the resolution of
-  Issue 5 in §6.2.
-- Wire `setAirLineValue` from Auto Brake; `setBailoffAsserted` from
-  byte 4.
-- Implement the low-speed dyn-brake taper (§6.3).
-- `airRefreshRateMs == 0` short-circuits the repeater chain so no
-  `runOnLayoutDelayed` is posted (§9.6).
-
-### Phase 5 — ESU decoder brake passthrough
-
-- Port `setDecoderBrake` ([research §4.3](semi-realistic-throttle-info.md#43-esu-decoder-brake-functions--passthrough-to-the-loco))
-  using JMRI's `DccThrottle.setFunction(int, boolean)` API.
-- Three-pass logic (clear-all, find-highest-fitting, dispatch
-  changes-only) is preserved verbatim.
-- The `decoderBrakeMode` dropdown on the Semi-Realistic
-  `PreferencesPanel` gates the entire passthrough (`NONE` short-
-  circuits before any `setFunction` call).
-
-### Phase 6 — Throttle-toolbar connectivity Jynstrument
-
-- Ship `RailDriverModeToggle.jyn` (§10) as a pure connectivity
-  indicator. Two PNGs only (active / greyed) — no mode-aware icon
-  variants.
-- Implement the two-state visual logic (§10.3) in the Jython
-  class. Subscribe to `"railDriverConnected"` (`RailDriverMenuItem`)
-  only — do **not** subscribe to mode events
-  (`"enabledChanged"`, `"activeThrottleFrame"`); the indicator is
-  not mode-aware (Decision 6).
-- Click handling matches existing JMRI Jynstrument conventions
-  (option C): left-click opens `JMRI Preferences → RailDriver`
-  directly; right-click shows a popup with one `Settings...` item
-  that opens the same Preferences view. Both gestures invoke the
-  same opener method to keep behaviour consistent.
-- Visual greyed state must use icon swap + tooltip update, not
-  `setEnabled(false)` (which would block both click paths); see
-  §10.2 pseudocode.
-- `RailDriverMenuItem.attachThrottleWindow()` auto-installs the
-  indicator on first bind via `hasJynstrumentInstalled`.
-- **Javadoc (§12.6).** Document the small Jynstrument-support
-  API on `RailDriverMenuItem` (`isRailDriverConnected`,
-  `addAttachStateListener` / `removeAttachStateListener`,
-  `"railDriverConnected"` event name).
-- **Help page (§12.6).** Write
-  `help/en/html/tools/usb/RailDriverModeToggle.shtml` covering the
-  two visible states (connected / disconnected), the click → Settings
-  shortcut, and the universal close-and-reopen-throttle rule for
-  applying any settings or calibration change.
-
----
-
-## 12. Testing strategy
+## 11. Testing strategy
 
 **Cross-cutting: `warnOnce` / `infoOnce` in tests.** Several code
 paths in this design emit one-shot warnings via
@@ -2126,9 +1830,9 @@ calling `Log4JUtil.restartLogging()` in a `@BeforeEach` or by
 asserting the suppression behaviour rather than the second
 emission). Schema / load-and-store fixtures that intentionally
 trigger these warnings (`load/raildriver-semi-realistic-malformed-child.xml`
-in §12.5; the v2 discard in §12.5 Group B) must use this pattern.
+in §11.5; the v2 discard in §11.5 Group B) must use this pattern.
 
-### 12.1 Unit tests (pure math, no JMRI runtime)
+### 11.1 Unit tests (pure math, no JMRI runtime)
 
 Table-driven tests for the static helpers, with expected values copied
 from EngineDriver's source so any future drift from the upstream is
@@ -2145,7 +1849,7 @@ caught immediately:
 @Test public void loadMultiplier_unitTrainIsTen()   { /* ... */ }
 ```
 
-### 12.2 Engine integration tests
+### 11.2 Engine integration tests
 
 Run the engine with a mock `DccThrottle`, drive lever inputs through
 the polling-thread setters, sample the emissions:
@@ -2169,7 +1873,7 @@ the polling-thread setters, sample the emissions:
 - **Load multiplier:** for each scenario, verify Δt scales by exactly
   the resolved multiplier vs `LIGHT_ENGINE`.
 
-### 12.3 Manual hardware tests
+### 11.3 Manual hardware tests
 
 End-to-end on a real RailDriver console with a connected layout
 (or a JMRI debug-throttle), validating that each lever's feel
@@ -2185,7 +1889,7 @@ matches the Δt expectation. Smoke list:
 - Reverser flip at any non-zero speed: ignored; at zero speed:
   takes effect.
 
-### 12.4 Schema-validation tests (`SchemaTest`)
+### 11.4 Schema-validation tests (`SchemaTest`)
 
 Follows the JMRI `SchemaTest` pattern (see
 [`test/jmri/configurexml/SchemaTest.java`](https://github.com/JMRI/JMRI/blob/master/java/test/jmri/configurexml/SchemaTest.java)).
@@ -2248,7 +1952,7 @@ Validation is automatic: the `SchemaTest` parameterised test runs
 in-JVM validation (the same approach `jmri.configurexml.SchemaTest`
 already uses) over each file in both directories.
 
-### 12.5 Load / store round-trip tests (`LoadAndStoreTest`)
+### 11.5 Load / store round-trip tests (`LoadAndStoreTest`)
 
 Follows the JMRI `LoadAndStoreTest` pattern (see
 [`test/jmri/configurexml/LoadAndStoreTest.java`](https://github.com/JMRI/JMRI/blob/master/java/test/jmri/configurexml/LoadAndStoreTest.java)).
@@ -2341,17 +2045,15 @@ discard over migration. The test files exist to lock that
 contract in place so future code changes cannot silently
 re-introduce a lossy migration.
 
-### 12.6 Javadoc and help-page deliverables
+### 11.6 Javadoc and help-page deliverables
 
 Per `.github/instructions/jmri-plugins.instructions.md`, new
 functionality should ship with CI unit tests, Javadoc, and help
-pages. The first two are covered by §12.1–§12.5; this section
-covers Javadoc and help pages explicitly so they don't slip past
-the implementation phases.
+pages. The first two are covered by §11.1–§11.5; this section
+covers Javadoc and help pages explicitly.
 
 **Javadoc.** Every new public or protected API gets a class-level
-and per-method Javadoc block before the phase that introduces it
-ships. Concretely:
+and per-method Javadoc block. Concretely:
 
 - `SemiRealisticThrottleEngine` — class header summarising the
   EngineDriver-aligned algorithm with a link to
@@ -2396,11 +2098,6 @@ ships. Concretely:
   Jynstrument is a pure connectivity indicator (Decision 6 / §10)
   and does not query bound-frame mode.
 
-The Javadoc tasks are scheduled on the same phase that lands the
-class itself (Phase 1 for the engine, Phase 2 for the
-settings UI / persistence, Phase 6 for the Jynstrument
-support API).
-
 **Help pages.** Two new pages and one update to existing content:
 
 - `help/en/html/tools/usb/RailDriverSemiRealistic.shtml` *(new)*
@@ -2420,23 +2117,15 @@ support API).
   fields, the JMRI Preferences-window Save / Apply / Cancel
   semantics, and the legacy-file migration in §9.13.)*
 
-The two new pages are written in Phase 2 (Settings UI lands) and
-Phase 6 (Jynstrument lands) respectively. The updated existing
-page is touched as part of Phase 2 alongside the Settings UI
-changes.
-
-The Javadoc and help-page work items are surfaced explicitly in
-the per-phase bullet lists in §11 so they don't slip.
-
 ---
 
-## 13. Open design questions for review
+## 12. Open design questions for review
 
 The package placement, SPI integration, and engine cross-tree
 coupling questions raised in the original draft are **resolved**:
 
 - All RailDriver code relocates from `jmri.util.usb` to
-  `jmri.jmrit.usb` (§11.0). This satisfies the `jmri-structure`
+  `jmri.jmrit.usb`. This satisfies the `jmri-structure`
   rules: `jmrit` is the correct home for user-level tools, and
   references to `jmri.jmrit.throttle.ThrottleFrame` /
   `jmri.jmrit.roster.RosterEntry` from `RailDriverMenuItem` /
@@ -2446,7 +2135,7 @@ coupling questions raised in the original draft are **resolved**:
   JMRI Preferences window (§9.5); `RailDriverSettingsFrame` /
   `RailDriverSettingsAction` are retired.
 - Persistence is owned by a `jmri.spi.PreferencesManager` SPI
-  provider, `RailDriverPreferencesManager` (§9.4 / §11.0); a
+  provider, `RailDriverPreferencesManager` (§9.4); a
   single `enabled` flag (§9.1) replaces the previous
   persisted-vs-live split, and the dispatch strategy is fixed
   for a throttle frame's lifetime (Issue 4).
@@ -2459,7 +2148,7 @@ coupling questions raised in the original draft are **resolved**:
   fragment-namespace generation (`-3`), shared
   `<rd:semiRealistic>` and private `<rd:hardwareCalibration>`
   fragments, `<jmri:usingclass>` FQNs in
-  `jmri.jmrit.usb.configurexml` (§9.11 / §9.12 / §11.0).
+  `jmri.jmrit.usb.configurexml` (§9.11 / §9.12).
 - **Universal deferred-application** (Decision 6 / §9 intro): all
   `<rd:semiRealistic>` field changes and all `<rd:hardwareCalibration>`
   detent changes are persisted but never pushed to running code.
@@ -2480,7 +2169,7 @@ No open design questions remain.
 
 ---
 
-## 14. Cross-references
+## 13. Cross-references
 
 - [`semi-realistic-throttle-info.md`](semi-realistic-throttle-info.md) —
   full EngineDriver algorithm reference.
