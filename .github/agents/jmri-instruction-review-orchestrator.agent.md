@@ -1,7 +1,7 @@
 ---
 name: jmri-instruction-review-orchestrator
 description: Reviews user-specified content (file paths, globs, or inline text) against every `jmri-*.instructions.md` file in `.github/instructions/`. Spawns one `jmri-instruction-checker` subagent per instruction file in parallel, waits for all to finish, then produces a single consolidated human-readable report. Use this when you want an instruction-compliance review of specific code or files.
-tools: ["read", "search", "agent"]
+tools: [read, agent, search, todo]
 agents: [jmri-instruction-checker]
 ---
 
