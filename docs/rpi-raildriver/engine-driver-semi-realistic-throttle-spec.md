@@ -185,7 +185,7 @@ public final class SemiRealisticThrottleEngine {
     private double       targetAcceleration;  // signed Δt multiplier
 
     // ─── Lever inputs (last value posted from the polling thread) ──────────
-    private int          throttleSliderStep;  // 0..maxThrottle
+    private int          throttleSliderStep;  // 0..maxThrottleStep
     private int          dynBrakeStep;        // 0..numberOfBrakeSteps
     private int          indepBrakeStep;      // 0..numberOfBrakeSteps
     private int          airLineValue;        // 0..100, demanded by Auto Brake lever
@@ -909,7 +909,6 @@ matching XML fragment.
  * dispatcher — operator must close and reopen the throttle to
  * pick up the new values (§9 intro / §9.8).
  */
-public void applyPersistedEnabled(boolean enabled);
 public void saveSemiRealisticSettings(SemiRealisticSettings s);
 
 /**
@@ -920,10 +919,12 @@ public void saveSemiRealisticSettings(SemiRealisticSettings s);
 public void saveHardwareCalibration(RailDriverHardwareCalibration cal);
 ```
 
-A single PCS event is fired on the manager's settings listener:
+A single PCS event is fired via the inherited `jmri.beans.Bean`
+property-change support (callers subscribe with the standard
+`addPropertyChangeListener("enabledChanged", l)`):
 
-- `"enabledChanged"` — fired by `applyPersistedEnabled` after the
-  XML write. The Semi-Realistic `PreferencesPanel` subscribes so
+- `"enabledChanged"` — fired by `saveSemiRealisticSettings` after the
+  XML write, if the `enabled` flag changed across the save. The Semi-Realistic `PreferencesPanel` subscribes so
   its checkbox reflects the latest persisted state if multiple
   Preferences panels are visible at once. The engine, the
   Jynstrument, and `RailDriverMenuItem` do **not** subscribe — none
@@ -1011,7 +1012,7 @@ sees what they're tuning:
 **Throttle / ramp**
 - **Max throttle step:** integer 14..126, default 126. The DCC
   upper bound the engine ramps toward.
-- **Step size per ramp tick:** integer 1..16, default 2. Speed-step
+- **Step size per ramp tick:** integer 1..maxThrottleStep, default 2. Speed-step
   units the ramp scheduler emits each tick.
 - **Acceleration repeat (ms):** integer 1..10000, default 300. Base
   Δt while ramping up; multiplied by `targetAcceleration`.
@@ -1025,10 +1026,11 @@ sees what they're tuning:
 - **Max brake percent:** integer 5..100, default 70. Cap on brake
   retardation; 100 = "instant zero" (Δt × |targetAcceleration|
   collapses to zero).
-- **Max-brake-under-power offset:** real 0.0..1.0, default 0.20.
-  Subtracted from `maxBrakePcnt/100` to compute
-  `maxBrakeUnderPower` (the gentler curve when the throttle is
-  fighting the brake — see §5.3).
+- **Max brake under power:** real 0.0..1.0, default 0.50. The
+  effective brake fraction when the throttle is fighting the brake
+  (the gentler "under power" curve — see §5.3). Must be less than
+  `maxBrakePcnt/100` by at least 0.05. Matches EngineDriver's
+  derived `maxBrakeUnderPower = (maxBrakePcnt/100) − 0.2`.
 
 **Dynamic brake**
 - **Dyn-brake low-speed taper threshold (steps):** integer 0..32,
@@ -1193,7 +1195,7 @@ window open and the panel dirty):
 - `1 ≤ speedStep ≤ maxThrottleStep`
 - `accelRepeatMs ≥ 1`, `decelRepeatMs ≥ 1`
 - `5 ≤ maxBrakePcnt ≤ 100`
-- `numberOfBrakeSteps ≥ 1`
+- `1 ≤ numberOfBrakeSteps ≤ 16`
 - `0.0 ≤ maxBrakeUnderPower < 1.0` and
   `(maxBrakePcnt/100) − maxBrakeUnderPower ≥ 0.05` (some headroom
   between the under-power and full curves)
@@ -1320,7 +1322,7 @@ elements, with their own scalars carried as attributes:
 
     numberOfBrakeSteps="7"
     maxBrakePcnt="70"
-    maxBrakeUnderPower="0.20"
+    maxBrakeUnderPower="0.50"
 
     dynBrakeMinSpeedStep="8"
 
@@ -1415,7 +1417,7 @@ public final class SemiRealisticSettings {
     // Brake
     public int     numberOfBrakeSteps      = 7;
     public int     maxBrakePcnt            = 70;
-    public double  maxBrakeUnderPower      = 0.20;     // offset; effective = (maxBrakePcnt/100) - this
+    public double  maxBrakeUnderPower      = 0.50;     // derived value; matches EngineDriver's (maxBrakePcnt/100) - 0.2
 
     // Dyn brake
     public int     dynBrakeMinSpeedStep    = 8;
@@ -1793,7 +1795,7 @@ universally true).
 ### 10.4 Bootstrap / install
 
 The `.jyn` folder ships at
-`jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn/`.
+`jython/Jynstruments/ThrottleWindowToolBar/RailDriverConnectionIndicator.jyn/`.
 `RailDriverMenuItem.attachThrottleWindow()` auto-installs it after a
 successful throttle-window attach, idempotently, via a recursive
 `hasJynstrumentInstalled` check that walks the throttle window's
@@ -1882,7 +1884,7 @@ matches the Δt expectation. Smoke list:
 - Throttle slam from idle → full: ~19 s ramp at defaults.
 - Throttle full → idle: ~50 s coast (drag-only) at defaults.
 - Indep brake full + throttle 50 %: loco settles at ~15 % of full.
-- Auto Brake EMG: hard decel at ~3 s (effectiveBrake ≈ 0.3,
+- Auto Brake EMG: hard decel at ~15 s (effectiveBrake ≈ 0.3,
   baseDecel × 0.3 = 240 ms/step × 63 steps).
 - Bail-off held during EMG: indep portion drops out; loco still
   decels via auto-brake alone but more gently.
@@ -2068,8 +2070,9 @@ and per-method Javadoc block. Concretely:
   pointing at the matching XML form (`name()`) and the user-facing
   display string in the bundle.
 - `RailDriverPreferencesManager` — Javadoc on every public method
-  (`applyPersistedEnabled`, `addSettingsListener` /
-  `removeSettingsListener`, the four `load*` / `save*` helpers)
+  (`saveSemiRealisticSettings`, the inherited
+  `addPropertyChangeListener` / `removePropertyChangeListener`
+  from `jmri.beans.Bean`, the four `load*` / `save*` helpers)
   plus the SPI lifecycle methods (`initialize`, `getRequires`,
   `isInitialized`, `getProvides`). Class header documents the
   single PCS event name fired (`"enabledChanged"`).
@@ -2106,7 +2109,7 @@ and per-method Javadoc block. Concretely:
   `Unit train` scenarios, and a short troubleshooting guide
   (e.g. "Loco accelerates immediately when I move the throttle
   → check Step size per ramp tick / acceleration repeat").
-- `help/en/html/tools/usb/RailDriverModeToggle.shtml` *(new)*
+- `help/en/html/tools/usb/RailDriverConnectionIndicator.shtml` *(new)*
   — explains the toolbar Jynstrument's two visible states
   (connected / disconnected, §10.3), the click → Preferences
   shortcut (left-click direct, right-click via popup), and the
