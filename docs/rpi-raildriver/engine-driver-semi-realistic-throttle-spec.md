@@ -158,7 +158,7 @@ public final class SemiRealisticThrottleEngine {
 
     /**
      * Engine is single-threaded: every public method runs on the JMRI
-     * layout thread (Issue 1 / Option D). Self-rescheduling work uses
+     * layout thread. Self-rescheduling work uses
      * {@link jmri.util.ThreadingUtil#runOnLayoutDelayed}; cross-thread
      * arrivals from the polling thread come via
      * {@link jmri.util.ThreadingUtil#runOnLayoutEventually}. There are
@@ -172,10 +172,11 @@ public final class SemiRealisticThrottleEngine {
      * is chosen once by {@code RailDriverMenuItem} at
      * {@code notifyAddressThrottleFound} based on the persisted
      * {@code enabled} flag (§9.1) and stays fixed for the throttle
-     * frame's lifetime. Settings and calibration are likewise
-     * captured as immutable snapshots at attach time (Decision 6 /
-     * §9.4) — there is no {@code updateSettings}; operator must
-     * close and reopen the throttle to pick up edits.
+     * frame's lifetime. Settings and calibration are captured as
+     * defensive copies at attach time — the
+     * engine holds its own copy of the {@code SemiRealisticSettings}
+     * POJO and never shares it; there is no {@code updateSettings};
+     * operator must close and reopen the throttle to pick up edits.
      */
 
     // ─── Live state (per attached throttle; layout-thread only) ────────────
@@ -194,17 +195,22 @@ public final class SemiRealisticThrottleEngine {
     private Direction    direction;           // FORWARD / NEUTRAL / REVERSE
 
     // ─── Soft inputs ───────────────────────────────────────────────────────
+    // loadScenario is a live-mutable soft input, seeded from
+    // settings.loadScenario at attachThrottle (§5.1.1) but independently
+    // changeable mid-session (e.g. via a future UI control) without
+    // closing the throttle. settings.loadScenario is only the initial value.
     private LoadScenario loadScenario;        // see §7
 
     // ─── Settings snapshot ─────────────────────────────────────────────────
     private SemiRealisticSettings settings;
 
-    // ─── Cancellation epochs (Issue 1 / Issue 2) ──────────────────────────
+    // ─── Cancellation epochs ──────────────────────────
     // Each self-rescheduled callback captures its pipeline's epoch at
     // schedule time and exits if the epoch has advanced when the
     // callback fires. recomputeTarget() bumps rampEpoch; detachThrottle()
-    // bumps airEpoch; invalidatePendingEmit() (called by E-Stop, §8.2)
-    // bumps emitEpoch.
+    // bumps airEpoch; emergencyHalt() (called by E-Stop, §8.2) bumps
+    // all three epochs and resets speedStep / targetSpeed /
+    // targetAcceleration to their stopped-state values.
     private long    rampEpoch;
     private long    airEpoch;
     private long    emitEpoch;
@@ -214,7 +220,7 @@ public final class SemiRealisticThrottleEngine {
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
     // attachThrottle accepts the SemiRealisticSettings + RailDriverHardwareCalibration
-    // snapshots that this engine will use for its lifetime. Decision 6 / §9.4:
+    // snapshots that this engine will use for its lifetime.
     // settings and calibration are NEVER pushed to a running engine — operator must
     // close and reopen the throttle to pick up changes.
     @InvokeOnLayoutThread public void attachThrottle(DccThrottle t,
@@ -234,8 +240,8 @@ public final class SemiRealisticThrottleEngine {
     // ─── Recompute (called after one or more lever-input setters) ────────
     @InvokeOnLayoutThread public void recomputeTarget();
 
-    // ─── Out-of-band setSpeedSetting helper (called by E-Stop, §8.2) ─────
-    @InvokeOnLayoutThread public void invalidatePendingEmit();
+    // ─── Emergency halt (called by E-Stop, §8.2) ──────────────────────────
+    @InvokeOnLayoutThread public void emergencyHalt();
 
     // ─── EngineDriver math (private) ─────────────────────────────────────
     private void setTargetSpeed(boolean fromSlider);
@@ -255,6 +261,97 @@ when `decoderBrakeMode == NONE`. This keeps the engine
 headless-friendly and free of jmrit type references in its API
 surface.
 
+### 5.1.1 Lifecycle methods
+
+```java
+/**
+ * Bind this engine to a live DCC throttle. Captures settings and
+ * calibration as immutable snapshots for this engine's lifetime
+ *. Seeds {@link #speedStep} from the
+ * throttle's current speed so an already-moving loco resumes
+ * smoothly. Lever-input fields are reset to neutral defaults;
+ * the caller ({@code RailDriverMenuItem}) posts the current HID
+ * snapshot immediately after attach so the engine picks up the
+ * physical lever positions on the next layout-thread pass.
+ */
+@InvokeOnLayoutThread
+public void attachThrottle(DccThrottle t,
+                           SemiRealisticSettings s,
+                           RailDriverHardwareCalibration cal) {
+    this.throttle  = t;
+    this.settings  = new SemiRealisticSettings(s); // defensive copy — never shared
+    // cal is consumed by the caller for axis-byte → step conversion;
+    // the engine itself does not retain it.
+
+    // Seed speedStep from the live throttle so we don't ramp from
+    // zero on an already-moving loco.
+    float currentFraction = t.getSpeedSetting();
+    this.speedStep = (currentFraction <= 0f)
+            ? 0
+            : Math.round(currentFraction * s.maxThrottleStep);
+    this.targetSpeed        = speedStep;
+    this.targetAcceleration = 0.0;
+
+    // Lever inputs start at neutral/released defaults. The caller
+    // posts the current HID snapshot via runOnLayoutEventually
+    // immediately after this call, so the engine picks up the
+    // physical lever positions on the next layout-thread pass.
+    this.throttleSliderStep = 0;
+    this.dynBrakeStep       = 0;
+    this.indepBrakeStep     = 0;
+    this.airLineValue       = 100;     // Released
+    this.airReservoirPct    = 100;
+    this.bailoffAsserted    = false;
+    this.direction          = Direction.NEUTRAL;
+
+    // Seed the live-mutable soft input from the settings snapshot.
+    this.loadScenario       = s.loadScenario;
+
+    // Reset all pipeline epochs and deferred-emit state.
+    this.rampEpoch          = 0;
+    this.airEpoch           = 0;
+    this.emitEpoch          = 0;
+    this.pendingEmitStep    = -1;
+    this.pendingEmitEpoch   = -1;
+    this.lastEmitMs         = 0;
+
+    // Start the reservoir repeater if air simulation is enabled.
+    if (s.airRefreshRateMs > 0) {
+        scheduleReservoirTick(s.airRefreshRateMs);
+    }
+}
+
+/**
+ * Unbind from the current DCC throttle. Cancels all in-flight
+ * callbacks (ramp, air, deferred emit) by bumping every epoch.
+ * After this call the engine is inert until the next
+ * {@link #attachThrottle}.
+ */
+@InvokeOnLayoutThread
+public void detachThrottle() {
+    rampEpoch++;
+    airEpoch++;
+    emitEpoch++;
+    throttle           = null;
+    speedStep          = 0;
+    targetSpeed        = 0;
+    targetAcceleration = 0.0;
+    pendingEmitStep    = -1;
+    pendingEmitEpoch   = -1;
+}
+
+/**
+ * Final cleanup. Calls {@link #detachThrottle()} if still
+ * attached. After this call the engine must not be reused.
+ */
+@InvokeOnLayoutThread
+public void dispose() {
+    if (throttle != null) {
+        detachThrottle();
+    }
+}
+```
+
 ### 5.2 The ramp scheduler
 
 Equivalent to EngineDriver's `SemiRealisticTargetSpeedRptUpdater`
@@ -271,8 +368,8 @@ public void recomputeTarget() {
     setTargetSpeed(true);          // see §5.3 — fills targetSpeed + targetAcceleration
     rampEpoch++;                   // invalidates any in-flight rampTick
     if (targetSpeed != speedStep) {
-        long delayMs = Math.round(baseDelayFor(targetAcceleration)
-                                  * Math.abs(targetAcceleration));
+        int delayMs = (int) Math.round(baseDelayFor(targetAcceleration)
+                                      * Math.abs(targetAcceleration));
         scheduleRampTick(delayMs);
     }
     // If targetSpeed == speedStep, no scheduling needed; any in-flight
@@ -280,7 +377,7 @@ public void recomputeTarget() {
 }
 
 @InvokeOnLayoutThread
-private void scheduleRampTick(long delayMs) {
+private void scheduleRampTick(int delayMs) {
     long capturedEpoch = rampEpoch;
     ThreadingUtil.runOnLayoutDelayed(() -> {
         if (capturedEpoch != rampEpoch) return;       // superseded
@@ -299,13 +396,13 @@ private void rampTick() {
     emit(next);
 
     if (speedStep != targetSpeed) {
-        long delayMs = Math.round(baseDelayFor(targetAcceleration)
-                                  * Math.abs(targetAcceleration));
+        int delayMs = (int) Math.round(baseDelayFor(targetAcceleration)
+                                       * Math.abs(targetAcceleration));
         scheduleRampTick(delayMs);
     }
 }
 
-private long baseDelayFor(double targetAccel) {
+private int baseDelayFor(double targetAccel) {
     return targetAccel > 0
             ? settings.accelRepeatMs       // default 300 ms
             : settings.decelRepeatMs;      // default 800 ms
@@ -327,7 +424,7 @@ private void emit(int newStep) {
             pendingEmitEpoch = emitEpoch;
             long capturedEpoch = emitEpoch;
             ThreadingUtil.runOnLayoutDelayed(() -> {
-                if (capturedEpoch != emitEpoch) return;   // superseded by invalidatePendingEmit
+                if (capturedEpoch != emitEpoch) return;   // superseded by emergencyHalt or new emit
                 flushDeferredEmit();
             }, settings.minEmitIntervalMs - sinceLast);
         }
@@ -355,18 +452,34 @@ private void writeSpeedSetting(int step) {
 }
 
 /**
- * Out-of-band setSpeedSetting writers (E-Stop, §8.2) call this
- * BEFORE writing the throttle directly. It cancels any pending
- * deferred-emit task by bumping {@link #emitEpoch} (the in-flight
- * runOnLayoutDelayed callback exits on epoch mismatch) and updates
- * lastEmitMs so the next ramp emit waits a full minEmitIntervalMs.
+ * Full engine halt — called by E-Stop (§8.2) BEFORE the caller
+ * writes {@code throttle.setSpeedSetting(-1f)} directly.
+ * <p>
+ * Cancels <em>all three</em> self-rescheduled pipelines by bumping
+ * {@link #rampEpoch}, {@link #airEpoch}, and {@link #emitEpoch}.
+ * Resets {@link #speedStep}, {@link #targetSpeed}, and
+ * {@link #targetAcceleration} to their stopped-state values so the
+ * engine's internal view matches the decoder's actual zero-speed
+ * state after the E-Stop. Clears any deferred-emit state and
+ * updates {@link #lastEmitMs}.
+ * <p>
+ * Recovery: the next lever-change event calls
+ * {@link #recomputeTarget()}, which reads the current physical
+ * lever positions and computes fresh {@code targetSpeed} /
+ * {@code targetAcceleration} from them — no special recovery
+ * path is needed.
  */
 @InvokeOnLayoutThread
-public void invalidatePendingEmit() {
+public void emergencyHalt() {
+    rampEpoch++;
+    airEpoch++;
     emitEpoch++;
-    pendingEmitStep  = -1;
-    pendingEmitEpoch = -1;
-    lastEmitMs = System.currentTimeMillis();
+    speedStep          = 0;
+    targetSpeed        = 0;
+    targetAcceleration = 0.0;
+    pendingEmitStep    = -1;
+    pendingEmitEpoch   = -1;
+    lastEmitMs         = System.currentTimeMillis();
 }
 ```
 
@@ -465,6 +578,40 @@ static double getBrakeDecimalPcnt(double step, double steps, double maxBrake) {
     double max = Math.sqrt(steps) * steps * maxBrake;
     return 1.0 - (Math.sqrt(step) * step * maxBrake / max * maxBrake);
 }
+
+/** Identity mapping — throttle slider step IS the speed target. */
+private static int sliderSpeedFromStep(int throttleSliderStep) {
+    return throttleSliderStep;
+}
+
+/** Clamp a speed step to the valid 0..maxThrottleStep range. */
+private int clampStep(int step) {
+    if (step < 0) return 0;
+    if (step > settings.maxThrottleStep) return settings.maxThrottleStep;
+    return step;
+}
+
+/**
+ * Low-speed taper for dynamic brake (§6.3). Real dyn brake is
+ * ineffective near zero speed (no current to dissipate). Below
+ * {@code dynBrakeMinSpeedStep} the requested step is scaled down
+ * linearly to zero at {@code speed = 0}.
+ */
+private int effectiveDynBrakeStep(int requestedStep, int speed) {
+    if (requestedStep <= 0 || speed <= 0) return 0;
+    if (speed >= settings.dynBrakeMinSpeedStep) return requestedStep;
+    // Linear fade: full effect at threshold, zero at speed 0.
+    return Math.round(requestedStep * (float) speed / settings.dynBrakeMinSpeedStep);
+}
+
+/**
+ * Load multiplier for {@code targetAcceleration} (§7).
+ * Delegates to the scenario enum; the {@code CUSTOM} sentinel
+ * reads {@code s.customLoadMultiplier}.
+ */
+private static double getLoadMultiplier(LoadScenario sc, SemiRealisticSettings s) {
+    return sc.loadMultiplier(s);
+}
 ```
 
 ### 5.4 Polling-thread → engine wiring
@@ -484,7 +631,7 @@ throttle-frame lifetime — there is no live mid-session toggle.
 | 4 (Bail-off)        | (logged, no engine call)                            | `engine.setBailoffAsserted(byteValue >= bailoffThreshold)`.                               |
 
 Cross-thread mechanics. Each axis-byte event arrives on the polling
-thread. Under Issue 1 / Option D the engine is single-threaded on the
+thread. Under the engine is single-threaded on the
 JMRI **layout thread**, so the dispatcher hops via
 `ThreadingUtil.runOnLayoutEventually`:
 
@@ -526,18 +673,22 @@ public methods carry `@InvokeOnLayoutThread`. There is no
 - **Self-rescheduling work** (`rampTick`, the air repeaters in §6.2):
   uses `ThreadingUtil.runOnLayoutDelayed`. Each scheduled callback
   captures its pipeline's epoch at schedule time and exits if the
-  epoch has advanced when the callback fires (Issue 1 cancellation
-  pattern).
+  epoch has advanced when the callback fires.
 - **Decoder-side dispatch** (`throttle.setSpeedSetting(...)`):
   called directly on the layout thread — no `runOnGUIEventually`
   marshalling, because the layout thread is the GUI thread today
   and `setSpeedSetting` belongs on the layout thread by design.
 - **Out-of-band `setSpeedSetting`** (E-Stop, §8.2): the caller
-  invokes `engine.invalidatePendingEmit()` first, which bumps
-  `emitEpoch`, clears any deferred-emit state, and updates
-  `lastEmitMs`. Any in-flight deferred-emit `runOnLayoutDelayed`
-  callback exits on epoch mismatch. The caller then writes
-  `setSpeedSetting(-1f)` directly on the layout thread.
+  invokes `engine.emergencyHalt()` first, which bumps all three
+  pipeline epochs (`rampEpoch`, `airEpoch`, `emitEpoch`), resets
+  `speedStep` / `targetSpeed` / `targetAcceleration` to their
+  stopped-state values, and clears any deferred-emit state. Any
+  in-flight `runOnLayoutDelayed` callback (ramp, air, or deferred
+  emit) exits on epoch mismatch. The caller then writes
+  `setSpeedSetting(-1f)` directly on the layout thread. Recovery
+  is automatic: the next lever-change event calls
+  `recomputeTarget()`, which reads the current physical lever
+  positions and computes fresh targets.
 - **Mode is fixed at bind time.** There is no live enable/disable
   toggle; the dispatcher type is chosen once at
   `notifyAddressThrottleFound`. The engine's lifecycle reduces to
@@ -546,7 +697,7 @@ public methods carry `@InvokeOnLayoutThread`. There is no
 This collapses the historical `synchronized` + `volatile
 ResolvedPhysics` snapshot pattern (which the previous draft used to
 publish coefficient updates atomically) into the layout-thread
-single-thread model. Decision 6 removes the need for atomic
+single-thread model. The deferred-application rule (§9 intro) removes the need for atomic
 coefficient publication entirely: settings are immutable for an
 attached engine's lifetime, so there is no `updateSettings(...)`
 mid-session and no snapshot-swap to coordinate. Operator picks up
@@ -629,13 +780,53 @@ Two key departures from EngineDriver:
    EMG (mapped to `airLineValue = 0`); the operator can sit at any
    intermediate pressure. EngineDriver had to fake this because its UI
    has only one brake slider; we have a real one.
-2. **The reservoir / line refill behaviour is preserved verbatim** from
-   EngineDriver's `SemiRealisticAirRptUpdater` and
-   `SemiRealisticAirLineRptUpdater`
+
+   **Consequence: instant release.** In EngineDriver, releasing the
+   brake is gradual — the line repeater slowly refills `airLineValues`
+   from the reservoir. Here, moving the Auto Brake lever toward
+   Released snaps `airLineValue` to the lever's position immediately
+   (the polling thread writes it every ~8 ms). This is a deliberate
+   simplification: the physical lever's continuous position *is* the
+   line pressure, with no lag. The reservoir (see item 2) constrains
+   only itself; it does not gate the line value.
+
+2. **The reservoir refill behaviour is preserved** from
+   EngineDriver's `SemiRealisticAirRptUpdater`
    ([research §4.2](semi-realistic-throttle-info.md#42-air-system-westinghouse-style-simulation)).
    The reservoir refills at +5 % every `airRefreshRateMs` (default
-   2000 ms); when the lever is at Released, the line refills from the
-   reservoir in 20 % chunks.
+   2000 ms). EngineDriver's line repeater (`SemiRealisticAirLineRptUpdater`)
+   is **not ported** because item 1 makes it redundant — the lever
+   directly controls the line, so there is no separate line-refill
+   pipeline to run. The `airEpoch` cancellation covers only the
+   reservoir repeater.
+
+   ```java
+   /**
+    * Reservoir repeater — self-rescheduling via runOnLayoutDelayed.
+    * Started by attachThrottle (§5.1.1) when airRefreshRateMs > 0.
+    * Cancelled by emergencyHalt (bumps airEpoch) or detachThrottle
+    * (bumps airEpoch). Follows the same epoch-capture pattern as
+    * the ramp scheduler (§5.2).
+    */
+   @InvokeOnLayoutThread
+   private void scheduleReservoirTick(int delayMs) {
+       long capturedEpoch = airEpoch;
+       ThreadingUtil.runOnLayoutDelayed(() -> {
+           if (capturedEpoch != airEpoch) return;  // superseded
+           reservoirTick();
+       }, delayMs);
+   }
+
+   @InvokeOnLayoutThread
+   private void reservoirTick() {
+       if (airReservoirPct < 100) {
+           airReservoirPct = Math.min(100,
+                   airReservoirPct + settings.airReservoirReplenishPcnt);
+       }
+       // Self-reschedule.
+       scheduleReservoirTick(settings.airRefreshRateMs);
+   }
+   ```
 
 **Disabling the air simulation.** There is **no session-level
 "air off" toggle**. Two paths produce that effect, both natural:
@@ -667,7 +858,7 @@ prototype-like adjustments in `effectiveDynBrakeStep`:
 
 - **Low-speed taper:** real dyn brake is ineffective near zero speed
   (no current to dissipate). Below `dynBrakeMinSpeedStep` (default 8,
-  i.e. ~6 mph in 0..126 space), the requested step is scaled down
+  i.e. ~6 % of the 126-step scale), the requested step is scaled down
   linearly to zero at `speed = 0`.
 - **No air-line interaction:** dyn brake is electrical-only and does
   not pull from the air system. The reservoir / line repeaters ignore
@@ -775,6 +966,17 @@ Same rules as EngineDriver
   the lever's *target* direction so the operator can pre-set the
   reverser before stopping.
 
+The single `direction` field (§5.1) always reflects the **physical
+lever position** — `setDirection(d)` writes it unconditionally. The
+interlock lives in the DCC-direction-write path: the engine calls
+`throttle.setIsForward(...)` only when `speedStep == 0` (or on
+attach). The `DccThrottle` object's own direction is the source of
+truth for what is currently applied to the decoder. When
+`speedStep` reaches 0 (via ramp, brake, or NEUTRAL coast), the
+engine applies the pending `direction` to the throttle and
+`recomputeTarget()` picks up the new direction for subsequent ramp
+computation.
+
 ### 8.2 Stop / E-Stop
 
 EngineDriver has four selectable stop modes
@@ -784,16 +986,21 @@ On RailDriver only the hard E-Stop is wired:
 - **E-Stop SPDT (#2):** hard E-Stop unconditionally. Bypasses the
   ramp. The handler runs on the layout thread and:
 
-  1. Calls `engine.invalidatePendingEmit()` (§5.2) to bump
-     `emitEpoch`, clear `pendingEmitStep` / `pendingEmitEpoch`,
-     and update `lastEmitMs`. Any in-flight deferred-emit
-     `runOnLayoutDelayed` callback exits on epoch mismatch.
+  1. Calls `engine.emergencyHalt()` (§5.2) to bump all three
+     pipeline epochs (`rampEpoch`, `airEpoch`, `emitEpoch`), reset
+     `speedStep` / `targetSpeed` / `targetAcceleration` to their
+     stopped-state values, and clear any deferred-emit state. Any
+     in-flight `runOnLayoutDelayed` callback (ramp, air, or
+     deferred emit) exits on epoch mismatch.
   2. Calls `throttle.setSpeedSetting(-1f)` directly on the layout
      thread.
 
-  The two-step sequence is required: without step 1 a deferred
-  emit scheduled by an earlier ramp tick can fire after step 2 and
-  overwrite the emergency stop with a stale ramp value (Issue 2).
+  The two-step sequence is required: without step 1 an in-flight
+  ramp tick or deferred emit can fire after step 2 and overwrite
+  the emergency stop with a stale ramp value. Recovery
+  is automatic: the next lever-change event calls
+  `recomputeTarget()`, which reads the current physical lever
+  positions and computes fresh targets from them.
 
 No "soft stop" button (EngineDriver's `THROTTLE_STOP_BRAKE_FULL`
 mode) is implemented. Operators wishing to stop a moving loco walk
@@ -814,7 +1021,7 @@ window (§9.5), and persistence moves onto a new
 `jmri.spi.PreferencesManager` provider, `RailDriverPreferencesManager`
 (§9.4).
 
-**Universal deferred-application rule (Decision 6).** Every
+**Universal deferred-application rule (§9 intro).** Every
 `<rd:semiRealistic>` field and every `<rd:hardwareCalibration>`
 detent is **persisted but never pushed to running code**. Any
 throttle frame already bound to a `DccThrottle` continues with the
@@ -857,7 +1064,7 @@ lifetime. Subsequent edits to `enabled` in Preferences do **not**
 affect any throttle frame already bound — they only take effect on
 the next bind. The same deferred semantics apply to every other
 field in `<rd:semiRealistic>` and to every detent in
-`<rd:hardwareCalibration>` (Decision 6 / §9 intro).
+`<rd:hardwareCalibration>` (§9 intro).
 
 ### 9.2 Mutation paths and persistence semantics
 
@@ -938,7 +1145,7 @@ manager via
 The manager is loaded by the standard `ServiceLoader` SPI path
 (`@ServiceProvider(service = jmri.spi.PreferencesManager.class)`)
 and exposes itself under its own concrete class via
-`getProvides()` (Issue 7); no separate
+`getProvides()`; no separate
 `InstanceManagerAutoDefault` registration is used.
 
 ### 9.5 Settings UI as `PreferencesPanel` SPI providers
@@ -1104,30 +1311,42 @@ multiplier is 1.0, which is the multiplicative identity.
 ### 9.8 Save / Apply via the JMRI Preferences framework
 
 Save / Apply / Cancel come from the **standard JMRI Preferences
-window**, which calls into each registered `PreferencesPanel`
-through the `jmri.swing.PreferencesPanel` interface. There is no
-bespoke button bar.
+window** (`apps.gui3.tabbedpreferences.TabbedPreferences`), which
+calls into each registered `PreferencesPanel` through the
+`jmri.swing.PreferencesPanel` interface. There is no bespoke button
+bar.
 
 The framework's flow per `Save` / `Apply` click:
 
-1. The framework asks each registered panel `isDirty()`.
-2. For each dirty panel, the framework calls `savePreferences()`.
-3. `savePreferences()` performs the panel's per-field validation
-   plus the §9.10 cross-field rules, hands the validated record to
-   `RailDriverPreferencesManager` (which writes the appropriate
-   `<rd:semiRealistic>` or `<rd:hardwareCalibration>` fragment via
-   `AuxiliaryConfiguration` and updates its in-memory record), then
-   calls `restoreState()` on its own controls so they reflect what
-   was just saved (this also clears the panel's dirty flag).
+1. The framework calls `savePreferences()` on **every** registered
+   panel (it does not gate on `isDirty()`). Each panel must
+   **self-gate**: if `!isDirty()`, `savePreferences()` returns
+   immediately without writing XML or surfacing alerts.
+2. When dirty, `savePreferences()` first checks
+   `isPreferencesValid()` (the panel's own validation — see
+   §9.10). If invalid, the panel updates its internal status
+   `JLabel` with the localised error message, leaves the dirty
+   flag set, and returns without writing. The framework does
+   **not** render field-level errors; the panel owns its own
+   error display.
+3. When dirty and valid, `savePreferences()` hands the validated
+   record to `RailDriverPreferencesManager` (which writes the
+   appropriate `<rd:semiRealistic>` or `<rd:hardwareCalibration>`
+   fragment via `AuxiliaryConfiguration` and updates its in-memory
+   record), then calls `restoreState()` on its own controls so
+   they reflect what was just saved (this also clears the panel's
+   dirty flag and the status label).
 4. The manager fires `"enabledChanged"` on the settings listener if
    the `enabled` flag changed across the save, so any other open
    Preferences panel's checkbox can refresh. The manager does
    **not** push the new settings or calibration to any running
-   engine or bound `RailDriverMenuItem` dispatcher — Decision 6 /
-   §9 intro.
-5. **The panel surfaces a uniform `JmriJOptionPane` alert.** After
-   a successful save (any save — settings, calibration, or both),
-   the panel displays a message dialog with the localised text:
+   engine or bound `RailDriverMenuItem` dispatcher — see the
+   deferred-application rule in §9 intro.
+5. **The Semi-Realistic panel surfaces a `JmriJOptionPane` alert.**
+   After a successful save, the **Semi-Realistic panel only**
+   displays a message dialog with the localised text (the
+   Calibration panel saves silently — if only calibration changes,
+   no alert is shown):
 
    > *"RailDriver settings have been saved. Close and reopen the
    > throttle window for the changes to take effect."*
@@ -1139,21 +1358,14 @@ The framework's flow per `Save` / `Apply` click:
      `javax.swing.JOptionPane` (the JMRI helper handles
      always-on-top frame interaction correctly per
      `jmri-swing.instructions.md`).
-   - The alert fires *every* successful save, regardless of which
-     fields changed (no field-by-field "this changed live, this
-     didn't" reasoning — Decision 6).
+   - The alert fires *every* successful Semi-Realistic save,
+     regardless of which fields changed (no field-by-field "this
+     changed live, this didn't" reasoning — §9 intro).
    - If no throttle frame is currently bound to a `DccThrottle`,
      the alert text is the same; the operator's next bind will
      pick up the new values automatically.
 6. Save dismisses the Preferences window; Apply leaves it open.
    The alert is independent of which button the operator clicked.
-
-Validation failures: `savePreferences()` reports a localised error
-string back through the standard `PreferencesPanel` mechanism;
-JMRI's framework surfaces it next to the offending field and keeps
-the window open, with the panel's dirty flag still set. No save,
-no XML write, no alert. The specific blocking and warning rules
-are listed in §9.10.
 
 ### 9.9 Dirty tracking
 
@@ -1212,7 +1424,7 @@ or a status `JLabel` so the operator sees the heads-up):
 
 - `decelRepeatMs < accelRepeatMs` — counter-prototype; usually a
   mistake but allowed.
-- `speedStep × maxThrottleStep / accelRepeatMs > 1.0` — full-range
+- `ceil(maxThrottleStep / speedStep) * accelRepeatMs < 1000` — full-range
   ramp in less than one second; will feel arcade-like.
 - `airRefreshRateMs == 0` and `decoderBrakeMode != NONE` — decoder
   brake still works but the air half of the simulation is off;
@@ -1298,7 +1510,7 @@ namespace and storage location change.
 
 Lives at the root of the profile directory in the shared
 `profile.xml`. One fragment, holding all of the EngineDriver-aligned
-operator preferences. Per Issue 3 / Option A, primitive scalars
+operator preferences. Per primitive scalars
 (booleans, integers, doubles, enum-coded modes) are persisted as
 **attributes** so the existing
 `AbstractXmlAdapter.getAttributeBooleanValue` /
@@ -1352,7 +1564,7 @@ The `mode` attribute on `<rd:decoderBrake>` carries the
 constant name. Both are persisted via an `EnumIoNames` subclass that
 calls the adapter's `handleException(...)` on unknown input so the
 parse path matches the integer / boolean attribute helpers and the
-§11.5 `ErrorHandler` assertions hold (Issue 3).
+§11.5 `ErrorHandler` assertions hold.
 
 The `enabled` attribute is the single persisted `enabled` flag
 from §9.1. There is no separate "live" field — the dispatch
@@ -1360,7 +1572,7 @@ strategy is decided once at throttle-frame bind (§5.4) based on
 this attribute and stays fixed for the throttle frame's lifetime.
 
 `trueFalseType` from `xml/schema/types/general.xsd` is referenced
-by the XSD for `enabled` (Issue 3 / §9.12).
+by the XSD for `enabled`.
 
 ### 9.11.3 Per-fragment validation and error reporting
 
@@ -1466,7 +1678,7 @@ The per-fragment work breaks down as:
 
 - **Author the XSDs.** Use the **Venetian Blinds** pattern — the
   top-level fragment element has a named complex type whose
-  primitive scalars are declared as `<xs:attribute>` (Issue 3 /
+  primitive scalars are declared as `<xs:attribute>`
   Option A); structural sub-elements (e.g. `<rd:load>`,
   `<rd:decoderBrake>`) are declared anonymously inside that type
   and themselves carry their own scalars as attributes. Reuse the
@@ -1598,29 +1810,19 @@ the new code initialises that profile:
      `<rd:hardwareCalibration>` fragment and write that fragment to
      `getAuxiliaryConfiguration(profile)` in **private** space.
    - The legacy file's `<semiRealistic>` subtree (only present in
-     v2 files) is **mostly discarded**: the meaning of every
+     v2 files) is **fully discarded**: the meaning of every
      numeric field changed under the EngineDriver-aligned port
      (m/s² / m/s drag coefficients → integer milliseconds and step
      counts), so a silent numeric copy would produce nonsense
-     values. Per `jmri-xml.instructions.md` ("backward
-     compatibility ... prefer additive changes") schema-versioned
-     migration is preferred where possible, so the loader
-     **does** carry across the small set of v2 fields whose
-     meaning survives unchanged before applying defaults to the
-     rest:
-
-     | v2 element                  | v3 attribute     | Mapping                                 |
-     |-----------------------------|------------------|------------------------------------------|
-     | `<enabled>`                 | `enabled` (on `<rd:semiRealistic>`) | Boolean copy (`true`/`false`); becomes the single `enabled` flag from §9.1. |
-     | (none)                      | every other v3 attribute | Schema default applied; v2 value ignored. |
-
-     Any v2 child not in the table above is ignored. The loader
-     then writes the populated `<rd:semiRealistic>` fragment to
+     values. This includes the v2 `<enabled>` flag, which resets
+     to the v3 default (`false`) rather than being carried forward
+     — the operator must explicitly re-enable semi-realistic mode
+     through Preferences after migration. The loader writes a
+     fresh `<rd:semiRealistic>` fragment at schema defaults to
      **shared** space and emits one warn-level `ErrorHandler`
-     report **plus** a `log.warn(...)` call summarising which
-     fields were carried (`enabled`) and which were reset to
-     defaults (the rest), so the operator knows their tuning was
-     lost.
+     report **plus** a `log.warn(...)` call informing the operator
+     that all semi-realistic settings have been reset to defaults
+     and their previous tuning was lost.
    - Rename the legacy file to
      `<profile-root>/profile/raildriver-calibration.xml.bak` (do
      **not** delete it; the operator may want it for forensic
@@ -1674,7 +1876,7 @@ semi-realistic or direct mode. Its other job is to provide a
 shortcut into the JMRI Preferences window, where the operator
 edits semi-realistic settings and per-axis calibration.
 
-Decision 6 (§9 intro) makes every settings and calibration change
+The deferred-application rule (§9 intro) makes every settings and calibration change
 deferred-application; the alert in §9.8 surfaces the
 "close-and-reopen-throttle" instruction. The Jynstrument therefore
 has no work to do around mode changes — it just tracks USB
@@ -1728,7 +1930,7 @@ public void removeAttachStateListener(PropertyChangeListener l);
 
 It does **not** consume `RailDriverPreferencesManager`, does not
 read the persisted `enabled` flag, and does not query the bound
-throttle's mode. Decision 6's "close and reopen the throttle to
+throttle's mode. The deferred-application rule's "close and reopen the throttle to
 apply" rule means there is nothing to display on the toolbar that
 the alert dialog (§9.8) doesn't already cover.
 
@@ -1768,12 +1970,18 @@ addMouseListener(new MouseAdapter() {
 });
 
 private void openRailDriverPreferences() {
-    // Standard JMRI Preferences-window open, scrolled to the
-    // RailDriver group. Implementation uses the JMRI helper
-    // documented in jmri-swing.instructions.md / the
-    // PreferencesPanel API.
-    InstanceManager.getDefault(jmri.swing.PreferencesUI.class)
-                   .showPreferences("RailDriver");
+    // Open the JMRI Preferences window and navigate to the
+    // RailDriver group. Uses TabbedPreferencesAction to create
+    // the window (or raise it if already open), then
+    // gotoPreferenceItem to scroll to the RailDriver tab.
+    new apps.gui3.tabbedpreferences.TabbedPreferencesAction(
+            Bundle.getMessage("MenuSettings")).actionPerformed(null);
+    apps.gui3.tabbedpreferences.TabbedPreferences prefs =
+            InstanceManager.getNullableDefault(
+                apps.gui3.tabbedpreferences.TabbedPreferences.class);
+    if (prefs != null) {
+        prefs.gotoPreferenceItem("RailDriver", null);
+    }
 }
 ```
 
@@ -2098,7 +2306,7 @@ and per-method Javadoc block. Concretely:
   `setSemiRealisticEnabledSessionOnly`, no
   `requestAttachToThrottle`, and no
   `isCurrentFrameInSemiRealisticMode` API on this class — the
-  Jynstrument is a pure connectivity indicator (Decision 6 / §10)
+  Jynstrument is a pure connectivity indicator (§10)
   and does not query bound-frame mode.
 
 **Help pages.** Two new pages and one update to existing content:
@@ -2114,7 +2322,7 @@ and per-method Javadoc block. Concretely:
   (connected / disconnected, §10.3), the click → Preferences
   shortcut (left-click direct, right-click via popup), and the
   universal close-and-reopen-throttle rule for applying any
-  settings or calibration change (Decision 6 / §9 intro).
+  settings or calibration change (§9 intro).
 - `help/en/html/tools/usb/RailDriverSettings.shtml` *(updated to
   reflect the §9.5 SPI `PreferencesPanel` delivery, the new
   fields, the JMRI Preferences-window Save / Apply / Cancel
@@ -2141,7 +2349,7 @@ coupling questions raised in the original draft are **resolved**:
   provider, `RailDriverPreferencesManager` (§9.4); a
   single `enabled` flag (§9.1) replaces the previous
   persisted-vs-live split, and the dispatch strategy is fixed
-  for a throttle frame's lifetime (Issue 4).
+  for a throttle frame's lifetime.
 - The engine reads ESU configuration from `SemiRealisticSettings`
   only — no per-roster overrides, no `RosterEntry` lookup, no
   `jmrit` types in the engine API surface (§5.1 / §6.4).
@@ -2152,7 +2360,7 @@ coupling questions raised in the original draft are **resolved**:
   `<rd:semiRealistic>` and private `<rd:hardwareCalibration>`
   fragments, `<jmri:usingclass>` FQNs in
   `jmri.jmrit.usb.configurexml` (§9.11 / §9.12).
-- **Universal deferred-application** (Decision 6 / §9 intro): all
+- **Universal deferred-application** (§9 intro): all
   `<rd:semiRealistic>` field changes and all `<rd:hardwareCalibration>`
   detent changes are persisted but never pushed to running code.
   Bound throttle frames continue with the snapshot captured at
@@ -2162,7 +2370,7 @@ coupling questions raised in the original draft are **resolved**:
   no `updateSettings` API; `RailDriverMenuItem.reloadCalibration()`
   is no longer called from the save path.
 - **Toolbar Jynstrument is a pure connectivity indicator**
-  (Decision 6 / §10): two visual states only (active when the
+  (§10): two visual states only (active when the
   RailDriver USB device is plugged in, greyed when not). Click in
   either state opens `JMRI Preferences → RailDriver` (left-click
   direct, right-click via popup with a single `Settings...` item).
