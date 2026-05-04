@@ -104,33 +104,64 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 ---
 
-### Feature 4: Load Scenario Picker
+### Feature 4: Load System (EngineDriver-Aligned)
 
-**Description:** A `LoadScenario` enum populates a dropdown on the Semi-Realistic preferences panel. Each named scenario carries a fixed `targetAcceleration` multiplier; a `CUSTOM` sentinel delegates to a user-entered value. The multiplier scales Δt uniformly — higher load = longer ramp times.
+**Description:** Port EngineDriver's load slider and quadratic `getLoadPcnt` formula. A discrete-step load slider (default 0–5 positions) feeds the same runtime quadratic that EngineDriver uses: `((load² × (maxLoadPcnt − 100)) + 100) / 100`, where `load = step / numberOfLoadSteps`. The result multiplies `targetAcceleration` unconditionally at the end of `setTargetSpeed`, stretching Δt without ever modifying `targetSpeed`. Both curve-shaping parameters (`numberOfLoadSteps`, `maxLoadPcnt`) are exposed as operator-configurable settings, matching EngineDriver's preferences.
 
-**Scenarios:**
+**EngineDriver's `getLoadPcnt` formula (defaults: 5 steps, maxLoadPcnt = 1000):**
 
-| Scenario         | Multiplier | Mental Model                        |
-|------------------|------------|-------------------------------------|
-| Light engine     | 1.0        | Single loco, no cars                |
-| Switcher         | 1.5        | Yard work, handful of cars          |
-| Local freight    | 2.5        | Mid-length way-freight              |
-| Through freight  | 5.0        | Long road train                     |
-| Unit train       | 10.0       | Heavy unit coal/grain/oil           |
-| Custom           | (user)     | Editable numeric, 0.1..100.0        |
+| Slider step | load = step/5 | Multiplier                         |
+|-------------|---------------|------------------------------------|
+| 0           | 0.00          | Guard skips block → effective 1.0× |
+| 1           | 0.20          | 1.36×                              |
+| 2           | 0.40          | 2.44×                              |
+| 3           | 0.60          | 4.24×                              |
+| 4           | 0.80          | 6.76×                              |
+| 5           | 1.00          | 10.00×                             |
+
+The curve is quadratic — load ramps steeply in the upper half. The operator controls both the granularity (number of steps) and the ceiling (max load percent), allowing the curve to be reshaped without code changes.
+
+**Named scenario presets.** A `LoadScenario` enum provides quick-select presets that map to specific slider positions on the default curve. Selecting a preset sets the load slider to the corresponding step. The `CUSTOM` sentinel leaves the slider at its current position and enables a direct numeric multiplier override field.
+
+| Scenario         | Default step | Computed multiplier | Mental Model                        |
+|------------------|-------------|---------------------|-------------------------------------|
+| Light engine     | 0           | 1.00×               | Single loco, no cars                |
+| Switcher         | 1           | 1.36×               | Yard work, handful of cars          |
+| Local freight    | 2           | 2.44×               | Mid-length way-freight              |
+| Through freight  | 3           | 4.24×               | Long road train                     |
+| Heavy freight    | 4           | 6.76×               | Heavy road freight                  |
+| Unit train       | 5           | 10.00×              | Heavy unit coal/grain/oil           |
+| Custom           | (current)   | (user-entered)      | Editable numeric, 0.1..100.0        |
+
+**RailDriver input mapping.** EngineDriver uses a touchscreen SeekBar. The RailDriver has no physical load lever, so load is a **software-only input** — the operator selects a scenario preset on the Semi-Realistic preferences panel, or adjusts the load step via a future UI control (e.g. hat-switch mapping or Jynstrument dropdown). The selected step is a live-mutable soft input, changeable mid-session without closing the throttle.
+
+**Key Behaviours:**
+- **Quadratic formula matches EngineDriver exactly:** `getLoadPcnt(step, steps, maxLoadPcnt)` is a static method with the same signature and computation as EngineDriver's.
+- **Guard condition preserved:** When `loadSliderPosition == 0`, the multiplication is skipped entirely (matching EngineDriver's `if (loadSliderPosition > 0)` guard). This is functionally equivalent to multiplying by 1.0 but avoids a redundant floating-point operation.
+- **Immediate recalculation on change:** Any load slider change calls `recomputeTarget()` immediately, matching EngineDriver's `onProgressChanged` → `setTargetSpeed` path. There is no deferred "next lever movement" latency.
+- **Change detection:** The engine tracks `prevLoadStep` and only kicks the ramp repeater if the load step actually changed since the last `setTargetSpeed` call, matching EngineDriver's `prevLoads[]` optimisation.
+- **Configurable curve:** `numberOfLoadSteps` (default 5) sets the slider granularity and the formula denominator. `maxLoadPcnt` (default 1000) sets the curve ceiling — at 1000 the full-slider multiplier is 10×; at 500 it's 5×; at 200 it's 2×.
 
 **User Stories:**
 
-- As an operator, I want to select a named load scenario so my loco feels heavier or lighter without manually computing a multiplier.
+- As an operator, I want to select a load level so my loco feels heavier or lighter, with the same quadratic feel as EngineDriver's load slider.
+- As an operator, I want named presets (Light engine through Unit train) that map to recognisable train types.
 - As an operator, I want a Custom option so I can enter any multiplier value for unusual consists.
+- As an operator, I want to adjust the curve ceiling (`maxLoadPcnt`) so I can limit or extend the maximum load effect for my layout.
+- As an operator, I want a load change to take effect immediately, not on the next lever movement.
 
 **Acceptance Criteria:**
-- [ ] `LIGHT_ENGINE` reproduces EngineDriver's "load slider at zero" behaviour exactly (multiplier = 1.0).
-- [ ] `UNIT_TRAIN` produces 10× the Δt of `LIGHT_ENGINE`.
+- [ ] `getLoadPcnt` formula matches EngineDriver's source exactly: `((load² × (maxLoadPcnt − 100)) + 100) / 100`.
+- [ ] At defaults (5 steps, maxLoadPcnt = 1000), step 0 → 1.0×, step 5 → 10.0×, intermediate steps match EngineDriver's quadratic values.
+- [ ] When `loadSliderPosition == 0`, the load multiplication is skipped (guard condition matches EngineDriver).
+- [ ] `numberOfLoadSteps` and `maxLoadPcnt` are configurable settings (persisted, validated on save and load).
+- [ ] Changing `maxLoadPcnt` reshapes the curve — e.g. `maxLoadPcnt = 500` → full-slider multiplier is 5×.
+- [ ] Load slider change triggers immediate `recomputeTarget()` — no deferred latency.
+- [ ] Engine tracks `prevLoadStep` for change detection; redundant calls don't restart the ramp.
+- [ ] Named scenario presets map to slider positions on the default curve.
+- [ ] `CUSTOM` sentinel enables direct numeric multiplier override in `[0.1, 100.0]`.
+- [ ] `loadSliderPosition` is a live-mutable soft input — changeable mid-session without closing the throttle.
 - [ ] Display strings are localised via `Bundle.getMessage(...)` — enum constant names are never shown to users.
-- [ ] On-disk form uses enum constant names (e.g. `LIGHT_ENGINE`), not display strings.
-- [ ] Selecting a named scenario sets `customLoadMultiplier` to that scenario's value and disables the custom field.
-- [ ] `loadScenario` is a live-mutable soft input — changeable mid-session without closing the throttle.
 
 ---
 
@@ -293,7 +324,7 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 | Test Type                | Scope                                                          |
 |--------------------------|----------------------------------------------------------------|
-| Unit tests (pure math)   | `getBrakeDecimalPcnt`, `getLoadMultiplier`, `effectiveDynBrakeStep` — table-driven with EngineDriver-verified expected values |
+| Unit tests (pure math)   | `getBrakeDecimalPcnt`, `getLoadPcnt`, `effectiveDynBrakeStep` — table-driven with EngineDriver-verified expected values (load tests verify the quadratic at each default slider step and at non-default `maxLoadPcnt` values) |
 | Engine integration tests | Mock `DccThrottle`; lever inputs → emission sequence verification (pure-throttle ramp, brake clip, brake to zero, air depletion, bail-off, direction interlock, load multiplier scaling) |
 | Schema validation        | `SchemaTest` over `valid/` and `invalid/` fixture directories for both fragments |
 | Load/store round-trip    | `LoadAndStoreTest` for fragment round-trip and legacy-file migration (Groups A and B) |
@@ -321,7 +352,7 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 ## Dependencies & Constraints
 
-- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section. Any deviation must be documented and justified (only the dyn-brake low-speed taper is new).
+- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section. The `getLoadPcnt` quadratic formula, its guard condition, and both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`) are ported verbatim. Any deviation must be documented and justified (only the dyn-brake low-speed taper and the named-scenario preset layer are new).
 - **JMRI threading conventions:** All timed events through `ThreadingUtil`, never `ScheduledExecutorService` or `java.util.Timer`.
 - **JMRI SPI patterns:** Settings UI via `PreferencesPanel`, persistence via `PreferencesManager`, both discovered via `ServiceLoader`.
 - **Backward compatibility:** Legacy calibration files must migrate without data loss (detents preserved, physics coefficients discarded with warning).
