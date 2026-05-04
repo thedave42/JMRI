@@ -53,13 +53,47 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 - Position 0 = released. Each step immediately re-invokes `setTargetSpeed`.
 - **Load interaction:** The independent brake acts only on the locomotive, not the cars. When a load is present, the loco's brakes must resist the inertia of the entire consist, so the independent brake becomes proportionally less effective. The load multiplier **reduces** `indepPcnt`'s contribution to deceleration — at full load (10×), the independent brake alone produces significantly less retardation than at light engine (1.0×). Concretely, `indepPcnt` is scaled toward 1.0 (free-running) by the load: `effectiveIndepPcnt = 1.0 − ((1.0 − indepPcnt) / loadMultiplier)`. At light engine (multiplier 1.0) this is a no-op; at full load (10×) the independent brake's retardation is reduced to 1/10th of its unloaded value.
 
-#### 2b: Air System (Auto Brake lever #10, byte 2)
+#### 2b: Air System — Westinghouse Model (Auto Brake lever #10, byte 2)
 
-- Auto Brake lever position **directly sets** `airLineValue` (0..100) — no derived-from-brake-slider intermediary.
-- Reservoir refill behaviour preserved from EngineDriver: +5% every `airRefreshRateMs` (default 2000 ms), self-rescheduling via `runOnLayoutDelayed`.
-- EngineDriver's line repeater is **not ported** (redundant — the lever directly controls line pressure).
-- Air simulation disabled by parking Auto Brake at Released or by setting `airRefreshRateMs = 0`.
+The air system models a simplified Westinghouse automatic air brake. The Auto Brake lever controls a **brake valve** that regulates brake pipe (trainline) pressure, not brake cylinder pressure directly. Three state variables track the system:
+
+- `airLineValue` (0..100) — brake pipe / trainline pressure. 100 = fully charged (brakes released), 0 = fully depleted (maximum braking).
+- `airReservoirPct` (0..100) — main reservoir fill level. The energy source for recharging the brake pipe.
+- `demandedLineValue` — the lever's current demanded pressure, derived from the Auto Brake lever position. This is what the operator is *commanding*; `airLineValue` is what the system has *achieved*.
+
+**Brake application (lever deeper → line drops immediately):**
+
+Moving the Auto Brake lever toward Application/EMG reduces `demandedLineValue` proportionally. When `demandedLineValue < airLineValue`, the engine drops `airLineValue` immediately to match — modelling the fast exhaust of the brake valve venting air from the brake pipe. Application is effectively instant because the brake valve vents to atmosphere; there is no supply constraint on exhausting air.
+
+**Brake release (lever toward Released → line rises gradually):**
+
+Moving the Auto Brake lever toward Released raises `demandedLineValue`. When `demandedLineValue > airLineValue`, the line does **not** snap to the demanded value. Instead, a **line repeater** (self-rescheduling via `runOnLayoutDelayed`, same epoch-cancellation pattern as the ramp scheduler) gradually walks `airLineValue` upward:
+
+- Each tick adds `airLineRechargePcnt` (default 20) to `airLineValue`, drawing the same amount from `airReservoirPct`.
+- If `airReservoirPct` is too low to supply a full chunk, the line recharges only as much as the reservoir can provide. If the reservoir is empty, the line **cannot recharge at all** — brakes stay applied even with the lever at Released. The operator must wait for the reservoir to refill.
+- The line repeater stops when `airLineValue >= demandedLineValue` or when the lever moves back toward application (which drops `demandedLineValue` below `airLineValue`, switching back to the instant-drop path).
+- Each tick calls `recomputeTarget()` so the gradual line rise progressively reduces braking force.
+- Tick interval is `airRefreshRateMs` (default 2000 ms), matching EngineDriver's line repeater timing.
+
+This models the real Westinghouse dynamic: moving the brake handle to Release doesn't instantly release the brakes — the brake pipe must recharge through the length of the train from the main reservoir. A fully depleted line at defaults takes 5 ticks × 2 seconds = **~10 seconds** to fully release (if the reservoir is charged). After an emergency application where the reservoir is also depleted, release takes considerably longer.
+
+**Reservoir repeater (background, always running):**
+
+The reservoir refills autonomously at `airReservoirReplenishPcnt` (default +5%) every `airRefreshRateMs` (default 2000 ms), modelling the compressor continuously charging the main reservoir. The reservoir is the supply that the line repeater draws from — it is no longer decorative.
+
+**Lap (lever stationary at an intermediate position):**
+
+The operator holds the Auto Brake lever at a partially applied position. `demandedLineValue` holds at a value below 100 but above 0. If `airLineValue` has already dropped to or below `demandedLineValue`, neither the instant-drop nor the line-recharge path fires — the line pressure holds steady. This naturally models the real "Lap" position where the brake valve is closed in both directions and the brake pipe holds its current pressure.
+
+**Emergency application:**
+
+Lever at EMG → `demandedLineValue = 0` → `airLineValue` drops to 0 immediately. All brake force is at maximum. Recovery from emergency requires the operator to move the lever to Released and wait for the line repeater to recharge — a slow process, especially since the reservoir was depleted to fill brake cylinders.
+
+**Disabling the air simulation:** Set `airRefreshRateMs = 0` on the preferences panel. This short-circuits both repeaters; the lever directly sets `airLineValue` with no recharge dynamics (flat-mapping mode for operators who don't want air feel).
+
 - **Load interaction:** The auto brake engages brakes on every car in the consist plus the locomotive — braking force scales with the number of cars, proportionally matching the additional mass. The auto brake's `airPcnt` contribution to `effectiveBrake` is therefore **not reduced** by load. At any load level, full auto brake application produces roughly the same deceleration rate. This matches real-world behaviour: a properly charged trainline stops a 100-car unit train at a comparable rate to a 20-car local because the braking force scales with the consist length.
+
+**Extends EngineDriver's air model.** EngineDriver simulates Westinghouse dynamics with the same asymmetric apply/release and reservoir-gated line recharge. Our implementation ports that model faithfully. The RailDriver's continuous Auto Brake lever additionally enables intermediate-position lap and partial release to a specific pressure — capabilities the real Westinghouse brake valve supports but EngineDriver's discrete slider UI cannot express. These are natural extensions, not deviations from the underlying air model.
 
 #### 2c: Dynamic Brake (Throttle/Dyn lever #9, below Idle)
 
@@ -70,13 +104,21 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 #### 2d: Bail-Off (byte 4, transient)
 
-- While asserted, `setTargetSpeed` skips the indep + dyn contributions to `effectiveBrake` — only air still applies.
-- Allows the operator to release the loco brake against a held trainline application.
+On a real locomotive, the bail-off valve vents the **locomotive's brake cylinders** to atmosphere — regardless of whether those cylinders were pressurised by the independent brake or by the automatic brake. The loco's brake cylinders don't know which valve filled them; bail-off dumps them all. The trainline and car brakes are completely unaffected.
+
+Our model matches this: while bail-off is asserted, **all loco-side braking is released** — independent brake, dynamic brake, *and* the locomotive's share of the automatic brake application. Only the train-side retardation from the air system (the cars' brakes, which the loco cannot locally vent) continues to apply. The loco itself is free-rolling; only the braked cars behind it provide deceleration.
+
+This enables the real-world bail-off use cases:
+- **Grade descending:** auto brakes hold the cars; bail-off frees the loco wheels to prevent flat spots.
+- **Switching/coupling:** auto brakes hold the consist; bail-off lets the loco creep forward under power for a controlled coupling.
+- **Starting on a grade:** auto brakes hold the train; bail-off + throttle stretches the slack before releasing the train brakes.
+- **Emergency recovery:** bail-off lets the loco move to clear a crossing while train brakes are still bleeding off through the slow recharge cycle.
 
 #### 2e: Effective brake combination
 
 The final `effectiveBrake` is the minimum (strongest braking) across all sources, after load scaling has been applied per-source:
 
+**Normal (bail-off not asserted):**
 ```
 effectiveIndepPcnt = 1.0 − ((1.0 − rawIndepPcnt) / loadMultiplier)   // loco-only, load-reduced
 effectiveDynPcnt   = 1.0 − ((1.0 − rawDynPcnt)   / loadMultiplier)   // loco-only, load-reduced
@@ -85,6 +127,23 @@ effectiveAirPcnt   = rawAirPcnt                                        // whole-
 effectiveBrake = min(effectiveIndepPcnt, effectiveAirPcnt, effectiveDynPcnt)
 ```
 
+**Bail-off asserted (loco brake cylinders vented):**
+```
+effectiveIndepPcnt = 1.0    // released — loco cylinders vented
+effectiveDynPcnt   = 1.0    // released — electrical brake disengaged
+effectiveAirPcnt   = rawAirPcnt adjusted for train-only retardation
+                     // The air system's braking still decelerates the consist via
+                     // the cars' brakes, but the loco itself is free-rolling.
+                     // The effective retardation is reduced because only the cars
+                     // are braking, not the loco — modelled by scaling airPcnt
+                     // by the load multiplier (more cars = more train-side braking
+                     // force relative to total mass).
+
+effectiveBrake = effectiveAirPcnt   // only train-side braking remains
+```
+
+At light engine (loadMultiplier = 1.0, no cars), bail-off releases all braking entirely — there are no car brakes to contribute. This is correct: bailing off a light engine with the auto brake applied means nothing is braking at all.
+
 At light engine (loadMultiplier = 1.0), all three sources pass through unchanged — identical to EngineDriver's single-source `effectiveBrake = min(...)`.
 
 **Deviation from EngineDriver:** EngineDriver has one brake slider with a toggle, so load applies uniformly to all braking. Our per-source load scaling is new and has no EngineDriver equivalent. It is justified by the RailDriver's separate physical levers, which make the independent-vs-trainline distinction operationally real.
@@ -92,9 +151,13 @@ At light engine (loadMultiplier = 1.0), all three sources pass through unchanged
 **User Stories:**
 
 - As an operator, I want the Independent Brake lever to slow and stop my loco progressively.
-- As an operator, I want the Auto Brake lever to apply air braking that models reservoir dynamics.
+- As an operator, I want the Auto Brake lever to simulate Westinghouse air dynamics — application is fast but release is gradual, just like a real train.
+- As an operator, I want to feel the brakes bleed off slowly after I release the auto brake, not snap off instantly.
+- As an operator, I want to hold the auto brake at an intermediate position and have the brake pipe pressure stabilise there (lap behaviour).
+- As an operator, I want emergency brake recovery to take noticeably longer than a normal service release.
 - As an operator, I want below-idle throttle travel to apply dynamic braking that fades at low speed.
-- As an operator, I want the bail-off to temporarily release only the loco-side brake.
+- As an operator, I want the bail-off to vent the locomotive's brake cylinders so I can free-roll the loco while the train stays braked — just like a real bail-off valve.
+- As an operator doing a switching move, I want to apply the auto brake to hold my consist, then bail off and creep forward under power for a controlled coupling.
 - As an operator pulling a heavy train, I want the auto brake to stop me effectively while the independent brake alone barely slows me, just like a real locomotive.
 - As an operator running light engine, I want both brakes to feel equally effective since there are no cars to worry about.
 
@@ -104,10 +167,19 @@ At light engine (loadMultiplier = 1.0), all three sources pass through unchanged
 - [ ] At full load, auto brake full application produces roughly the same retardation as at light engine.
 - [ ] Dynamic brake follows the same load-reduction formula as independent brake.
 - [ ] Indep brake full + throttle 50% at light engine → loco settles at ~15% of full speed. At full load → loco settles at a much higher speed (independent brake alone can barely overcome the train's inertia).
+- [ ] **Air application is immediate:** moving the Auto Brake lever deeper drops `airLineValue` to the demanded value instantly.
+- [ ] **Air release is gradual:** moving the Auto Brake lever toward Released does NOT snap `airLineValue` up. The line repeater walks it up at `airLineRechargePcnt` per `airRefreshRateMs` tick, drawing from the reservoir.
+- [ ] **Reservoir gates release:** if `airReservoirPct` is depleted, the line cannot recharge — brakes stay applied even with the lever at Released.
+- [ ] Full line release from 0% at defaults (~20% per 2s tick, reservoir charged) takes ~10 seconds.
+- [ ] **Lap behaviour:** holding the lever stationary at an intermediate position holds `airLineValue` steady — neither dropping nor rising.
+- [ ] **Emergency recovery:** after EMG (line and reservoir both depleted), full release takes considerably longer than a normal service release because the reservoir must refill first.
+- [ ] Reservoir refills at +5% per tick when `airRefreshRateMs > 0`.
+- [ ] `airRefreshRateMs = 0` disables both repeaters — lever directly sets `airLineValue` with no dynamics (flat-mapping mode).
 - [ ] Auto Brake EMG at any load → comparable hard decel rate.
-- [ ] Bail-off held during EMG → indep + dyn portions drop out; loco still decels via air alone.
+- [ ] **Bail-off releases all loco-side braking:** with bail-off asserted, indep, dyn, AND the loco's share of the auto brake are all released. Only the cars' brakes (train-side air retardation) continue to decelerate the consist.
+- [ ] **Bail-off at light engine:** with no load (no cars), bail-off + auto brake applied = no braking at all (nothing is braking — loco cylinders are vented and there are no car brakes).
+- [ ] **Bail-off coupling move:** auto brake applied + bail-off + throttle → loco creeps forward under power while consist stays braked.
 - [ ] Dyn brake below `dynBrakeMinSpeedStep` fades linearly to zero.
-- [ ] Air reservoir refills at +5% per tick when `airRefreshRateMs > 0`.
 
 ---
 
@@ -377,7 +449,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ## Dependencies & Constraints
 
-- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section where possible. The `getLoadPcnt` quadratic formula, its guard condition, and both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`) are ported verbatim. Two documented deviations exist:
+- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section where possible. The `getLoadPcnt` quadratic formula, its guard condition, both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`), and Westinghouse air dynamics (asymmetric apply/release, reservoir-gated line recharge) are all ported from EngineDriver. The RailDriver's continuous Auto Brake lever extends the air model with intermediate-position lap and partial release, which EngineDriver's discrete slider cannot express but the underlying model supports. Two documented deviations exist:
   - **Dyn-brake low-speed taper** (Feature 2c) — EngineDriver has no dynamic brake input; we add one with a prototype-like low-speed fade.
   - **Per-source brake load scaling** (Feature 2e) — EngineDriver applies load uniformly because it has a single brake slider. We differentiate: loco-only brakes (independent, dynamic) are reduced by load; train-wide braking (auto/air) is load-invariant. Justified by the RailDriver's separate physical levers and real-locomotive physics.
 - **JMRI threading conventions:** All timed events through `ThreadingUtil`, never `ScheduledExecutorService` or `java.util.Timer`.
