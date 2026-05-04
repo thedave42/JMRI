@@ -45,13 +45,13 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 ### Feature 2: Multi-Source Brake System
 
-**Description:** Implement three independent brake sources (independent brake, air system, dynamic brake) whose retardation values combine via `effectiveBrake = min(indepPcnt, airPcnt, dynPcnt)`. Each source maps a physical RailDriver lever to the EngineDriver brake math.
+**Description:** Implement three independent brake sources (independent brake, air system, dynamic brake) whose retardation values combine to produce `effectiveBrake`. Each source maps a physical RailDriver lever to the EngineDriver brake math. Because the RailDriver has separate physical levers for independent and auto brake (unlike EngineDriver's single slider with a toggle), load interacts differently with each brake source — matching real locomotive physics.
 
 #### 2a: Independent Brake (Lever #11, byte 3)
 
 - Quantised from calibrated Full Release / Full Application byte range to `numberOfBrakeSteps` notches (default 7).
 - Position 0 = released. Each step immediately re-invokes `setTargetSpeed`.
-- Matches EngineDriver's "brake slider" byte-for-byte.
+- **Load interaction:** The independent brake acts only on the locomotive, not the cars. When a load is present, the loco's brakes must resist the inertia of the entire consist, so the independent brake becomes proportionally less effective. The load multiplier **reduces** `indepPcnt`'s contribution to deceleration — at full load (10×), the independent brake alone produces significantly less retardation than at light engine (1.0×). Concretely, `indepPcnt` is scaled toward 1.0 (free-running) by the load: `effectiveIndepPcnt = 1.0 − ((1.0 − indepPcnt) / loadMultiplier)`. At light engine (multiplier 1.0) this is a no-op; at full load (10×) the independent brake's retardation is reduced to 1/10th of its unloaded value.
 
 #### 2b: Air System (Auto Brake lever #10, byte 2)
 
@@ -59,17 +59,35 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 - Reservoir refill behaviour preserved from EngineDriver: +5% every `airRefreshRateMs` (default 2000 ms), self-rescheduling via `runOnLayoutDelayed`.
 - EngineDriver's line repeater is **not ported** (redundant — the lever directly controls line pressure).
 - Air simulation disabled by parking Auto Brake at Released or by setting `airRefreshRateMs = 0`.
+- **Load interaction:** The auto brake engages brakes on every car in the consist plus the locomotive — braking force scales with the number of cars, proportionally matching the additional mass. The auto brake's `airPcnt` contribution to `effectiveBrake` is therefore **not reduced** by load. At any load level, full auto brake application produces roughly the same deceleration rate. This matches real-world behaviour: a properly charged trainline stops a 100-car unit train at a comparable rate to a 20-car local because the braking force scales with the consist length.
 
 #### 2c: Dynamic Brake (Throttle/Dyn lever #9, below Idle)
 
 - Below-idle throttle travel produces a virtual `dynBrakeStep` in `0..numberOfBrakeSteps`.
 - Low-speed taper: below `dynBrakeMinSpeedStep` (default 8), dyn-brake effect fades linearly to zero at speed 0.
 - No air-line interaction — dyn brake is electrical-only.
+- **Load interaction:** Dynamic brake is loco-only (electrical resistance in the traction motors), same as the independent brake. Load reduces its effectiveness using the same formula as 2a: `effectiveDynPcnt = 1.0 − ((1.0 − dynPcnt) / loadMultiplier)`.
 
 #### 2d: Bail-Off (byte 4, transient)
 
 - While asserted, `setTargetSpeed` skips the indep + dyn contributions to `effectiveBrake` — only air still applies.
 - Allows the operator to release the loco brake against a held trainline application.
+
+#### 2e: Effective brake combination
+
+The final `effectiveBrake` is the minimum (strongest braking) across all sources, after load scaling has been applied per-source:
+
+```
+effectiveIndepPcnt = 1.0 − ((1.0 − rawIndepPcnt) / loadMultiplier)   // loco-only, load-reduced
+effectiveDynPcnt   = 1.0 − ((1.0 − rawDynPcnt)   / loadMultiplier)   // loco-only, load-reduced
+effectiveAirPcnt   = rawAirPcnt                                        // whole-train, load-invariant
+
+effectiveBrake = min(effectiveIndepPcnt, effectiveAirPcnt, effectiveDynPcnt)
+```
+
+At light engine (loadMultiplier = 1.0), all three sources pass through unchanged — identical to EngineDriver's single-source `effectiveBrake = min(...)`.
+
+**Deviation from EngineDriver:** EngineDriver has one brake slider with a toggle, so load applies uniformly to all braking. Our per-source load scaling is new and has no EngineDriver equivalent. It is justified by the RailDriver's separate physical levers, which make the independent-vs-trainline distinction operationally real.
 
 **User Stories:**
 
@@ -77,11 +95,17 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 - As an operator, I want the Auto Brake lever to apply air braking that models reservoir dynamics.
 - As an operator, I want below-idle throttle travel to apply dynamic braking that fades at low speed.
 - As an operator, I want the bail-off to temporarily release only the loco-side brake.
+- As an operator pulling a heavy train, I want the auto brake to stop me effectively while the independent brake alone barely slows me, just like a real locomotive.
+- As an operator running light engine, I want both brakes to feel equally effective since there are no cars to worry about.
 
 **Acceptance Criteria:**
-- [ ] Indep brake full + throttle 50% → loco settles at ~15% of full speed.
-- [ ] Auto Brake EMG → hard decel at ~15 seconds at defaults.
-- [ ] Bail-off held during EMG → indep portion drops out; loco still decels via air alone.
+- [ ] At light engine (loadMultiplier = 1.0), all three brake sources pass through unchanged — behaviour is identical to EngineDriver.
+- [ ] At full load (step 5, multiplier 10×), independent brake full application produces roughly 1/10th the retardation of the same application at light engine.
+- [ ] At full load, auto brake full application produces roughly the same retardation as at light engine.
+- [ ] Dynamic brake follows the same load-reduction formula as independent brake.
+- [ ] Indep brake full + throttle 50% at light engine → loco settles at ~15% of full speed. At full load → loco settles at a much higher speed (independent brake alone can barely overcome the train's inertia).
+- [ ] Auto Brake EMG at any load → comparable hard decel rate.
+- [ ] Bail-off held during EMG → indep + dyn portions drop out; loco still decels via air alone.
 - [ ] Dyn brake below `dynBrakeMinSpeedStep` fades linearly to zero.
 - [ ] Air reservoir refills at +5% per tick when `airRefreshRateMs > 0`.
 
@@ -120,6 +144,13 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 | 5           | 1.00          | 10.00×                             |
 
 The curve is quadratic — load ramps steeply in the upper half. The operator controls both the granularity (number of steps) and the ceiling (max load percent), allowing the curve to be reshaped without code changes.
+
+**How load is applied.** The load multiplier feeds two places in `setTargetSpeed`:
+
+1. **Acceleration Δt scaling** (matches EngineDriver): `targetAcceleration *= loadMultiplier`. Higher load = longer inter-step delay = slower acceleration. This is the same single wiring point EngineDriver uses.
+2. **Per-source brake effectiveness** (RailDriver-only, see Feature 2): the load multiplier reduces the retardation of loco-only brake sources (independent brake, dynamic brake) while leaving train-wide braking (auto/air brake) unaffected. This models the real-world difference: applying only the loco brakes on a heavy train barely slows it, while the trainline brakes engage the entire consist. See Feature 2e for the formula.
+
+At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is identical to EngineDriver.
 
 **UI.** The load slider is a `JSlider` (integer, 0..`numberOfLoadSteps`) on the Semi-Realistic preferences panel with tick labels showing the computed multiplier at each position (e.g. "1.0×", "2.44×", "10.0×"). There are no named scenario presets or enum — just the slider, matching EngineDriver's single SeekBar. The slider position is persisted as `loadSliderPosition` in the `<rd:semiRealistic>` fragment and is pushed live to any attached engine on Save/Apply (see Feature 6).
 
@@ -346,7 +377,9 @@ The curve is quadratic — load ramps steeply in the upper half. The operator co
 
 ## Dependencies & Constraints
 
-- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section. The `getLoadPcnt` quadratic formula, its guard condition, and both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`) are ported verbatim. Any deviation must be documented and justified (only the dyn-brake low-speed taper is new).
+- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section where possible. The `getLoadPcnt` quadratic formula, its guard condition, and both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`) are ported verbatim. Two documented deviations exist:
+  - **Dyn-brake low-speed taper** (Feature 2c) — EngineDriver has no dynamic brake input; we add one with a prototype-like low-speed fade.
+  - **Per-source brake load scaling** (Feature 2e) — EngineDriver applies load uniformly because it has a single brake slider. We differentiate: loco-only brakes (independent, dynamic) are reduced by load; train-wide braking (auto/air) is load-invariant. Justified by the RailDriver's separate physical levers and real-locomotive physics.
 - **JMRI threading conventions:** All timed events through `ThreadingUtil`, never `ScheduledExecutorService` or `java.util.Timer`.
 - **JMRI SPI patterns:** Settings UI via `PreferencesPanel`, persistence via `PreferencesManager`, both discovered via `ServiceLoader`.
 - **Backward compatibility:** Legacy calibration files must migrate without data loss (detents preserved, physics coefficients discarded with warning).
