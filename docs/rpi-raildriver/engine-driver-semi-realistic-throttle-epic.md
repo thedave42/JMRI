@@ -459,7 +459,6 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ## Cross-References
 
-- [Engine-Driver-aligned spec](engine-driver-semi-realistic-throttle-spec.md) — full technical specification this epic derives from
 - [EngineDriver algorithm research](semi-realistic-throttle-info.md) — line-by-line reference of the EngineDriver source
 - [RailDriver control inventory](control-inventory.md) — physical control / HID byte mapping
 - [EngineDriver source](https://github.com/JMRI/EngineDriver/blob/master/EngineDriver/src/main/java/jmri/enginedriver/throttle_semi_realistic.java) — upstream reference implementation
