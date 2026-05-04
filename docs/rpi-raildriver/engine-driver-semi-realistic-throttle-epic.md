@@ -32,7 +32,7 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 - Single-threaded on the JMRI layout thread — no `ScheduledExecutorService`, no `volatile`, no `synchronized`. Self-rescheduling via `ThreadingUtil.runOnLayoutDelayed`; cancellation by epoch counters.
 - Lever-input setters only store values; `recomputeTarget()` runs `setTargetSpeed`, bumps the ramp epoch, and posts a fresh ramp callback.
 - Decoder-side dispatch is throttled by a configurable minimum emit interval (default 50 ms) so DCC backends that coalesce or rate-limit stay in sync.
-- Lifecycle is two-state: DETACHED → ATTACHED. Settings are captured as a defensive copy at attach time and are immutable for the engine's lifetime.
+- Lifecycle is two-state: DETACHED → ATTACHED. Settings are captured as a defensive copy at attach time. A running engine accepts mid-session settings updates via `updateSettings(SemiRealisticSettings s)` on the layout thread — the engine replaces its internal copy atomically (single-threaded, no lock needed) and calls `recomputeTarget()` so the new values take effect on the next ramp tick.
 
 **Acceptance Criteria:**
 - [ ] Pure-throttle ramp from idle to full at defaults takes ~19 seconds.
@@ -104,9 +104,9 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 ---
 
-### Feature 4: Load System (EngineDriver-Aligned)
+### Feature 4: Load Slider (EngineDriver-Aligned)
 
-**Description:** Port EngineDriver's load slider and quadratic `getLoadPcnt` formula. A discrete-step load slider (default 0–5 positions) feeds the same runtime quadratic that EngineDriver uses: `((load² × (maxLoadPcnt − 100)) + 100) / 100`, where `load = step / numberOfLoadSteps`. The result multiplies `targetAcceleration` unconditionally at the end of `setTargetSpeed`, stretching Δt without ever modifying `targetSpeed`. Both curve-shaping parameters (`numberOfLoadSteps`, `maxLoadPcnt`) are exposed as operator-configurable settings, matching EngineDriver's preferences.
+**Description:** Port EngineDriver's load slider and quadratic `getLoadPcnt` formula. A discrete-step slider (default 0–5 positions) on the Semi-Realistic preferences panel feeds the same runtime quadratic that EngineDriver uses: `((load² × (maxLoadPcnt − 100)) + 100) / 100`, where `load = step / numberOfLoadSteps`. The result multiplies `targetAcceleration` at the end of `setTargetSpeed`, stretching Δt without ever modifying `targetSpeed`. Both curve-shaping parameters (`numberOfLoadSteps`, `maxLoadPcnt`) are exposed as operator-configurable settings, matching EngineDriver's preferences.
 
 **EngineDriver's `getLoadPcnt` formula (defaults: 5 steps, maxLoadPcnt = 1000):**
 
@@ -121,34 +121,22 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 The curve is quadratic — load ramps steeply in the upper half. The operator controls both the granularity (number of steps) and the ceiling (max load percent), allowing the curve to be reshaped without code changes.
 
-**Named scenario presets.** A `LoadScenario` enum provides quick-select presets that map to specific slider positions on the default curve. Selecting a preset sets the load slider to the corresponding step. The `CUSTOM` sentinel leaves the slider at its current position and enables a direct numeric multiplier override field.
+**UI.** The load slider is a `JSlider` (integer, 0..`numberOfLoadSteps`) on the Semi-Realistic preferences panel with tick labels showing the computed multiplier at each position (e.g. "1.0×", "2.44×", "10.0×"). There are no named scenario presets or enum — just the slider, matching EngineDriver's single SeekBar. The slider position is persisted as `loadSliderPosition` in the `<rd:semiRealistic>` fragment and is pushed live to any attached engine on Save/Apply (see Feature 6).
 
-| Scenario         | Default step | Computed multiplier | Mental Model                        |
-|------------------|-------------|---------------------|-------------------------------------|
-| Light engine     | 0           | 1.00×               | Single loco, no cars                |
-| Switcher         | 1           | 1.36×               | Yard work, handful of cars          |
-| Local freight    | 2           | 2.44×               | Mid-length way-freight              |
-| Through freight  | 3           | 4.24×               | Long road train                     |
-| Heavy freight    | 4           | 6.76×               | Heavy road freight                  |
-| Unit train       | 5           | 10.00×              | Heavy unit coal/grain/oil           |
-| Custom           | (current)   | (user-entered)      | Editable numeric, 0.1..100.0        |
-
-**RailDriver input mapping.** EngineDriver uses a touchscreen SeekBar. The RailDriver has no physical load lever, so load is a **software-only input** — the operator selects a scenario preset on the Semi-Realistic preferences panel, or adjusts the load step via a future UI control (e.g. hat-switch mapping or Jynstrument dropdown). The selected step is a live-mutable soft input, changeable mid-session without closing the throttle.
+**RailDriver input mapping.** EngineDriver uses a touchscreen SeekBar. The RailDriver has no physical load lever, so load is a **software-only input** controlled via the preferences panel slider. The slider position is pushed to the engine on save/apply and takes effect immediately.
 
 **Key Behaviours:**
 - **Quadratic formula matches EngineDriver exactly:** `getLoadPcnt(step, steps, maxLoadPcnt)` is a static method with the same signature and computation as EngineDriver's.
 - **Guard condition preserved:** When `loadSliderPosition == 0`, the multiplication is skipped entirely (matching EngineDriver's `if (loadSliderPosition > 0)` guard). This is functionally equivalent to multiplying by 1.0 but avoids a redundant floating-point operation.
-- **Immediate recalculation on change:** Any load slider change calls `recomputeTarget()` immediately, matching EngineDriver's `onProgressChanged` → `setTargetSpeed` path. There is no deferred "next lever movement" latency.
+- **Immediate application on save:** When the operator saves settings, the new `loadSliderPosition` is pushed to any attached engine via `updateSettings()`, which calls `recomputeTarget()` — matching EngineDriver's `onProgressChanged` → `setTargetSpeed` immediate-recalculation path.
 - **Change detection:** The engine tracks `prevLoadStep` and only kicks the ramp repeater if the load step actually changed since the last `setTargetSpeed` call, matching EngineDriver's `prevLoads[]` optimisation.
 - **Configurable curve:** `numberOfLoadSteps` (default 5) sets the slider granularity and the formula denominator. `maxLoadPcnt` (default 1000) sets the curve ceiling — at 1000 the full-slider multiplier is 10×; at 500 it's 5×; at 200 it's 2×.
 
 **User Stories:**
 
-- As an operator, I want to select a load level so my loco feels heavier or lighter, with the same quadratic feel as EngineDriver's load slider.
-- As an operator, I want named presets (Light engine through Unit train) that map to recognisable train types.
-- As an operator, I want a Custom option so I can enter any multiplier value for unusual consists.
+- As an operator, I want a load slider so my loco feels heavier or lighter, with the same quadratic feel as EngineDriver's load slider.
 - As an operator, I want to adjust the curve ceiling (`maxLoadPcnt`) so I can limit or extend the maximum load effect for my layout.
-- As an operator, I want a load change to take effect immediately, not on the next lever movement.
+- As an operator, I want a load change to take effect immediately when I save, even if the throttle is active.
 
 **Acceptance Criteria:**
 - [ ] `getLoadPcnt` formula matches EngineDriver's source exactly: `((load² × (maxLoadPcnt − 100)) + 100) / 100`.
@@ -156,12 +144,10 @@ The curve is quadratic — load ramps steeply in the upper half. The operator co
 - [ ] When `loadSliderPosition == 0`, the load multiplication is skipped (guard condition matches EngineDriver).
 - [ ] `numberOfLoadSteps` and `maxLoadPcnt` are configurable settings (persisted, validated on save and load).
 - [ ] Changing `maxLoadPcnt` reshapes the curve — e.g. `maxLoadPcnt = 500` → full-slider multiplier is 5×.
-- [ ] Load slider change triggers immediate `recomputeTarget()` — no deferred latency.
+- [ ] Load slider is a `JSlider` with tick labels showing computed multipliers at each step.
+- [ ] Saving settings pushes the new load slider position to any attached engine immediately.
 - [ ] Engine tracks `prevLoadStep` for change detection; redundant calls don't restart the ramp.
-- [ ] Named scenario presets map to slider positions on the default curve.
-- [ ] `CUSTOM` sentinel enables direct numeric multiplier override in `[0.1, 100.0]`.
-- [ ] `loadSliderPosition` is a live-mutable soft input — changeable mid-session without closing the throttle.
-- [ ] Display strings are localised via `Bundle.getMessage(...)` — enum constant names are never shown to users.
+- [ ] `loadSliderPosition` is persisted as an integer in the `<rd:semiRealistic>` fragment.
 
 ---
 
@@ -199,23 +185,31 @@ The curve is quadratic — load ramps steeply in the upper half. The operator co
 | `RailDriverSemiRealisticPreferencesPanel`   | Operator-feel preferences (ramp, brake, air, load, decoder integration) | Shared            |
 | `RailDriverCalibrationPreferencesPanel`     | Per-machine HID calibration (existing visual-bar UI) | Private           |
 
-**Universal deferred-application rule:** Every settings and calibration change is persisted but never pushed to running code. Bound throttle frames continue with the snapshot captured at bind time. Operator must close and reopen the throttle to apply changes. A `JmriJOptionPane` alert confirms this on every successful Semi-Realistic save.
+**Live-apply settings model.** When the operator saves settings via the JMRI Preferences window, the `RailDriverPreferencesManager` persists the new values and fires a `"settingsChanged"` PCS event. `RailDriverMenuItem` subscribes to this event and, if an engine is currently attached, pushes the new `SemiRealisticSettings` snapshot to the engine via `updateSettings()` on the layout thread. The engine replaces its internal settings copy and calls `recomputeTarget()` so the new values (ramp delays, brake parameters, load slider position, etc.) take effect on the next ramp tick — no close-and-reopen required.
+
+**Exception: the `enabled` flag.** The dispatch strategy (engine vs direct) is still decided once at `notifyAddressThrottleFound` and fixed for the throttle frame's lifetime, because switching dispatch strategy mid-session while a loco is moving would require complex handover logic. Changes to the `enabled` checkbox require closing and reopening the throttle. A `JmriJOptionPane` alert surfaces this only when `enabled` actually changed across a save.
+
+**Calibration follows the same live-apply model.** When the operator saves calibration, the manager fires a `"calibrationChanged"` PCS event. `RailDriverMenuItem` subscribes and picks up the new axis detents for subsequent HID byte → step conversions. No close-and-reopen required.
 
 **User Stories:**
 
 - As an operator, I want to configure semi-realistic throttle settings through the standard JMRI Preferences window, not a separate custom frame.
 - As an operator, I want validation feedback when I enter invalid settings (e.g. brake thresholds out of order).
 - As an operator, I want a clear "Reset to defaults" button that restores semi-realistic fields to default values.
-- As an operator, I want a confirmation message after saving that tells me I need to reopen the throttle to apply changes.
+- As an operator, I want saved settings to take effect immediately on my running throttle without closing and reopening it.
+- As an operator, I want to be told when I change the enable/disable mode that I need to reopen the throttle for that specific change.
 
 **Acceptance Criteria:**
 - [ ] Both panels appear under a "RailDriver" group in JMRI Preferences.
 - [ ] Save/Apply/Cancel use the standard JMRI Preferences framework — no custom button bar.
 - [ ] All blocking validation rules from the spec are enforced on save.
 - [ ] Non-blocking warnings are surfaced via status labels.
-- [ ] `JmriJOptionPane` alert fires on every successful Semi-Realistic save.
+- [ ] Saving settings fires `"settingsChanged"` PCS event; `RailDriverMenuItem` pushes new settings to any attached engine immediately.
+- [ ] Saving calibration fires `"calibrationChanged"` PCS event; `RailDriverMenuItem` picks up new axis detents immediately.
+- [ ] The engine's `updateSettings()` replaces its internal copy and calls `recomputeTarget()` so new values take effect on the next ramp tick.
+- [ ] `JmriJOptionPane` alert fires only when the `enabled` flag changed, telling the operator to reopen the throttle for mode changes.
 - [ ] `isDirty()` tracks changes correctly across all input controls.
-- [ ] The `enabled` checkbox state is persisted; dispatch strategy is fixed at bind time.
+- [ ] The `enabled` checkbox state is persisted; dispatch strategy (engine vs direct) is fixed at bind time.
 
 ---
 
@@ -352,11 +346,11 @@ The curve is quadratic — load ramps steeply in the upper half. The operator co
 
 ## Dependencies & Constraints
 
-- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section. The `getLoadPcnt` quadratic formula, its guard condition, and both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`) are ported verbatim. Any deviation must be documented and justified (only the dyn-brake low-speed taper and the named-scenario preset layer are new).
+- **EngineDriver reference:** The algorithm must match EngineDriver's `throttle_semi_realistic.java` section-for-section. The `getLoadPcnt` quadratic formula, its guard condition, and both curve-shaping preferences (`numberOfLoadSteps`, `maxLoadPcnt`) are ported verbatim. Any deviation must be documented and justified (only the dyn-brake low-speed taper is new).
 - **JMRI threading conventions:** All timed events through `ThreadingUtil`, never `ScheduledExecutorService` or `java.util.Timer`.
 - **JMRI SPI patterns:** Settings UI via `PreferencesPanel`, persistence via `PreferencesManager`, both discovered via `ServiceLoader`.
 - **Backward compatibility:** Legacy calibration files must migrate without data loss (detents preserved, physics coefficients discarded with warning).
-- **No live mid-session toggle:** Dispatch strategy (engine vs direct) is fixed at throttle bind time. No `updateSettings` API on a running engine.
+- **Live-apply for settings and calibration:** Saved settings and calibration are pushed to any attached engine / dispatcher immediately via PCS events. The engine accepts mid-session updates via `updateSettings()` on the layout thread. Exception: the `enabled` flag (dispatch strategy) is fixed at bind time — changing it requires closing and reopening the throttle.
 
 ## Cross-References
 
