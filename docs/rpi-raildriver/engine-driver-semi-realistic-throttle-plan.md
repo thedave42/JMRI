@@ -1,4 +1,4 @@
-# RailDriver Semi-Realistic Throttle — EngineDriver-aligned Plan
+﻿# RailDriver Semi-Realistic Throttle — EngineDriver-aligned Plan
 
 > **Reference implementation:** [`JMRI/EngineDriver`](https://github.com/JMRI/EngineDriver),
 > file `EngineDriver/src/main/java/jmri/enginedriver/throttle_semi_realistic.java`.
@@ -44,23 +44,29 @@ authority for actual model-train velocity.
 
 The repository already contains an in-progress velocity-based physics
 engine (`SemiRealisticThrottleEngine`, `LoadScenario`,
-`SemiRealisticSettings`, `SemiRealisticSettingsPanel`). All four are
-**rewritten** under this plan:
+`SemiRealisticSettings`, `SemiRealisticSettingsPanel`). The first
+three are **rewritten** under this plan; the fourth is **retired**
+and replaced by an SPI `PreferencesPanel` (§9.5). All RailDriver
+classes also relocate from `jmri.util.usb` to `jmri.jmrit.usb`
+(§11.0).
 
 | File                             | Today (physics-based)                                             | Under this plan (EngineDriver-aligned)                                                                            |
 |----------------------------------|-------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
 | `SemiRealisticThrottleEngine`    | 50 ms tick, Davis A/B/C resistance, m/s² integrator, v_fs → DCC quantisation | Step-rate scheduler: one ±1 step per Δt ms toward `targetSpeed`; Δt = `baseDelay × targetAcceleration`.            |
 | `LoadScenario`                   | 12 physics coefficients (top speed, vCorner, drag terms, brake decel, etc.) | Two fields: `displayName` + `loadMultiplier`. Multiplier feeds the EngineDriver `getLoadPcnt` slot directly.       |
 | `SemiRealisticSettings`          | ~20 m/s² / m/s / 1/s coefficients                                  | EngineDriver-style integers: speed-step, base accel/decel delay, brake steps, max-brake %, load steps, max-load %. |
-| `SemiRealisticSettingsPanel`     | Velocity-coefficient editors                                       | Number / step pickers matching the new settings model.                                                             |
-| `RailDriverCalibration`          | `<semiRealistic>` subtree with physics block                       | `<semiRealistic>` subtree with EngineDriver-style block; calibration block (idle, full-throttle, brake range) unchanged. |
-| `RailDriverMenuItem`             | Velocity inputs (`setIndepBrakeFraction`, etc.)                    | EngineDriver-style inputs (`setBrakeSliderStep`, `setAirLineValue`, `setDynBrakeStep`, etc.).                      |
+| `SemiRealisticSettingsPanel`     | Velocity-coefficient editors hosted in a Debug-menu frame         | **Retired.** Replaced by `RailDriverSemiRealisticPreferencesPanel` (a `jmri.swing.PreferencesPanel` SPI provider) in `jmri.jmrit.usb.swing`. |
+| *(new)* `RailDriverPreferencesManager` | n/a                                                          | `jmri.spi.PreferencesManager` SPI provider; owns `liveEnabled` / `persistedEnabled`, the in-memory settings + calibration records, the §9.13 legacy migration, and PCS event dispatch. |
+| `RailDriverCalibration`          | `<semiRealistic>` subtree with physics block, freestanding XML file | `<rd:semiRealistic>` (shared) + `<rd:hardwareCalibration>` (private) `AuxiliaryConfiguration` fragments; legacy file migrated and renamed to `*.bak` (§9.13). |
+| `RailDriverMenuItem`             | Velocity inputs (`setIndepBrakeFraction`, etc.); also held the persisted-vs-live enable plumbing | EngineDriver-style inputs (`setBrakeSliderStep`, `setAirLineValue`, `setDynBrakeStep`, etc.); enable plumbing moves to `RailDriverPreferencesManager`. |
 | `SemiRealisticThrottleEngineTest` | Davis-shape regression cases                                      | EngineDriver-shape cases (delay multiplier matches `getLoadPcnt`, brake clip matches `getBrakeDecimalPcnt`, etc.). |
 
 All RailDriver-hardware code outside the engine — calibration tabs, button
 mapping, axis decoding, lifecycle wiring (`AddressListener` /
-`ThrottleWindow` plumbing, EDT discipline) — is left alone. Only the
-**physics math and its inputs/outputs** change.
+`ThrottleWindow` plumbing, EDT discipline) — is left functionally
+alone, just relocated and adapted to the SPI persistence path. The
+**physics math, its inputs/outputs, the package home, and the
+Settings-UI delivery path** are what change.
 
 ---
 
@@ -131,9 +137,9 @@ and the existing control inventory.
 | Mechanical brake slider           | **Independent Brake lever (#11, byte 3)** | Calibrated Full Release → Full Application; quantised to `numberOfBrakeSteps`.                         |
 | Air-line value (decreases as brake handle moves deeper) | **Auto Brake lever (#10, byte 2)**         | Replaces EngineDriver's "derived from brake slider" model. Auto-brake position **directly sets** `airLineValue` (0..100). |
 | Air-line bail-off (transient)     | **Bail-off (#11 / byte 4 transient)**     | When asserted, the indep-brake portion of `effectiveBrake` is forced to "free" (1.0) until released; `airLineValue` is unchanged.|
-| Load slider                       | **Software preset picker** (no physical control) | UI dropdown / calibration setting. The multiplier feeds the same `targetAcceleration ×= loadMultiplier` slot. **Computation is the open section — see §7.** |
+| Load slider                       | **Software preset picker** (no physical control) | UI dropdown / calibration setting (§7). The selected scenario's multiplier feeds the same `targetAcceleration ×= loadMultiplier` slot EngineDriver uses. |
 | Direction lever                   | **Reverser (#8, byte 0)**            | Three detents: Forward / Neutral / Reverse. Reverser-at-zero-speed-only interlock enforced JMRI-side (matches EngineDriver). |
-| Stop button                       | **E-Stop (#2, byte 11)** for hard E-Stop; one front-edge button for "soft stop" if desired | E-Stop bypasses the ramp (`setSpeedSetting(-1)`); the soft button can use EngineDriver's `THROTTLE_STOP_BRAKE_FULL` mode.|
+| Stop button                       | **E-Stop (#2, byte 11)**             | Hard E-Stop only; bypasses the ramp (`setSpeedSetting(-1)`). No soft-stop button is wired — operators stop a moving loco by walking the levers down themselves, which matches real-loco practice.|
 | Air on/off button                 | **Not exposed.**                     | EngineDriver has the toggle because its single brake slider does double duty. We have separate Independent and Auto Brake levers, so the operator opts out of air dynamics by leaving the Auto Brake at Released. |
 | ESU decoder brake mode            | Pure DCC-side; no physical control   | Brake-percent computed from Independent Brake position drives F4/F5/F6 mirroring (same threshold logic as EngineDriver). |
 
@@ -153,7 +159,6 @@ public final class SemiRealisticThrottleEngine {
 
     // ─── State (per active throttle; only one at a time on RailDriver) ─────
     private DccThrottle  throttle;
-    private RosterEntry  rosterEntry;            // for ESU decoder brake passthrough
     private volatile int speedStep;              // current decoder step, 0..126
     private volatile int targetSpeed;            // EngineDriver targetSpeed
     private volatile double targetAcceleration;  // signed Δt multiplier
@@ -163,6 +168,7 @@ public final class SemiRealisticThrottleEngine {
     private volatile int     dynBrakeStep;           // 0..numberOfBrakeSteps
     private volatile int     indepBrakeStep;         // 0..numberOfBrakeSteps
     private volatile int     airLineValue;           // 0..100, directly from Auto Brake lever
+    private volatile int     airReservoirPct;        // 0..100, reservoir-tank fill
     private volatile boolean bailoffAsserted;
     private volatile Direction direction;            // FORWARD / NEUTRAL / REVERSE
 
@@ -178,8 +184,13 @@ public final class SemiRealisticThrottleEngine {
     private ScheduledFuture<?> reservoirTask;
     private ScheduledFuture<?> airLineTask;
 
+    // ─── Emit-rate clamp (§5.2) ───────────────────────────────────────────
+    private volatile long lastEmitMs;             // monotonic-ms timestamp of last decoder write
+    private volatile int  pendingEmitStep = -1;   // -1 = nothing deferred
+    private ScheduledFuture<?> deferredEmitTask;
+
     // ─── Lifecycle ────────────────────────────────────────────────────────
-    public void attachThrottle(DccThrottle t, RosterEntry re);
+    public void attachThrottle(DccThrottle t);
     public void detachThrottle();
     public void setLiveEnabled(boolean enabled);
     public void dispose();
@@ -199,6 +210,17 @@ public final class SemiRealisticThrottleEngine {
     private static double getLoadMultiplier(LoadScenario sc, SemiRealisticSettings s);
 }
 ```
+
+The engine has **no compile-time dependency on `jmri.jmrit.roster`**.
+ESU decoder-brake values (function numbers, percent thresholds; see
+§6.4) come from the in-memory `SemiRealisticSettings` snapshot only.
+There is no per-roster override path, no roster attribute lookup,
+and no extensibility hook accepting per-loco values — the engine
+reads ESU configuration from `SemiRealisticSettings` directly when
+`decoderBrakeMode == ESU`, and short-circuits the entire passthrough
+when `decoderBrakeMode == NONE`. This keeps the engine
+headless-friendly and free of jmrit type references in its API
+surface.
 
 ### 5.2 The ramp scheduler
 
@@ -246,9 +268,52 @@ private long baseDelayFor(double targetAccel) {
 
 private void emit(int newStep) {
     speedStep = newStep;
+    // Throttle decoder-side dispatch to at least settings.minEmitIntervalMs apart
+    // (default 50 ms). The internal speedStep advances at full ramp rate; only the
+    // setSpeedSetting call to the underlying DCC throttle is gated, so successive
+    // ticks faster than the floor coalesce into the most recent value.
+    long now = System.nanoTime() / 1_000_000L;
+    long sinceLast = now - lastEmitMs;
+    if (sinceLast < settings.minEmitIntervalMs) {
+        // Reschedule a single deferred emit; subsequent ticks will overwrite
+        // pendingEmitStep until the floor elapses.
+        pendingEmitStep = newStep;
+        if (deferredEmitTask == null) {
+            long defer = settings.minEmitIntervalMs - sinceLast;
+            deferredEmitTask = exec.schedule(this::flushDeferredEmit,
+                                             defer, TimeUnit.MILLISECONDS);
+        }
+        return;
+    }
+    lastEmitMs = now;
     final float fraction = newStep / (float) settings.maxThrottleStep;   // 126 default
     ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(fraction));
 }
+
+private void flushDeferredEmit() {
+    deferredEmitTask = null;
+    int step = pendingEmitStep;
+    pendingEmitStep = -1;
+    if (step >= 0) {
+        lastEmitMs = System.nanoTime() / 1_000_000L;
+        final float fraction = step / (float) settings.maxThrottleStep;
+        ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(fraction));
+    }
+}
+```
+
+**Why a min-interval floor.** The ramp scheduler's Δt can be as
+short as `accelRepeatMs × |targetAcceleration|` — down toward 50 ms
+at extreme settings. Some DCC backends (LocoNet, XpressNet, SPROG)
+throttle or coalesce successive `setSpeedSetting` calls; emitting
+faster than a backend will absorb causes the operator-perceived
+speed to lag the engine's `speedStep`. The min-interval floor
+(default `50 ms`) keeps the *internal* `speedStep` accurate while
+clamping decoder-side dispatch to a rate every supported backend
+can honour. Faster ramps coalesce into a single emit at the floor
+boundary — the operator sees a smooth ramp; the underlying counter
+stays honest. Operators who need a different floor for their
+backend tune `minEmitIntervalMs` on the Semi-Realistic panel.
 ```
 
 ### 5.3 `setTargetSpeed` (the heart)
@@ -411,9 +476,16 @@ Guidelines that follow from those levels:
   for the operator (e.g. “Bail-off pressed but no calibration
   captured”, “Auto Brake travel out of calibrated range”) use
   `Log4JUtil.warnOnce(log, ...)` / `Log4JUtil.infoOnce(log, ...)`.
-- Exceptions thrown out of any persistence / migration / scheduler
-  path log via `log.error("<context>: " + ex.getLocalizedMessage(), ex)`
-  so the stack trace is preserved.
+  Tests that exercise these paths follow the JMRI JUnit-page
+  guidance for resetting the one-shot state between tests (see
+  the §12 preamble); a unit test that fires `warnOnce` twice without
+  resetting will only see the first invocation.
+- Every `catch` clause that logs and continues uses the form
+  `log.error("<context>: " + ex.getLocalizedMessage(), ex)` so
+  both the localised exception text and the full stack trace are
+  captured. A bare `log.error("failed", ex)` or
+  `log.error(ex.getMessage(), ex)` is **not** acceptable per
+  `jmri-logging.instructions.md`.
 
 ---
 
@@ -442,9 +514,24 @@ Two key departures from EngineDriver:
    ([research §4.2](semi-realistic-throttle-info.md#42-air-system-westinghouse-style-simulation)).
    The reservoir refills at +5 % every `airRefreshRateMs` (default
    2000 ms); when the lever is at Released, the line refills from the
-   reservoir in 20 % chunks. Setting `airRefreshRateMs = 0` (or a "Air
-   simulation off" toggle) freezes the line at whatever the lever
-   commands.
+   reservoir in 20 % chunks.
+
+**Disabling the air simulation.** There is **no session-level
+"air off" toggle**. Two paths produce that effect, both natural:
+
+- *Prototypical (transient):* park the Auto Brake at Released. The
+  lever drives `airLineValue = 100` continuously; the reservoir is
+  already topped up; the line repeater has nothing to do. Air sim
+  is effectively inert without any UI surface.
+- *Persistent:* set `airRefreshRateMs = 0` on the Semi-Realistic
+  panel and Save. The reservoir / line repeaters are short-circuited
+  on load (§9.6). The Auto Brake lever then sets `airLineValue`
+  directly with no recharge dynamics for every session until
+  changed.
+
+Both match what real operators do: a real loco has no "air off"
+switch, and operators who don't want air feel just don't actuate
+the Auto Brake.
 
 Bail-off is RailDriver-only: while asserted, `setTargetSpeed` skips the
 indep + dyn contributions to `effectiveBrake`, so the operator can
@@ -484,36 +571,48 @@ This is mode-gated by `decoderBrakeMode` (`NONE` | `ESU`); default
 
 ---
 
-## 7. Load multiplier — open section (iterate after first review)
+## 7. Load multiplier
 
-> **The user has explicitly flagged this as the section to iterate on
-> after a first draft.** *How* the load multiplier is **used** is fixed
-> (it's the same `targetAcceleration ×= loadMultiplier` slot
-> EngineDriver uses, applied unconditionally at the end of
-> `setTargetSpeed`). Only *how the multiplier is computed* is open. The
-> proposal below is **a baseline starting point**, deliberately the
-> simplest of the alternatives. We expect to revise this section based
-> on the user's feedback before any code is written.
+*How* the load multiplier is **used** is fixed: it's the same
+`targetAcceleration ×= loadMultiplier` slot EngineDriver uses, applied
+unconditionally at the end of `setTargetSpeed`. *How* it's computed is
+the **named-scenario picker** below. The computation surface is
+deliberately small (one enum + one optional numeric override) so it
+stays decoupled from the engine's other inputs.
 
-### 7.1 Proposed baseline: named-scenario picker
+### 7.1 Named-scenario picker
 
-A small `LoadScenario` enum populates a dropdown on the Settings tab.
-Each entry carries a single `loadMultiplier` field; the picker's
-current value is persisted in `<semiRealistic>` XML and read fresh on
-every `setTargetSpeed` call.
+A small `LoadScenario` enum populates a dropdown on the Semi-Realistic
+panel. Each entry carries a fixed multiplier; `CUSTOM` is a sentinel
+that delegates to `SemiRealisticSettings.customLoadMultiplier`. The
+selected scenario is persisted in the `<rd:semiRealistic>` fragment;
+the engine reads `settings.loadScenario.loadMultiplier(settings)`
+fresh on every `setTargetSpeed` call.
 
 ```java
 public enum LoadScenario {
-    LIGHT_ENGINE   ("Light engine",     1.0),
-    SWITCHER       ("Switcher",         1.5),
-    LOCAL_FREIGHT  ("Local freight",    2.5),
-    THROUGH_FREIGHT("Through freight",  5.0),
-    UNIT_TRAIN     ("Unit train",      10.0),
-    CUSTOM         ("Custom",           /* read from settings.customLoadMultiplier */);
+    LIGHT_ENGINE   (1.0),
+    SWITCHER       (1.5),
+    LOCAL_FREIGHT  (2.5),
+    THROUGH_FREIGHT(5.0),
+    UNIT_TRAIN    (10.0),
+    CUSTOM         (Double.NaN);            // sentinel: read from settings.customLoadMultiplier
 
-    public double loadMultiplier(SemiRealisticSettings s) { ... }
+    private final double fixedMultiplier;
+    LoadScenario(double fixedMultiplier) { this.fixedMultiplier = fixedMultiplier; }
+
+    /** Multiplier applied to {@code targetAcceleration} every {@code setTargetSpeed} call. */
+    public double loadMultiplier(SemiRealisticSettings s) {
+        return Double.isNaN(fixedMultiplier) ? s.customLoadMultiplier : fixedMultiplier;
+    }
 }
 ```
+
+The user-visible display string (`"Light engine"`, `"Switcher"`,
+etc.) is **not** a field on the enum. It comes from the panel's
+`Bundle.getMessage(...)` lookup keyed by the enum constant name
+(e.g. `LoadScenarioLightEngine`), keeping localisation entirely on
+the UI side and the on-disk form a constant name (\u00a79.11.2 / `EnumIoNames`).
 
 `Light engine` (1.0) reproduces EngineDriver's "load slider at zero"
 behaviour exactly. The numeric values mirror the upper end of
@@ -526,38 +625,19 @@ EngineDriver step / 5  →  ((step² × 900) + 100·25) / (100·25)
 3/5 → 4.24     4/5 → 6.76     5/5 → 10.00
 ```
 
-(Mathematical aside: the named values 1.5 / 2.5 / 5.0 / 10.0 above
-round those samples to nicer numbers — the curve is preserved
-qualitatively but the operator sees memorable multipliers in the UI.)
+The named values 1.5 / 2.5 / 5.0 / 10.0 round those samples to nicer
+numbers — the curve is preserved qualitatively but the operator sees
+memorable multipliers in the UI. The `Custom` slot lets an operator
+override the named value with any real in `[0.1, 100.0]` without
+adding a new enum constant.
 
-### 7.2 Alternatives to consider during iteration
-
-Listed for the user to pick from (or hybridise) in the next pass:
-
-- **A. EngineDriver-exact:** keep the `numberOfLoadSteps` slider (5
-  steps), keep `getLoadPcnt` verbatim, drive it from a small spinner
-  on the Settings tab (no scenario list).
-- **B. Per-roster-loco attribute:** read
-  `RosterEntry.getAttribute("raildriver.loadMultiplier")` first; fall
-  back to a session-level setting. Lets the operator pre-tune each
-  loco / consist once.
-- **C. Continuous numeric only:** drop the enum, expose just a
-  `loadMultiplier` text field (1.0 .. 10.0), persist as a single
-  number.
-- **D. Speed-aware curve:** make the multiplier a function of current
-  `speedStep` (e.g. heavier load applies more at low speed where
-  starting torque dominates, less at high speed). This generalises
-  the "feel" beyond EngineDriver's flat multiplier.
-- **E. Asymmetric multipliers:** separate `accelLoadMultiplier` and
-  `decelLoadMultiplier` so a loaded train can be made to take a long
-  time to start *and* a long time to stop, without being symmetric.
-- **F. Per-direction multiplier (gradients):** an extra knob for
-  "downgrade" / "level" / "upgrade" applied as a coarse multiplier on
-  top of the scenario. EngineDriver doesn't have this either.
-
-Any combination (e.g. enum + roster attribute fallback + asymmetric
-multipliers) is on the table; the engine-side wiring point doesn't
-care. **Awaiting user direction in §7's iteration round.**
+**Display strings (`"Light engine"`, etc.) are localisation keys**
+resolved through the panel's `Bundle.getMessage(...)` lookup; they are
+never persisted (the on-disk form is the constant name `LIGHT_ENGINE`,
+per `EnumIoNames` — see §9.11.2). The UI treats `Custom` as a special
+case: selecting it enables the **Custom load multiplier** numeric
+field; selecting any other scenario sets `customLoadMultiplier` to
+that scenario's value and disables the field.
 
 ---
 
@@ -578,68 +658,75 @@ Same rules as EngineDriver
 
 EngineDriver has four selectable stop modes
 ([research §6](semi-realistic-throttle-info.md#6-stop--e-stop-behaviour)).
-On RailDriver:
+On RailDriver only the hard E-Stop is wired:
 
 - **E-Stop SPDT (#2):** hard E-Stop unconditionally. Bypasses the
   ramp; calls `throttle.setSpeedSetting(-1f)`. Same as today.
-- **Soft stop (optional, on a front-edge user-assignable button):**
-  EngineDriver's `THROTTLE_STOP_BRAKE_FULL` mode — sets
-  `throttleSliderStep = 0`, `indepBrakeStep =
-  numberOfBrakeSteps`, `airLineValue = 0`, calls `setTargetSpeed`,
-  then unwinds those overrides as the operator manipulates the levers
-  again. This is a stretch goal under the same plan; not mandatory in
-  the first cut.
+
+No "soft stop" button (EngineDriver's `THROTTLE_STOP_BRAKE_FULL`
+mode) is implemented. Operators wishing to stop a moving loco walk
+the throttle to idle and the brake to full themselves — which is
+what they would do on a real loco anyway, and the lever positions
+immediately reflect the operator's intent without an unwind step.
 
 ---
 
 ## 9. Settings, persistence & calibration UI
 
-This section is ported from the existing plan's §2.3 / §2.4 / §2.5
-because the operator-facing UX, the dirty-tracking model, and the
-two-tab `RailDriverSettingsFrame` design are unchanged by the engine
-swap. **Only the Settings tab's field list and the `<semiRealistic>`
-XML element set differ** — the unified frame, the persisted-vs-live
-split, the Save/Apply round-trip flow, and the Jynstrument toolbar
-toggle (§10) are all preserved verbatim.
+This section reworks the existing plan's §2.3 / §2.4 / §2.5 around
+the JMRI SPI: the persisted-vs-live enable flags, the dirty-tracking
+model, and the cross-field validation rules survive, but the bespoke
+`RailDriverSettingsFrame` is retired. The Settings UI now ships as
+two `jmri.swing.PreferencesPanel` providers grouped under "RailDriver"
+in the standard JMRI Preferences window (§9.5), and the
+persisted-vs-live state moves onto a new
+`jmri.spi.PreferencesManager` provider, `RailDriverPreferencesManager`
+(§9.4 / §11.0). The Jynstrument toolbar toggle (§10) is unchanged.
 
 ### 9.1 Two enable flags: `persistedEnabled` vs `liveEnabled`
 
-The semi-realistic mode toggle is tracked as **two separate values**:
+`RailDriverPreferencesManager` (§9.4) tracks the semi-realistic mode
+toggle as **two separate values**:
 
-- **`persistedEnabled`** — last value loaded from the calibration XML
-  (or default OFF when the file is absent), and the value most
-  recently written by Save/Apply. The Settings tab displays and
-  edits this value.
+- **`persistedEnabled`** — the value most recently loaded from the
+  `<rd:semiRealistic>` fragment (or default OFF when the fragment is
+  absent), and the value most recently written by the
+  Semi-Realistic `PreferencesPanel`'s `savePreferences()`. The panel's
+  `Enable semi-realistic mode` checkbox displays and edits this value.
 - **`liveEnabled`** — the value the engine and the Jynstrument act
-  on. Initialised from `persistedEnabled` at attach time and after
-  `reloadCalibration()`. Mutated either by the Settings tab Save/Apply
-  (which also updates `persistedEnabled`) or by the Jynstrument click
-  (which mutates only `liveEnabled`).
+  on. Initialised from `persistedEnabled` when the manager initialises
+  the profile and any time persistence is reloaded. Mutated either by
+  the panel's `savePreferences()` (which also updates
+  `persistedEnabled`) or by the Jynstrument click (which mutates only
+  `liveEnabled`).
 
-The Settings tab and the Jynstrument therefore display **different
-values** when the operator has used the Jynstrument session-toggle
-since the last Save: the Settings tab shows what's on disk (what
-would load at next launch); the Jynstrument shows what the engine
-is actually doing right now. This is by design — the Settings tab
+The Semi-Realistic panel and the Jynstrument therefore display
+**different values** when the operator has used the Jynstrument
+session-toggle since the last Save: the panel shows what's on disk
+(what would load at next launch); the Jynstrument shows what the
+engine is actually doing right now. This is by design — the panel
 is the persisted-state view, the Jynstrument is the session-state
 view.
 
 ### 9.2 Mutation paths and persistence semantics
 
-- **Settings window (Enable checkbox + Save/Apply):** edits
-  `persistedEnabled` (in-window, dirty-tracked); on Save/Apply,
-  writes XML, sets `liveEnabled = persistedEnabled`, notifies the
-  engine. **Cancel** discards the in-window edit; both fields are
-  unchanged.
-- **Jynstrument toolbar click:** flips `liveEnabled` only. Does
-  **not** touch `persistedEnabled`, does **not** write to disk, does
-  **not** update the Settings tab's checkbox. Resets to
-  `persistedEnabled` at next JMRI launch (or after a fresh
-  `reloadCalibration()`).
+- **Semi-Realistic panel `savePreferences()`** (triggered by the
+  Preferences-window Save or Apply button): writes the
+  `<rd:semiRealistic>` fragment via
+  `RailDriverPreferencesManager`, then sets
+  `liveEnabled = persistedEnabled` and notifies the engine. Cancel
+  / discard from the Preferences window invokes the panel's
+  `restoreState()` and leaves both fields unchanged.
+- **Jynstrument toolbar click:** flips `liveEnabled` only via
+  `RailDriverPreferencesManager.setSemiRealisticEnabledSessionOnly(...)`.
+  Does **not** touch `persistedEnabled`, does **not** write to disk,
+  does **not** update the panel's checkbox. Resets to
+  `persistedEnabled` at next JMRI launch.
 
 If the operator wants a session-level Jynstrument change to become
-the new persisted default, they open the Settings window, manually
-flip the checkbox to match, and Save.
+the new persisted default, they open the JMRI Preferences window,
+flip the Semi-Realistic panel's `Enable semi-realistic mode`
+checkbox to match, and Save.
 
 ### 9.3 Mode-switch handover at speed
 
@@ -680,13 +767,16 @@ for any reason:
   accept the snap as the cost of switching to direct control
   mid-motion.
 
-### 9.4 API entry points
+### 9.4 API entry points (on `RailDriverPreferencesManager`)
 
-`RailDriverMenuItem` exposes two setters distinguished by
-persistence:
+The `RailDriverPreferencesManager` SPI provider (§11.0) exposes the
+two persistence-distinguished setters that the Settings panel and
+the Jynstrument call into:
 
 ```java
-// Settings window Save/Apply: writes XML, then liveEnabled := persistedEnabled.
+// Acquired via InstanceManager.getDefault(RailDriverPreferencesManager.class).
+
+// PreferencesPanel.savePreferences() path: writes XML, then liveEnabled := persistedEnabled.
 public void applyPersistedEnabled(boolean enabled);
 
 // Jynstrument toolbar click: mutates liveEnabled only.
@@ -697,52 +787,83 @@ Both setters perform the engine handover (§9.3) when `liveEnabled`
 actually changes; they only differ on whether they touch
 `persistedEnabled` and the XML.
 
-Two distinct PCS events are fired on the settings listener:
-`"persistedEnabledChanged"` (Settings tab subscribes; Jynstrument
-ignores) and `"liveEnabledChanged"` (engine + Jynstrument
-subscribe; Settings tab ignores). This guarantees the Settings tab
-never reflects a session-only Jynstrument toggle, and the
-Jynstrument never reflects an unsaved Settings-tab edit.
+Two distinct PCS events are fired on the manager's settings
+listener:
 
-### 9.5 Unified two-tab Settings frame
+- `"persistedEnabledChanged"` — `RailDriverSemiRealisticPreferencesPanel`
+  subscribes (so its `Enable semi-realistic mode` checkbox reflects
+  the latest persisted state); the Jynstrument ignores it.
+- `"liveEnabledChanged"` — the engine and the Jynstrument subscribe;
+  the PreferencesPanel ignores it (so a session-only Jynstrument
+  toggle does not silently appear as a "dirty" edit in the panel).
 
-There is exactly one Debug-menu entry for RailDriver configuration
-(`Debug → RailDriver Settings...`), and one window the operator
-opens to adjust either set of values. The existing standalone
-calibration window (`RailDriverCalibrationFrame` /
-`RailDriverCalibrationAction`) is retired as part of this feature;
-the same calibration UI lives on the second tab of the new frame.
+The engine, the Jynstrument, the two PreferencesPanels, and
+`RailDriverMenuItem` all consume the manager via
+`InstanceManager.getDefault(RailDriverPreferencesManager.class)`;
+`RailDriverMenuItem` itself no longer carries the persisted-vs-live
+state. The manager registers as the well-known instance via
+`InstanceManagerAutoDefault` so the first lookup creates it.
 
-```
-┌─ RailDriver Settings ────────────────────────────────────┐
-│ [ Settings | Calibration ]                               │ ← JTabbedPane
-│ ┌──────────────────────────────────────────────────────┐ │
-│ │ (active tab content)                                 │ │
-│ │                                                      │ │
-│ └──────────────────────────────────────────────────────┘ │
-│                                                          │
-│ status line: "Polling active." / save errors / etc.     │
-│                                                          │
-│              [Save]  [Apply]  [Cancel]                   │ ← bottom button bar
-└──────────────────────────────────────────────────────────┘
-```
+### 9.5 Settings UI as `PreferencesPanel` SPI providers
 
-- The **Settings tab** is the one selected when the window opens
-  (`setSelectedIndex(0)` in the constructor).
-- The **Calibration tab** holds the existing visual-bar UI verbatim
-  — bars, capture buttons, per-section "Reset to defaults" buttons,
-  "Reset all to defaults" button. **None of that visual layout
-  changes** under this plan; it's just hosted inside a tab now.
-- The Settings tab holds the controls listed in §9.6.
-- The bottom button bar is shared across tabs — Save / Apply /
-  Cancel persist everything from both tabs regardless of which tab
-  is currently visible.
+The bespoke single-window `RailDriverSettingsFrame` (with a
+`JTabbedPane` and Save/Apply/Cancel button bar) is **retired**.
+The Settings UI ships instead as **two `jmri.swing.PreferencesPanel`
+implementations**, both registered with
+`@ServiceProvider(service = jmri.swing.PreferencesPanel.class)`:
 
-### 9.6 Settings-tab content (EngineDriver-aligned)
+| Class                                          | Role                                                  | Group / display title                          |
+|------------------------------------------------|-------------------------------------------------------|-------------------------------------------------|
+| `RailDriverSemiRealisticPreferencesPanel`      | Operator-feel preferences (§9.6).                     | Group "RailDriver"; tab title "Semi-Realistic". |
+| `RailDriverCalibrationPreferencesPanel`        | Per-machine HID calibration (existing visual-bar UI). | Group "RailDriver"; tab title "Calibration".   |
 
-The Settings tab is grouped into seven sections matching the
-algorithm's input categories so the operator sees what they're
-tuning:
+Both panels return `"RailDriver"` from their `getPreferencesItem()`
+method so the standard JMRI Preferences window groups them onto a
+single top-level "RailDriver" entry with a sub-tabbed view. The
+existing Debug-menu wiring (`RailDriverSettingsAction` /
+`RailDriverSettingsFrame` / `RailDriverCalibrationAction`) is
+removed; operators reach both panels through **JMRI Preferences →
+RailDriver**, plus the toolbar Jynstrument shortcut described in
+§10.
+
+Why this matters in practice:
+
+- **Save / Apply / Cancel are owned by the JMRI Preferences window.**
+  The panels do not draw their own button bar. JMRI's framework
+  calls `savePreferences()` on each `PreferencesPanel` whose
+  `isDirty()` is true when the user clicks Save or Apply, and calls
+  the panel's reset path on Cancel. The cross-field validation rules
+  from §9.10 still apply, just invoked at `savePreferences()` time
+  rather than from a custom button handler.
+- **Two panels persist independently.** The semi-realistic
+  preferences land in the shared `<rd:semiRealistic>` fragment;
+  the calibration data lands in the private `<rd:hardwareCalibration>`
+  fragment (see §9.11). Each panel's `savePreferences()` calls into
+  `RailDriverPreferencesManager.saveSemiRealisticSettings(...)` /
+  `saveHardwareCalibration(...)` rather than rolling its own XML I/O.
+- **`PreferencesPanel` lifecycle.** Each panel's constructor only
+  builds the layout; cross-component wiring (engine PCS listeners,
+  capture-button bindings on the calibration panel, dirty-state
+  notifications) happens in `initComponents()` and is torn down in
+  `dispose()`. JMRI's Preferences window may construct and destroy
+  panels multiple times across a session, so listener registration
+  must be symmetric or the engine + manager will accumulate
+  subscriptions.
+- **No `JmriJOptionPane` Cancel prompt.** The standard Preferences
+  window already handles "discard unsaved changes" prompts. The
+  bespoke `JmriJOptionPane`-based Cancel prompt from the prior
+  design is no longer needed; remove it.
+- **Layout.** Per `jmri-swing.instructions.md`, both panels use
+  [`jmri.util.swing.WrapLayout`](https://www.jmri.org/JavaDoc/doc/jmri/util/swing/WrapLayout.html)
+  for any wrapping rows of controls (`FlowLayout` does not display
+  the second row when contents wrap). The Calibration panel's
+  existing visual-bar layout is unchanged.
+
+### 9.6 Semi-Realistic panel content (EngineDriver-aligned)
+
+`RailDriverSemiRealisticPreferencesPanel` is grouped into seven
+sections matching the algorithm's input categories so the operator
+sees what they're tuning:
 
 **Mode**
 - **Enable semi-realistic mode** checkbox (master switch — bound to
@@ -783,8 +904,15 @@ tuning:
 - **Reservoir replenish (% per tick):** integer 1..100, default 5.
 - **Line recharge (% per tick):** integer 1..100, default 20.
 
-**Load** *(see §7 — this section's exact UI shape is the open
-iteration target)*
+**Decoder dispatch**
+- **Min emit interval (ms):** integer 10..1000, default 50. Floor
+  on how frequently the engine writes `setSpeedSetting` to the
+  underlying DCC throttle (§5.2). The internal `speedStep` always
+  advances at full ramp rate; this only clamps decoder-side
+  dispatch so backends that coalesce or rate-limit (LocoNet,
+  XpressNet, SPROG) stay in sync with the engine's view.
+
+**Load** *(see §7)*
 - **Scenario:** dropdown — `Light engine` (default) / `Switcher` /
   `Local freight` / `Through freight` / `Unit train` / `Custom`.
   Switching to a named scenario sets `customLoadMultiplier` to that
@@ -802,9 +930,9 @@ iteration target)*
 - **ESU low / mid / high threshold (% brake):** integers 0..100,
   defaults 30 / 60 / 98. Must be ascending (validated; see §9.10).
 
-**Reset to defaults** button — settings-tab-scoped. Restores only
-the semi-realistic fields to the active scenario's defaults. Does
-not touch the Calibration tab's per-axis byte values.
+**Reset to defaults** button — panel-scoped. Restores only the
+semi-realistic fields to the active scenario's defaults. Does not
+touch the Calibration panel's per-axis byte values.
 
 ### 9.7 Scenario defaults
 
@@ -814,8 +942,8 @@ preset** rather than the existing plan's full coefficient sheet.
 Switching scenarios changes `customLoadMultiplier` and nothing
 else. Operators who want different ramp / brake / air feel between
 scenarios continue to do that by manually editing the
-non-scenario fields and saving — the Settings tab is the source of
-truth for everything except the load multiplier.
+non-scenario fields and saving — the Semi-Realistic panel is the
+source of truth for everything except the load multiplier.
 
 | Scenario           | `customLoadMultiplier` | Mental model                                    |
 |--------------------|-----------------------:|-------------------------------------------------|
@@ -832,184 +960,107 @@ evenly spaced slider steps, rounded to nicer numbers for the UI
 EngineDriver's "load slider at zero" behaviour exactly — the
 multiplier is 1.0, which is the multiplicative identity.
 
-If §7's iteration round picks a different load-computation
-approach (per-roster attribute, speed-aware curve, asymmetric
-multipliers, etc.), this section gets rewritten accordingly. The
-*shape* of the Settings tab (a small picker plus a numeric override)
-should survive any of the §7 alternatives.
+### 9.8 Save / Apply via the JMRI Preferences framework
 
-### 9.8 Bottom button bar
+Save / Apply / Cancel come from the **standard JMRI Preferences
+window**, which calls into each registered `PreferencesPanel`
+through the `jmri.swing.PreferencesPanel` interface. There is no
+bespoke button bar.
 
-- **Save** — validates both tabs; on success writes XML, calls
-  `RailDriverMenuItem.reloadCalibration()` (so polling/engine pick
-  up new values), clears dirty, **closes window**. On validation
-  failure the offending tab is auto-selected, an error is shown in
-  the status line, the window stays open, dirty stays set.
-- **Apply** — exactly the same behaviour as Save except it leaves
-  the window open after success. Initially disabled; becomes
-  enabled when either tab reports `dirty`; greys back out the
-  moment Save or Apply completes successfully.
-- **Cancel** — closes the window without writing. If `dirty` is
-  true a confirmation prompt asks the operator whether to discard.
-  The prompt uses
-  [`jmri.util.swing.JmriJOptionPane`](https://www.jmri.org/JavaDoc/doc/jmri/util/swing/JmriJOptionPane.html),
-  **not** `javax.swing.JOptionPane`. `JmriJOptionPane` plays
-  correctly with always-on-top throttle frames; the standard
-  `JOptionPane`'s modality blocks the entire JVM UI, which can
-  hide the dialog behind always-on-top frames
-  (`jmri-swing.instructions.md` §Misc).
+The framework's flow per `Save` / `Apply` click:
 
-### 9.9 Dirty-tracking model
+1. The framework asks each registered panel `isDirty()`.
+2. For each dirty panel, the framework calls `savePreferences()`.
+3. `savePreferences()` performs the panel's per-field validation
+   plus the §9.10 cross-field rules, hands the validated record to
+   `RailDriverPreferencesManager` (which writes the appropriate
+   `<rd:semiRealistic>` or `<rd:hardwareCalibration>` fragment via
+   `AuxiliaryConfiguration`), then calls
+   `restoreState()` on its own controls so they reflect what was
+   just saved (this also clears the panel's dirty flag).
+4. The manager fires `"persistedEnabledChanged"` and (where
+   appropriate) `"liveEnabledChanged"` PCS events, letting the
+   engine and the Jynstrument react without a restart.
+5. Save dismisses the Preferences window; Apply leaves it open.
 
-Each tab is implemented as a `JPanel` subclass that exposes the
-`RailDriverSettingsPane.DirtyTrackingTab` interface (already
-established in the existing settings frame; see
-[repo memory: RailDriver settings UI](#)):
+Validation failures: `savePreferences()` reports a localised error
+string back through the standard `PreferencesPanel` mechanism;
+JMRI's framework surfaces it next to the offending field and keeps
+the window open, with the panel's dirty flag still set. The
+specific blocking and warning rules are listed in §9.10.
 
-```java
-boolean isDirty();
-void addDirtyChangeListener(Runnable listener);                // fires when isDirty() may have changed
-boolean validateAndApplyTo(RailDriverCalibration target);      // false ⇒ failure (frame keeps window open)
-void resetToFile(RailDriverCalibration freshFromDisk);         // reload from saved state, clears dirty
-```
+### 9.9 Dirty tracking
 
-**Layout managers for new code in this section follow
-`jmri-swing.instructions.md`:** the bottom button bar and any
-row-of-controls grouping in the new Settings tab use
-[`jmri.util.swing.WrapLayout`](https://www.jmri.org/JavaDoc/doc/jmri/util/swing/WrapLayout.html)
-rather than `java.awt.FlowLayout`. `FlowLayout` does not display
-the second row when contents wrap; `WrapLayout` does. The
-Calibration tab's existing layout is unchanged (and is not
-Flow-based today).
+Each `PreferencesPanel` maintains its own `dirty` boolean and
+listener set. The standard `PreferencesPanel` interface contract
+applies:
 
-Internally each input control in a tab (`JTextField` document
-listener, `JCheckBox` action listener, `JComboBox` action listener,
-`JSpinner` change listener, capture-button presses on the
-calibration tab, per-section / per-tab Reset buttons) calls
-`markDirty()`. `markDirty()` flips a private `dirty` boolean if it
-wasn't already true and notifies the listeners.
+- Each input control (`JTextField` document listener, `JCheckBox`
+  action listener, `JComboBox` action listener, `JSpinner` change
+  listener, capture-button presses on the calibration panel,
+  per-section / per-panel Reset buttons) calls `markDirty()`.
+- `markDirty()` flips the private `dirty` boolean if it wasn't
+  already true and notifies the listener set.
+- The framework polls `isDirty()` to drive its own Save / Apply
+  enable state. After a successful `savePreferences()`, the panel
+  calls its internal `restoreState(...)` which clears `dirty` and
+  notifies listeners.
 
-The frame holds a single
-`uiDirty = settingsTab.isDirty() || calibrationTab.isDirty()` and
-uses it to drive `applyButton.setEnabled(uiDirty)`. After a
-successful Save / Apply, the frame calls
-`resetToFile(freshlyReloadedCalibration)` on both tabs, which
-clears their dirty flags and fires one final notification — Apply
-greys out.
-
-**Capture buttons (Calibration tab) mark dirty.** A capture-button
+**Capture buttons (Calibration panel) mark dirty.** A capture-button
 press writes the live byte into the working calibration's detent;
-that's a value change ⇒ Apply enables.
+that's a value change and the panel goes dirty.
 
-### 9.10 Save / Apply persistence flow
+The **Reset to defaults** button on the Semi-Realistic panel
+marks dirty even if it brings every value back to the saved
+default (because the framework cannot tell the difference until
+`isDirty()` returns false on the next observation, and the
+operator's intent was an explicit reset).
 
-Both buttons run the same sequence:
+### 9.10 Validation rules
 
-1. Build a fresh `RailDriverCalibration` instance representing the
-   on-disk schema.
-2. Call `settingsTab.validateAndApplyTo(working)` — write the
-   `<semiRealistic>` subtree.
-3. Call `calibrationTab.validateAndApplyTo(working)` — write the
-   per-axis detent values.
-4. Run **cross-field validation** on the populated `working`:
+Validation runs in two places per `savePreferences()`: per-field
+and cross-field. Both sets are identical to (and shared with) the
+load-time validation that the persistence layer applies in
+§9.11.3.
 
-   **Blocking rules** (Save/Apply aborts; offending tab auto-selected):
-   - `1 ≤ speedStep ≤ maxThrottleStep`
-   - `accelRepeatMs ≥ 1`, `decelRepeatMs ≥ 1`
-   - `5 ≤ maxBrakePcnt ≤ 100`
-   - `numberOfBrakeSteps ≥ 1`
-   - `0.0 ≤ maxBrakeUnderPower < 1.0` and
-     `(maxBrakePcnt/100) − maxBrakeUnderPower ≥ 0.05` (some headroom
-     between the under-power and full curves)
-   - `customLoadMultiplier ∈ [0.1, 100.0]`
-   - All ESU function numbers `∈ [0, 28]`
-   - ESU thresholds ascending: `esuLowThresh ≤ esuMidThresh ≤ esuHighThresh`
-   - ESU thresholds `∈ [0, 100]`
-   - Air-system fields `≥ 0`; reservoir / line refill rates `∈ [1, 100]`
+**Blocking rules** (panel reports error; framework keeps
+window open and the panel dirty):
 
-   **Non-blocking warnings** (logged in status line after Save/Apply
-   success):
-   - `decelRepeatMs < accelRepeatMs` — counter-prototype; usually a
-     mistake but allowed.
-   - `speedStep × maxThrottleStep / accelRepeatMs > 1.0` — full-range
-     ramp in less than one second; will feel arcade-like.
-   - `airRefreshRateMs == 0` and `<decoderBrakeMode> != none` —
-     decoder brake still works but the air half of the simulation is
-     off; surface as a heads-up.
+- `1 ≤ speedStep ≤ maxThrottleStep`
+- `accelRepeatMs ≥ 1`, `decelRepeatMs ≥ 1`
+- `5 ≤ maxBrakePcnt ≤ 100`
+- `numberOfBrakeSteps ≥ 1`
+- `0.0 ≤ maxBrakeUnderPower < 1.0` and
+  `(maxBrakePcnt/100) − maxBrakeUnderPower ≥ 0.05` (some headroom
+  between the under-power and full curves)
+- `customLoadMultiplier ∈ [0.1, 100.0]`
+- All ESU function numbers `∈ [0, 28]`
+- ESU thresholds ascending: `esuLowThresh ≤ esuMidThresh ≤ esuHighThresh`
+- ESU thresholds `∈ [0, 100]`
+- Air-system fields `≥ 0`; reservoir / line refill rates `∈ [1, 100]`
+- `10 ≤ minEmitIntervalMs ≤ 1000`
 
-5. If any per-field validation in steps 2–3 returned false, or any
-   blocking cross-field rule in step 4 failed, abort: auto-select
-   the offending tab, show the validation message in the status
-   line, leave window open, leave dirty set.
-6. Persist `working` to XML.
-7. Call `RailDriverMenuItem.reloadCalibration()` so the polling
-   thread + the semi-realistic engine pick up new values without
-   restart.
-8. Re-load `working` from disk (round-trip) and call
-   `resetToFile(roundTripped)` on both tabs — guarantees the
-   in-window state matches the file exactly, clears dirty.
-9. Show any cross-field warnings recorded in step 4 in the status
-   line.
-10. Save closes the window via `dispose()`; Apply does not.
+**Non-blocking warnings** (after a successful save the panel
+surfaces them through JMRI's standard `getPreferencesTooltip()`
+or a status `JLabel` so the operator sees the heads-up):
 
-### 9.11 XML schema and migration
+- `decelRepeatMs < accelRepeatMs` — counter-prototype; usually a
+  mistake but allowed.
+- `speedStep × maxThrottleStep / accelRepeatMs > 1.0` — full-range
+  ramp in less than one second; will feel arcade-like.
+- `airRefreshRateMs == 0` and `decoderBrakeMode != NONE` — decoder
+  brake still works but the air half of the simulation is off;
+  surface as a heads-up.
+- `accelRepeatMs < minEmitIntervalMs` or
+  `decelRepeatMs < minEmitIntervalMs` — the ramp scheduler will
+  call `emit` faster than the floor allows, so successive ticks
+  coalesce on the wire. Engine state stays accurate but the
+  decoder will see fewer steps than the scheduler computes.
 
-`RailDriverCalibration` continues to own the `<raildriver-calibration>`
-root element. The schema bumps to **`version="3"`**. The
-`<semiRealistic>` subtree's *content* is replaced wholesale (the v2
-plan's velocity-physics elements are abandoned), but the rest of
-the file (`<reverser>`, `<throttle>`, `<autoBrake>`, `<indepBrake>`,
-`<bailoff>`, `<wiper>`, `<lights>`) is unchanged.
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<raildriver-calibration version="3">
-    <reverser>...</reverser>
-    <throttle>...</throttle>
-    <autoBrake>...</autoBrake>
-    <indepBrake>...</indepBrake>
-    <bailoff>...</bailoff>
-    <wiper>...</wiper>
-    <lights>...</lights>
-
-    <semiRealistic>
-        <enabled>true</enabled>
-
-        <!-- Throttle / ramp -->
-        <maxThrottleStep>126</maxThrottleStep>
-        <speedStep>2</speedStep>
-        <accelRepeatMs>300</accelRepeatMs>
-        <decelRepeatMs>800</decelRepeatMs>
-
-        <!-- Brake -->
-        <numberOfBrakeSteps>7</numberOfBrakeSteps>
-        <maxBrakePcnt>70</maxBrakePcnt>
-        <maxBrakeUnderPower>0.20</maxBrakeUnderPower>
-
-        <!-- Dyn brake -->
-        <dynBrakeMinSpeedStep>8</dynBrakeMinSpeedStep>
-
-        <!-- Air -->
-        <airRefreshRateMs>2000</airRefreshRateMs>
-        <airReservoirReplenishPcnt>5</airReservoirReplenishPcnt>
-        <airLineRechargePcnt>20</airLineRechargePcnt>
-
-        <!-- Load -->
-        <load>
-            <!--
-              Persisted as the LoadScenario enum constant name (e.g.
-              LIGHT_ENGINE / SWITCHER / LOCAL_FREIGHT / THROUGH_FREIGHT /
-              UNIT_TRAIN / CUSTOM). The display strings ("Light engine",
-              etc.) live in the UI bundle only; they must not appear in
-              the XML. Read/written via
-              `AbstractXmlAdapter.EnumIoNames` (or
-              `EnumIoNamesNumbers` if numeric back-compat is ever
-              needed) so the JMRI ErrorHandler is consulted on
-              malformed values rather than silent coercion.
-            -->
-            <scenario>LIGHT_ENGINE</scenario>
-            <customMultiplier>1.0</customMultiplier>
-        </load>
+Both blocking and warning rules are also evaluated by
+`RailDriverPreferencesManager` when it loads a fragment from
+disk; a malformed value or out-of-range entry is replaced with the
+schema default and reported via `ErrorHandler` (see §9.11.3).
 
 ### 9.11 Persistence: profile-aware `AuxiliaryConfiguration` fragments
 
@@ -1019,9 +1070,13 @@ operator preferences through `jmri.profile.AuxiliaryConfiguration`
 freestanding XML file, so multiple JMRI managers cannot clobber each
 other and so settings benefit from JMRI's existing
 shared-vs-private-profile split. The current `RailDriverCalibration`
-class writes a freestanding `<profile>/profile/raildriver-calibration.xml`,
-which pre-dates the rest of this plan; this section migrates that to
-the `AuxiliaryConfiguration` API.
+class writes a freestanding
+`<profile-root>/profile/raildriver-calibration.xml` — where the
+literal `profile/` segment is the `jmri.profile.Profile.PROFILE`
+subdirectory under the profile root (the same sibling of the
+`jmri-<UUID>-<ID>` private subfolders that holds shared profile
+content) — which pre-dates the rest of this plan; this section
+migrates that to the `AuxiliaryConfiguration` API.
 
 **Decision: two `AuxiliaryConfiguration` fragments under different
 spaces**, distinguishing per-machine hardware data from portable
@@ -1058,7 +1113,7 @@ unchanged from today:
     xmlns:rd="http://jmri.org/xml/schema/raildriver/3"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://jmri.org/xml/schema/raildriver/3
-                        http://jmri.org/xml/schema/raildriver-hardware-calibration-3.xsd">
+                        http://jmri.org/xml/schema/raildriver/raildriver-hardware-calibration-3.xsd">
     <rd:reverser>...</rd:reverser>
     <rd:throttle>...</rd:throttle>
     <rd:autoBrake>...</rd:autoBrake>
@@ -1084,7 +1139,7 @@ operator preferences:
     xmlns:rd="http://jmri.org/xml/schema/raildriver/3"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://jmri.org/xml/schema/raildriver/3
-                        http://jmri.org/xml/schema/raildriver-semi-realistic-3.xsd">
+                        http://jmri.org/xml/schema/raildriver/raildriver-semi-realistic-3.xsd">
     <rd:enabled>true</rd:enabled>
 
     <!-- Throttle / ramp -->
@@ -1106,6 +1161,9 @@ operator preferences:
     <rd:airReservoirReplenishPcnt>5</rd:airReservoirReplenishPcnt>
     <rd:airLineRechargePcnt>20</rd:airLineRechargePcnt>
 
+    <!-- Decoder dispatch -->
+    <rd:minEmitIntervalMs>50</rd:minEmitIntervalMs>
+
     <!-- Load -->
     <rd:load>
         <!--
@@ -1113,11 +1171,9 @@ operator preferences:
           LIGHT_ENGINE / SWITCHER / LOCAL_FREIGHT / THROUGH_FREIGHT /
           UNIT_TRAIN / CUSTOM). The display strings ("Light engine",
           etc.) live in the UI bundle only; they must not appear in
-          the XML. Read/written via
-          `AbstractXmlAdapter.EnumIoNames` (or `EnumIoNamesNumbers`
-          if numeric back-compat is ever needed) so the JMRI
-          ErrorHandler is consulted on malformed values rather than
-          silent coercion.
+          the XML. Read/written via `AbstractXmlAdapter.EnumIoNames`
+          so the JMRI ErrorHandler is consulted on malformed values
+          rather than silent coercion.
         -->
         <rd:scenario>LIGHT_ENGINE</rd:scenario>
         <rd:customMultiplier>1.0</rd:customMultiplier>
@@ -1125,15 +1181,22 @@ operator preferences:
 
     <!-- Decoder integration -->
     <rd:decoderBrake>
-        <rd:mode>none</rd:mode>
+        <rd:mode>NONE</rd:mode>
         <rd:esuLowFunction>4</rd:esuLowFunction>
         <rd:esuMidFunction>5</rd:esuMidFunction>
         <rd:esuHighFunction>6</rd:esuHighFunction>
         <rd:esuLowThresh>30</rd:esuLowThresh>
         <rd:esuMidThresh>60</rd:esuMidThresh>
         <rd:esuHighThresh>98</rd:esuHighThresh>
-    </rd:semiRealistic>
+    </rd:decoderBrake>
+</rd:semiRealistic>
 ```
+
+`<rd:mode>` carries the `DecoderBrakeMode` enum constant name
+(`NONE` / `ESU`) so `AbstractXmlAdapter.EnumIoNames` round-trips it
+through `Enum.name()` without a case-mapping coercion. The matching
+`LoadScenario` field uses the same convention
+(e.g. `<rd:scenario>LIGHT_ENGINE</rd:scenario>`).
 
 `<rd:enabled>` is the persisted `persistedEnabled` value from §9.1.
 `liveEnabled` is **never** persisted; it is a session-only field on
@@ -1198,6 +1261,9 @@ public final class SemiRealisticSettings {
     public int     airReservoirReplenishPcnt = 5;
     public int     airLineRechargePcnt     = 20;
 
+    // Decoder dispatch (§5.2)
+    public int     minEmitIntervalMs       = 50;       // floor on decoder-side setSpeedSetting calls
+
     // Load (see §7).
     // loadScenario is persisted as the enum's constant name (e.g.
     // "LIGHT_ENGINE") via AbstractXmlAdapter.EnumIoNames so the on-disk
@@ -1224,9 +1290,9 @@ conventions (see `.github/instructions/jmri-xml.instructions.md` and
 `jmri-xml-persistence.instructions.md`). One XSD per fragment, both
 in the `http://jmri.org/xml/schema/raildriver/3` namespace:
 
-- `xml/schema/raildriver-hardware-calibration-3.xsd` — schema for
+- `xml/schema/raildriver/raildriver-hardware-calibration-3.xsd` — schema for
   the `<rd:hardwareCalibration>` fragment (§9.11.1).
-- `xml/schema/raildriver-semi-realistic-3.xsd` — schema for the
+- `xml/schema/raildriver/raildriver-semi-realistic-3.xsd` — schema for the
   `<rd:semiRealistic>` fragment (§9.11.2).
 
 The per-fragment work breaks down as:
@@ -1235,8 +1301,14 @@ The per-fragment work breaks down as:
   top-level fragment element has a named complex type; inner
   elements (e.g. `<rd:load>`, `<rd:decoderBrake>`) are defined
   anonymously inside that type. Reuse the standard helper types in
-  `xml/schema/types/general.xsd` (e.g. `trueFalseType` for
-  `<rd:enabled>` / `<rd:mode>` flags) where they apply.
+  `xml/schema/types/general.xsd` where they apply: in particular
+  `trueFalseType` for genuinely boolean fields such as
+  `<rd:enabled>`. Enum-valued fields like `<rd:scenario>` and
+  `<rd:mode>` are **not** booleans; define an inline
+  `xs:simpleType` restricting `xs:string` to the `xs:enumeration`
+  of the matching Java enum's constant names (`LIGHT_ENGINE`,
+  `SWITCHER`, …; `NONE`, `ESU`) so the schema validates the same
+  string form `AbstractXmlAdapter.EnumIoNames` reads/writes.
 - **Schema-location reference.** When the writer emits each
   fragment, the root element gets `xmlns:rd`,
   `xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"`, and
@@ -1251,9 +1323,9 @@ The per-fragment work breaks down as:
 
   ```sh
   xmllint -noout -schema http://www.w3.org/2001/XMLSchema.xsd \
-      xml/schema/raildriver-hardware-calibration-3.xsd
+      xml/schema/raildriver/raildriver-hardware-calibration-3.xsd
   xmllint -noout -schema http://www.w3.org/2001/XMLSchema.xsd \
-      xml/schema/raildriver-semi-realistic-3.xsd
+      xml/schema/raildriver/raildriver-semi-realistic-3.xsd
   ```
 
 - **Validate sample fragment files.** The test fixtures in
@@ -1270,25 +1342,77 @@ The per-fragment work breaks down as:
 - **Annotate the new types with the responsible class.** Per the
   schema-development guidance, add an `<xs:annotation>`/`<xs:appinfo>`
   block on each top-level complex type identifying the `*Xml`
-  reader/writer (e.g.
-  `<jmri:usingclass configurexml="true">jmri.jmrix.raildriver.configurexml.RailDriverHardwareCalibrationXml</jmri:usingclass>`,
-  exact FQNs deferred to the implementation phase per the
-  package-naming note in §3 of the structure instructions).
-- **No schema versioning yet.** The `/3` namespace is the first
-  generation of the `AuxiliaryConfiguration` form. Future breaking
-  changes get a new namespace (`/4`, `/5`, …) plus a new XSD;
-  older fixtures stay valid forever because their namespaces never
-  change.
+  reader/writer:
+
+  ```xml
+  <!-- inside raildriver-hardware-calibration-3.xsd -->
+  <xs:annotation>
+      <xs:appinfo>
+          <jmri:usingclass configurexml="true"
+              >jmri.jmrit.usb.configurexml.RailDriverHardwareCalibrationXml</jmri:usingclass>
+      </xs:appinfo>
+  </xs:annotation>
+
+  <!-- inside raildriver-semi-realistic-3.xsd -->
+  <xs:annotation>
+      <xs:appinfo>
+          <jmri:usingclass configurexml="true"
+              >jmri.jmrit.usb.configurexml.SemiRealisticSettingsXml</jmri:usingclass>
+      </xs:appinfo>
+  </xs:annotation>
+  ```
+
+  Both FQNs match the post-relocation package layout in §11.0
+  (`jmri.jmrit.usb.configurexml`, not the historical
+  `jmri.util.usb.*` or any speculative `jmri.jmrix.raildriver.*`).
+- **Schema-filename suffix.** XSD filenames are suffixed with the
+  **fragment-namespace generation** (`-3`), matching the trailing
+  segment of the namespace URL
+  (`http://jmri.org/xml/schema/raildriver/3`). This deliberately
+  diverges from the JMRI release-suffix convention
+  (`layout-2-9-6.xsd`, `turnouts-3-7-3.xsd`) for two reasons:
+
+  - Both fragments are introduced together in a brand-new
+    namespace, so there is no prior schema to compare against
+    when picking a release-style suffix.
+  - Filename and namespace stay lockstep: a future breaking
+    change bumps both together (`-4` filename + `/4` namespace),
+    so a quick glance at either tells you the format generation.
+    A release-style suffix would drift relative to the namespace
+    over time — e.g. a `-5-15-6.xsd` paired with `/3` namespace
+    would invite confusion about which version is authoritative.
+
+  The unsuffixed `raildriver-hardware-calibration.xsd` /
+  `raildriver-semi-realistic.xsd` form is reserved per the
+  convention for a primordial pre-namespaced predecessor that
+  does not exist for this fragment family.
+- **Future breaking changes** get a new namespace (`/4`, `/5`, …)
+  plus a fresh pair of XSDs with the matching `-4` / `-5` suffix;
+  older fixtures stay valid forever because their namespaces
+  never change.
 
 ### 9.13 Migration from the legacy freestanding XML file
 
 The current `RailDriverCalibration.loadOrDefault(File)` /
 `RailDriverCalibration.save(File)` pair writes a single freestanding
-`<profile>/profile/raildriver-calibration.xml` (root element
-`<raildriver-calibration version="2">`). Operators with existing
-v1 / v2 files therefore have content on disk that must be moved
-into the two new `AuxiliaryConfiguration` fragments without losing
-their captured detents.
+`<profile-root>/profile/raildriver-calibration.xml` (root element
+`<raildriver-calibration version="2">`); the literal `profile/`
+segment is the `Profile.PROFILE` subdirectory inside the profile
+root, where shared profile content lives alongside the per-node
+`jmri-<UUID>-<ID>` private subfolders. Operators with existing v1 /
+v2 files therefore have content on disk that must be moved into the
+two new `AuxiliaryConfiguration` fragments without losing their
+captured detents.
+
+**Path resolution.** All `java.io.File` / `java.nio` operations on
+the legacy file go through `jmri.util.FileUtil.getExternalFilename(...)`
+first (or the existing `RailDriverCalibration.getDefaultFile()`
+helper, which already builds the absolute path from
+`Profile.getPath()` and never persists a portable `profile:` string).
+If any new code path stores or compares this path elsewhere, persist
+it in the portable form `profile:profile/raildriver-calibration.xml`
+and resolve via `FileUtil.getExternalFilename(...)` before use, per
+`jmri-filenames.instructions.md`.
 
 Migration runs once per profile, the first time a JMRI build with
 the new code initialises that profile:
@@ -1297,7 +1421,7 @@ the new code initialises that profile:
    - whether the new `<rd:hardwareCalibration>` fragment exists in
      `getAuxiliaryConfiguration(profile)` (private space), and
    - whether the legacy file
-     `<profile>/profile/raildriver-calibration.xml` exists.
+     `<profile-root>/profile/raildriver-calibration.xml` exists.
 2. **If only the legacy file exists**, parse it with the existing
    v1 / v2-tolerant JDOM2 path (already in
    `RailDriverCalibration.loadOrDefault`):
@@ -1305,18 +1429,35 @@ the new code initialises that profile:
      `<rd:hardwareCalibration>` fragment and write that fragment to
      `getAuxiliaryConfiguration(profile)` in **private** space.
    - The legacy file's `<semiRealistic>` subtree (only present in
-     v2 files) is **discarded** and triggers the warn-level
-     `ErrorHandler` + `log.warn` report previously specified in
-     §9.11; the new `<rd:semiRealistic>` fragment is written with
-     defaults to **shared** space. Operators who had in-progress
-     velocity-physics calibrations are not migrated — the meaning
-     of every field changed (m/s² → integer milliseconds / steps),
-     so silent migration would produce nonsense values.
+     v2 files) is **mostly discarded**: the meaning of every
+     numeric field changed under the EngineDriver-aligned port
+     (m/s² / m/s drag coefficients → integer milliseconds and step
+     counts), so a silent numeric copy would produce nonsense
+     values. Per `jmri-xml.instructions.md` ("backward
+     compatibility ... prefer additive changes") schema-versioned
+     migration is preferred where possible, so the loader
+     **does** carry across the small set of v2 fields whose
+     meaning survives unchanged before applying defaults to the
+     rest:
+
+     | v2 element                  | v3 element       | Mapping                                 |
+     |-----------------------------|------------------|------------------------------------------|
+     | `<enabled>`                 | `<rd:enabled>`   | Boolean copy (`true`/`false`).           |
+     | (none)                      | every other v3 field | Schema default applied; v2 value ignored. |
+
+     Any v2 child not in the table above is ignored. The loader
+     then writes the populated `<rd:semiRealistic>` fragment to
+     **shared** space and emits one warn-level `ErrorHandler`
+     report **plus** a `log.warn(...)` call summarising which
+     fields were carried (`enabled`) and which were reset to
+     defaults (the rest), so the operator knows their tuning was
+     lost.
    - Rename the legacy file to
-     `<profile>/profile/raildriver-calibration.xml.bak` (do **not**
-     delete it; the operator may want it for forensic purposes).
-     Log an `INFO`-level message identifying the legacy file path,
-     the new fragment locations, and the `.bak` filename.
+     `<profile-root>/profile/raildriver-calibration.xml.bak` (do
+     **not** delete it; the operator may want it for forensic
+     purposes). Log an `INFO`-level message identifying the
+     legacy file path, the new fragment locations, and the `.bak`
+     filename.
 3. **If both the new fragment(s) and the legacy file exist**
    (e.g. the operator manually copied the legacy file back from a
    backup), the new fragments win. Emit a warn-level
@@ -1356,14 +1497,13 @@ flag (private for hardware, shared for semi-realistic) following the
 
 ## 10. Throttle-toolbar mode toggle (Jynstrument)
 
-Ported from the existing plan's §2.6 verbatim. The Jynstrument is
-mode-toggle UI only; its behaviour is independent of which engine
-algorithm is running underneath.
+The Jynstrument is mode-toggle UI only; its behaviour is independent
+of which engine algorithm is running underneath.
 
-The Settings window's `Enable semi-realistic mode` checkbox is the
-authoritative toggle, but burying it inside a tabbed dialog opened
-from the Debug menu is too much friction for a setting an operator
-might flip multiple times per session (e.g. switching between
+The Semi-Realistic `PreferencesPanel`'s `Enable semi-realistic mode`
+checkbox (§9.6) is the authoritative persistent toggle, but reaching
+it through JMRI Preferences is too much friction for a setting an
+operator might flip multiple times per session (e.g. switching between
 yard-switching mode and over-the-road mode). A second, faster path
 lives directly on the throttle window's toolbar.
 
@@ -1376,44 +1516,58 @@ A single toolbar button:
   handover. Three PNGs ship with the `.jyn` folder.
 - **Click** — toggles `liveEnabled` **for the current session
   only**; does **not** write the calibration XML. Notifies the
-  engine + Settings window via PCS so all three stay coherent in
-  memory. Persistent changes go through the Settings window (§9).
+  engine + Semi-Realistic `PreferencesPanel` via PCS so all three
+  stay coherent in memory. Persistent changes go through the JMRI
+  Preferences window (§9).
 - **Right-click** — popup with one item: `Settings...` → opens the
-  unified Settings frame to the Settings tab.
+  JMRI Preferences window on the Semi-Realistic panel.
 - **Tooltip** — `RailDriver semi-realistic throttle: ON / OFF (session)`.
 
 ### 10.2 Java-side support
 
-`RailDriverMenuItem` gains a small public API to support the
-Jynstrument (and any future toolbar / status surface):
+The persisted-vs-session enable plumbing lives on
+`RailDriverPreferencesManager` (§9.4); the
+attach-state plumbing lives on `RailDriverMenuItem`. The
+Jynstrument talks to both:
 
 ```java
+// RailDriverPreferencesManager — InstanceManager.getDefault(...)
 public boolean isSemiRealisticLiveEnabled();
 public boolean isSemiRealisticPersistedEnabled();
 public void applyPersistedEnabled(boolean enabled);             // §9.4
 public void setSemiRealisticEnabledSessionOnly(boolean enabled); // §9.4
+public void addSettingsListener(PropertyChangeListener l);
+public void removeSettingsListener(PropertyChangeListener l);
 
+// RailDriverMenuItem — InstanceManager.getNullableDefault(...)
 public boolean isRailDriverConnected();
 public ThrottleFrame getActiveThrottleFrame();
 public boolean isAttachInProgress();
 public void requestAttachToThrottle(ThrottleFrame tf);
-
-public void addSettingsListener(PropertyChangeListener l);
-public void removeSettingsListener(PropertyChangeListener l);
+public void addAttachStateListener(PropertyChangeListener l);
+public void removeAttachStateListener(PropertyChangeListener l);
 ```
 
-PCS events fired on the settings listener:
+`RailDriverMenuItem` lives in `jmri.jmrit.usb` post-relocation
+(§11.0), so referencing `jmri.jmrit.throttle.ThrottleFrame`
+directly in its public API is legal — no narrow-interface
+abstraction is required.
 
-- `"liveEnabledChanged"` — fired by both `applyPersistedEnabled` and
+PCS events:
+
+- `"liveEnabledChanged"` (fired on the manager's settings
+  listener) — fired by both `applyPersistedEnabled` and
   `setSemiRealisticEnabledSessionOnly`. Engine + Jynstrument
   subscribe.
-- `"persistedEnabledChanged"` — fired by `applyPersistedEnabled`
-  only, after the XML write. Settings tab subscribes.
-- `"railDriverConnected"` — fired from the existing
-  `HidServicesListener` callbacks.
-- `"activeThrottleFrame"` — fired around `attachThrottleWindow`
-  binds.
-- `"attachInProgress"` — fired around the async attach window.
+- `"persistedEnabledChanged"` (manager) — fired by
+  `applyPersistedEnabled` only, after the XML write. The
+  Semi-Realistic `PreferencesPanel` subscribes.
+- `"railDriverConnected"` (RailDriverMenuItem) — fired from the
+  existing `HidServicesListener` callbacks.
+- `"activeThrottleFrame"` (RailDriverMenuItem) — fired around
+  `attachThrottleWindow` binds.
+- `"attachInProgress"` (RailDriverMenuItem) — fired around the
+  async attach window.
 
 ### 10.3 Jynstrument click behaviour by state
 
@@ -1459,42 +1613,86 @@ disposed instance does not leak listener subscriptions.
 
 ### 11.0 Package locations
 
-All RailDriver code already lives under `jmri.util.usb`, reflecting
-its status as a USB-HID **peripheral** (it drives an existing
-`DccThrottle` rather than implementing its own layout connection)
-and not a `jmri.jmrix.<vendor>` system connection. This plan does
-**not** relocate any existing class. New code goes into the same
-tree, but `jmri-swing.instructions.md` and
-`jmri-xml-persistence.instructions.md` require Swing UI and
-configurexml adapters to live in dedicated subpackages so the
-non-UI code stays headless-friendly.
+All new and existing RailDriver code lives under **`jmri.jmrit.usb`**.
+The pre-existing classes are relocated from `jmri.util.usb` as part
+of Phase 2; no new code is added under `jmri.util.usb`. This is a
+**deliberate departure from the historical placement**, motivated by
+two structural constraints from `jmri-structure.instructions.md`:
+
+- The `util` tree is reserved for "general service classes that are
+  not user-level tools". The RailDriver feature is a user-level tool
+  (Settings UI, Jynstrument toolbar toggle, Debug-menu calibration
+  window, scenario picker), so `jmrit` is the correct home.
+- `util` code "must not depend on `jmri.jmrit` or `jmri.jmrix`". The
+  engine and `RailDriverMenuItem` integrate with
+  `jmri.jmrit.throttle.ThrottleFrame` (Jynstrument auto-install,
+  active-frame tracking). Under `jmrit` those references are
+  legal; under `util` they would fail the ArchUnit checks
+  (`jmri.ArchitectureCheck` / `jmri.ArchitectureTest`).
+
+The RailDriver does **not** become a `jmri.jmrix.<vendor>` system
+connection: it is a USB-HID peripheral that drives an existing
+`DccThrottle` rather than implementing its own layout connection,
+so it has no `SystemConnectionMemo`, no `ConnectionTypeList`, and no
+`PortAdapter` / `ConnectionConfig` chain. Future maintainers should
+not retrofit one.
 
 Concrete package locations under this plan:
 
 | Class                                                           | Package                                  | Notes                                                     |
 |-----------------------------------------------------------------|------------------------------------------|------------------------------------------------------------|
-| `SemiRealisticThrottleEngine`, `SemiRealisticSettings`, `LoadScenario`, `DecoderBrakeMode`, `RailDriverHardwareCalibration` | `jmri.util.usb`                          | Engine + settings POJOs; **no Swing imports**.            |
-| `RailDriverCalibration` (legacy facade + new helpers)           | `jmri.util.usb`                          | Existing class; new `loadHardware*` / `loadSemiRealistic*` helpers stay non-Swing. |
-| `RailDriverMenuItem`                                            | `jmri.util.usb`                          | Existing location; the Swing-touching call sites continue to use `ThreadingUtil.runOnGUIEventually`. |
-| `RailDriverSettingsPane`, `SemiRealisticSettingsPanel`, `CalibrationTabPanel`, `CalibrationBar` | `jmri.util.usb.swing` *(new)* | All Swing UI. Existing `*Panel` / `*Frame` classes move into this subpackage in Phase 2. |
-| `RailDriverSettingsAction` (if retained) and any future `JmriNamedPaneAction` users | `jmri.util.usb.swing`                    | Action classes ship next to the panes they open.          |
-| `RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml`  | `jmri.util.usb.configurexml` *(new)*     | Per-fragment `*Xml` adapters that own the XML read/write logic for the `AuxiliaryConfiguration` fragments (§9.11). The runtime classes stay free of XML logic. |
+| `SemiRealisticThrottleEngine`, `SemiRealisticSettings`, `LoadScenario`, `DecoderBrakeMode`, `RailDriverHardwareCalibration` | `jmri.jmrit.usb` *(relocated)* | Engine + settings POJOs; **no Swing imports**. ESU configuration is read from `SemiRealisticSettings` only — there is no per-roster override path. |
+| `RailDriverCalibration` (legacy facade + new helpers)           | `jmri.jmrit.usb` *(relocated)*            | Existing class; new `loadHardware*` / `loadSemiRealistic*` helpers stay non-Swing. |
+| `RailDriverPreferencesManager`                                  | `jmri.jmrit.usb` *(new)*                  | `jmri.spi.PreferencesManager` SPI provider. Owns `liveEnabled` / `persistedEnabled`, the in-memory `SemiRealisticSettings` and `RailDriverHardwareCalibration`, the §9.13 legacy migration, and PCS event dispatch. Acquired via `InstanceManager.getDefault(RailDriverPreferencesManager.class)`. |
+| `RailDriverMenuItem`                                            | `jmri.jmrit.usb` *(relocated)*            | Existing location; the Swing-touching call sites continue to use `ThreadingUtil.runOnGUIEventually`. Public API uses `ThrottleFrame` directly (legal jmrit→jmrit). |
+| `RailDriverSemiRealisticPreferencesPanel`, `RailDriverCalibrationPreferencesPanel`, `CalibrationBar` | `jmri.jmrit.usb.swing` *(new)* | All Swing UI. The two panels are `jmri.swing.PreferencesPanel` SPI providers grouped under a "RailDriver" group hint; both appear in the standard JMRI Preferences window (§9.5). |
+| `RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml`  | `jmri.jmrit.usb.configurexml` *(new)*     | Per-fragment `*Xml` adapters extending `jmri.configurexml.AbstractXmlAdapter`. Own the XML read/write logic for the `AuxiliaryConfiguration` fragments (§9.11). The runtime classes stay free of XML logic. |
 | `RailDriverModeToggle.jyn`                                      | `jython/Jynstruments/ThrottleWindowToolBar/` | Distribution content; remains exactly where the Jynstrument loader expects it. |
 
-The two new subpackages (`jmri.util.usb.swing`,
-`jmri.util.usb.configurexml`) are created in Phase 2 alongside the
-first classes that need them. Phase 2 also relocates the existing
-`SemiRealisticSettingsPanel`, `RailDriverSettingsFrame` (→
-`RailDriverSettingsPane`), `CalibrationTabPanel`, and
-`CalibrationBar` from flat `jmri.util.usb` into
-`jmri.util.usb.swing` so the `swing`-subpackage convention is
-actually enforced (today they are flat).
+The two new subpackages (`jmri.jmrit.usb.swing`,
+`jmri.jmrit.usb.configurexml`) are created in Phase 2. Phase 2 also
+performs the **relocation** of every existing class from
+`jmri.util.usb` to `jmri.jmrit.usb`, including `RailDriverCalibration`
+and `RailDriverMenuItem`. Existing call sites are updated wholesale;
+no compatibility shim is left behind under `jmri.util.usb` because
+those classes have no third-party consumers (RailDriver is a
+self-contained feature). The pre-existing `SemiRealisticSettingsPanel`,
+`RailDriverSettingsFrame`, `RailDriverSettingsAction`, and
+`CalibrationTabPanel` classes are **retired** as part of the SPI
+migration (§9.5) — their function moves into the two new
+`PreferencesPanel` providers and the `RailDriverPreferencesManager`.
+
+**Persistence-class lineage.** Both new `*Xml` adapters
+(`RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml`)
+extend `jmri.configurexml.AbstractXmlAdapter` so they pick up the
+standard parsing helpers (`getAttributeIntegerValue`,
+`getAttributeBooleanValue`, etc.) and the `EnumIO` infrastructure
+(`EnumIoNames` for `LoadScenario` / `DecoderBrakeMode`) used
+elsewhere in the plan. Persistence is invoked through
+`RailDriverPreferencesManager`'s `load*` / `save*` paths rather
+than through `ConfigXmlManager`'s automatic `*Xml` lookup, so the
+`a.b.Foo` → `a.b.configurexml.FooXml` naming convention is
+followed for human readability rather than for dispatch.
+
+**SPI registration.** Three SPI bindings ship as part of this
+feature, all generated automatically from `@ServiceProvider`
+annotations into `target/classes/META-INF/services/`:
+
+- `@ServiceProvider(service = jmri.spi.PreferencesManager.class)`
+  on `RailDriverPreferencesManager`.
+- `@ServiceProvider(service = jmri.swing.PreferencesPanel.class)`
+  on `RailDriverSemiRealisticPreferencesPanel` and
+  `RailDriverCalibrationPreferencesPanel`.
+
+There is no `StartupActionFactory`, `ConnectionTypeList`, or
+`ToolsMenuAction` provider — the operator-facing entry points are
+the standard JMRI Preferences window plus the Jynstrument toolbar
+toggle.
 
 ### Phase 1 — Engine port
 
 - Rewrite `SemiRealisticThrottleEngine` with the §5 class outline.
-- Reduce `LoadScenario` to `(displayName, defaultMultiplier)` per
-  §7.1 (placeholder — final shape is TBD after §7 iteration).
+- Reduce `LoadScenario` to the named-scenario picker per §7.1.
 - Reduce `SemiRealisticSettings` to the §9.11 field set.
 - Unit tests: replicate EngineDriver's expected outputs for
   `getBrakeDecimalPcnt`, `getLoadPcnt`-equivalent (whatever §7
@@ -1511,75 +1709,97 @@ actually enforced (today they are flat).
   protected method on the engine, settings record, and helper
   classes added in this phase.
 
-### Phase 2 — Settings & persistence rebuild
+### Phase 2 — Relocation, SPI Settings UI, persistence rebuild
 
-- Land §9.1 / §9.2 / §9.4 (`persistedEnabled` / `liveEnabled` split,
-  `applyPersistedEnabled` + `setSemiRealisticEnabledSessionOnly`).
-- Replace `SemiRealisticSettingsPanel` with the §9.6 field
-  layout, implementing `DirtyTrackingTab`.
-- **Rework the unified Settings UI as a `JmriPanel`** per §9.5:
-  - Add `jmri.util.usb.swing.RailDriverSettingsPane` (a
-    `JmriPanel`) that owns the tabbed UI, dirty tracking, button
-    bar, validation, and status line.
-  - Move the existing `SemiRealisticSettingsPanel`,
-    `CalibrationTabPanel`, and `CalibrationBar` from
-    `jmri.util.usb` into `jmri.util.usb.swing` so the
-    `swing`-subpackage convention (§11.0) is enforced.
-  - Replace the Debug-menu wiring with
-    `new jmri.util.swing.JmriNamedPaneAction("...", new
-    jmri.util.swing.sdi.JmriJFrameInterface(),
-    "jmri.util.usb.swing.RailDriverSettingsPane")`. Retire
-    `RailDriverSettingsFrame`; if `RailDriverSettingsAction` is
-    still needed, slim it to a thin `JmriAbstractAction`.
-  - Use `jmri.util.swing.WrapLayout` (not `java.awt.FlowLayout`)
-    for the bottom button bar and any wrapping rows in the
-    Settings tab (§9.9).
-  - Use `jmri.util.swing.JmriJOptionPane` for the dirty-Cancel
-    confirmation dialog (§9.8).
-- Implement the §9.10 Save / Apply round-trip with the new
-  cross-field validation rules.
+- **Relocation (§11.0).** Move every existing class from
+  `jmri.util.usb` to `jmri.jmrit.usb`. Update every call site
+  wholesale; do not leave compatibility shims under
+  `jmri.util.usb`. Add the two new subpackages
+  `jmri.jmrit.usb.swing` and `jmri.jmrit.usb.configurexml`. Run
+  `jmri.ArchitectureCheck` after the move to confirm no
+  cross-tree violations remain.
+- **Land §9.1 / §9.2 / §9.4** on the new
+  `RailDriverPreferencesManager` (not on `RailDriverMenuItem`):
+  - Add `jmri.jmrit.usb.RailDriverPreferencesManager`
+    implementing `jmri.spi.PreferencesManager` and registered
+    with `@ServiceProvider(service = jmri.spi.PreferencesManager.class)`.
+  - Manager owns `persistedEnabled` / `liveEnabled`, the
+    in-memory `SemiRealisticSettings` and
+    `RailDriverHardwareCalibration` records, the §9.13 legacy
+    migration trigger, and the `addSettingsListener` /
+    `removeSettingsListener` PCS dispatch.
+  - `RailDriverMenuItem` becomes a consumer (acquires the
+    manager via `InstanceManager`).
+- **SPI Settings UI (§9.5).** Retire `RailDriverSettingsFrame`,
+  `RailDriverSettingsAction`, `SemiRealisticSettingsPanel`, and
+  `CalibrationTabPanel`. Remove the Debug-menu wiring entirely
+  (no `JmriNamedPaneAction`). Replace with two
+  `jmri.swing.PreferencesPanel` SPI providers in
+  `jmri.jmrit.usb.swing`:
+  - `RailDriverSemiRealisticPreferencesPanel` — content per
+    §9.6, scenario picker per §9.7, `Bundle.getMessage(...)` for
+    every visible label, `WrapLayout` for any wrapping rows.
+  - `RailDriverCalibrationPreferencesPanel` — wraps the existing
+    visual-bar UI (`CalibrationBar`) with no functional change.
+  - Both classes annotated
+    `@ServiceProvider(service = jmri.swing.PreferencesPanel.class)`,
+    return `"RailDriver"` from `getPreferencesItem()` so they
+    group together in the JMRI Preferences window, and give
+    distinct tab titles via `getTabbedPreferencesTitle()` (e.g.
+    `Bundle.getMessage("PreferencesTabSemiRealistic")` /
+    `…("PreferencesTabCalibration")`).
+  - Each panel implements its own `isDirty()` /
+    `markDirty()` plumbing (§9.9) and runs the §9.10 validation
+    inside `savePreferences()` before delegating to the
+    `RailDriverPreferencesManager` save helpers.
 - **Migrate persistence to `AuxiliaryConfiguration`** (§9.11):
   - Add a `RailDriverHardwareCalibration` type holding the seven
     detent records, separate from `SemiRealisticSettings`.
-  - Add `loadHardwareCalibration` / `saveHardwareCalibration`
+  - Implementation in
+    `jmri.jmrit.usb.configurexml.RailDriverHardwareCalibrationXml`
+    and `jmri.jmrit.usb.configurexml.SemiRealisticSettingsXml`,
+    both extending `jmri.configurexml.AbstractXmlAdapter`.
+  - Expose `loadHardwareCalibration` / `saveHardwareCalibration`
     (private space) and `loadSemiRealisticSettings` /
-    `saveSemiRealisticSettings` (shared space) to
-    `RailDriverCalibration`, both using
+    `saveSemiRealisticSettings` (shared space) on
+    `RailDriverPreferencesManager`, all using
     `ProfileUtils.getAuxiliaryConfiguration(profile)` per the
-    `StartupActionsManager` precedent. Implementation lives in
-    `jmri.util.usb.configurexml.RailDriverHardwareCalibrationXml`
-    and `jmri.util.usb.configurexml.SemiRealisticSettingsXml`
-    (§11.0).
+    `StartupActionsManager` precedent.
   - Replace every existing call site of
     `RailDriverCalibration.loadOrDefault(getDefaultFile())` and
-    `cal.save(getDefaultFile())` with the new pair.
+    `cal.save(getDefaultFile())` with the manager's new pair.
   - Route the v3 fragment load — plus the §9.13 legacy
     `<semiRealistic>` discard — through `ErrorHandler` per
     §9.11.3.
-- **Implement §9.13 legacy-file migration.** On profile
-  initialisation, if `<rd:hardwareCalibration>` is missing **and**
-  `<profile>/profile/raildriver-calibration.xml` exists, parse the
-  legacy file with the existing v1 / v2 path, populate the two new
-  fragments, and rename the legacy file to `*.xml.bak`. Idempotent
-  on subsequent runs.
-- **XSDs.** Add `xml/schema/raildriver-hardware-calibration-3.xsd`
-  and `xml/schema/raildriver-semi-realistic-3.xsd`. Each follows
+- **Implement §9.13 legacy-file migration** inside
+  `RailDriverPreferencesManager.initialize(...)`. If
+  `<rd:hardwareCalibration>` is missing **and**
+  `<profile-root>/profile/raildriver-calibration.xml` exists, parse the
+  legacy file with the existing v1 / v2 path, populate the two
+  new fragments (with the §9.13 best-effort field mapping), and
+  rename the legacy file to `*.xml.bak`. Idempotent on
+  subsequent runs.
+- **XSDs.** Add `xml/schema/raildriver/raildriver-hardware-calibration-3.xsd`
+  and `xml/schema/raildriver/raildriver-semi-realistic-3.xsd`. Each follows
   the Venetian-Blinds pattern, reuses shared types from
-  `types/general.xsd`, and is annotated with the responsible `*Xml`
+  `types/general.xsd` (notably `trueFalseType` for
+  `<rd:enabled>`), defines inline `xs:enumeration` simpleTypes
+  for `<rd:scenario>` and `<rd:mode>` matching the Java enum
+  constant names, and is annotated with the responsible `*Xml`
   reader/writer class via `<xs:annotation>`/`<xs:appinfo>`. The
-  fragment writer emits the matching `xsi:schemaLocation` on each
-  fragment root.
+  fragment writer emits the matching `xsi:schemaLocation` on
+  each fragment root.
 - **Schema validation.** Run
   `xmllint -noout -schema http://www.w3.org/2001/XMLSchema.xsd
-  xml/schema/raildriver-hardware-calibration-3.xsd` and
-  `xml/schema/raildriver-semi-realistic-3.xsd`, plus the per-fixture
-  `xmllint -noout <fixture>.xml` checks against every file under
-  `valid/` / `invalid/` / `load/` (§12.4) before commit.
+  xml/schema/raildriver/raildriver-hardware-calibration-3.xsd` and
+  `xml/schema/raildriver/raildriver-semi-realistic-3.xsd`, plus the
+  per-fixture `xmllint -noout <fixture>.xml` checks against every
+  file under `valid/` / `invalid/` / `load/` (§12.4) before
+  commit.
 - **`EnumIoNames`-style enum persistence.** Wire `LoadScenario`
   and `DecoderBrakeMode` through `AbstractXmlAdapter.EnumIoNames`
-  (or `EnumIoNamesNumbers` if numeric back-compat is later
-  required) so the on-disk form is the constant name and bad
-  values land in `ErrorHandler`.
+  so the on-disk form is the constant name and bad values land in
+  `ErrorHandler`.
 - **Test fixtures (§12.4 / §12.5).** Add the per-fragment
   validation samples, intentionally-invalid samples, the v1 / v2
   legacy-file migration fixtures, and the matching `SchemaTest`
@@ -1590,9 +1810,11 @@ actually enforced (today they are flat).
   + malformed-child events at `WARN` (paired with `ErrorHandler`),
   and any per-axis recompute trace at `DEBUG`.
 - **Javadoc (§12.6).** Author Javadoc for every new public /
-  protected API in `RailDriverMenuItem`, the engine, the new
-  settings record, the `RailDriverSettingsPane`, and the new
-  `*Xml` adapters before the phase ships.
+  protected API on `RailDriverPreferencesManager`, the two
+  `PreferencesPanel` classes, the engine, the settings /
+  calibration records, and the new `*Xml` adapters before the
+  phase ships. Update `RailDriverMenuItem`'s Javadoc to reflect
+  its slimmer post-relocation API.
 - **Help pages (§12.6).** Add the Settings-tab and migration-notes
   help pages so the operator-facing documentation lands with the
   feature.
@@ -1624,7 +1846,8 @@ actually enforced (today they are flat).
   using JMRI's `DccThrottle.setFunction(int, boolean)` API.
 - Three-pass logic (clear-all, find-highest-fitting, dispatch
   changes-only) is preserved verbatim.
-- Mode toggle on the Settings tab gates the entire passthrough.
+- Mode toggle on the Semi-Realistic `PreferencesPanel`
+  (`decoderBrakeMode`) gates the entire passthrough.
 
 ### Phase 6 — Throttle-toolbar Jynstrument
 
@@ -1639,18 +1862,26 @@ actually enforced (today they are flat).
   `help/en/html/tools/usb/RailDriverModeToggle.shtml` covering the
   five Jynstrument states and persistent-vs-session semantics.
 
-### Phase 7 — Stop modes (optional)
-
-- Wire E-Stop SPDT to `throttle.setSpeedSetting(-1f)` (today's
-  behaviour — bypasses the ramp).
-- Optionally wire one front-edge button to the soft-stop sequence
-  per §8.2.
-- Skippable for the first cut; revisit if operator feedback asks
-  for it.
-
 ---
 
 ## 12. Testing strategy
+
+**Cross-cutting: `warnOnce` / `infoOnce` in tests.** Several code
+paths in this design emit one-shot warnings via
+`Log4JUtil.warnOnce` / `Log4JUtil.infoOnce` (see §5.6 — bail-off
+without calibration, Auto Brake out of range, malformed-fragment
+load, v2 discard, etc.). Per `jmri-logging.instructions.md`, these
+need special handling in unit and CI tests: the one-shot state is
+shared per-class for the lifetime of the JVM, so a second test
+invocation in the same run will see the message suppressed and any
+assertion that "the warning fired again" will mistakenly fail.
+Tests that exercise such paths follow the JMRI JUnit-page guidance
+for resetting the one-shot state between tests (typically by
+calling `Log4JUtil.restartLogging()` in a `@BeforeEach` or by
+asserting the suppression behaviour rather than the second
+emission). Schema / load-and-store fixtures that intentionally
+trigger these warnings (`load/raildriver-semi-realistic-malformed-child.xml`
+in §12.5; the v2 discard in §12.5 Group B) must use this pattern.
 
 ### 12.1 Unit tests (pure math, no JMRI runtime)
 
@@ -1807,7 +2038,7 @@ file.
   substituted on load.
 
 **Group B: legacy-file migration** — each fixture is a
-freestanding `<profile>/profile/raildriver-calibration.xml` file
+freestanding `<profile-root>/profile/raildriver-calibration.xml` file
 (the legacy v1 / v2 form). The test:
 
 1. Copies the fixture into a temporary profile root.
@@ -1884,18 +2115,32 @@ ships. Concretely:
 - `LoadScenario`, `DecoderBrakeMode` — enum constant Javadoc
   pointing at the matching XML form (`name()`) and the user-facing
   display string in the bundle.
-- `RailDriverSettingsPane` (the new `JmriPanel`) and the two tab
-  panels — Javadoc on the `DirtyTrackingTab` interface methods
-  and on `initComponents` / `dispose` (life-cycle contract).
+- `RailDriverPreferencesManager` — Javadoc on every public method
+  (`applyPersistedEnabled`, `setSemiRealisticEnabledSessionOnly`,
+  `addSettingsListener` / `removeSettingsListener`, the four
+  `load*` / `save*` helpers) plus the SPI lifecycle methods
+  (`initialize`, `getRequires`, `isInitialized`). Class header
+  documents the PCS event names fired
+  (`"persistedEnabledChanged"`, `"liveEnabledChanged"`).
+- `RailDriverSemiRealisticPreferencesPanel`,
+  `RailDriverCalibrationPreferencesPanel` — Javadoc on the
+  `PreferencesPanel` interface methods (`isDirty`,
+  `savePreferences`, `getPreferencesItem`,
+  `getTabbedPreferencesTitle`, `restoreState`) and on their
+  internal `markDirty()` plumbing.
 - `RailDriverHardwareCalibrationXml`, `SemiRealisticSettingsXml` —
   Javadoc covering which `AuxiliaryConfiguration` space the
-  fragment lives in (private vs shared) and the `EnumIoNames`
-  helpers used.
+  fragment lives in (private vs shared), the `EnumIoNames`
+  helpers used, and the `AbstractXmlAdapter` parsing helpers
+  inherited.
 - New / changed public methods on `RailDriverMenuItem`
-  (`isSemiRealisticLiveEnabled`, `applyPersistedEnabled`,
-  `setSemiRealisticEnabledSessionOnly`, `addSettingsListener`,
-  `requestAttachToThrottle`, etc.) — fully documented with the
-  PCS event names they fire (§10.2).
+  (`isRailDriverConnected`, `getActiveThrottleFrame`,
+  `isAttachInProgress`, `requestAttachToThrottle`,
+  `addAttachStateListener` / `removeAttachStateListener`) —
+  fully documented with the PCS event names they fire (§10.2).
+  The persisted-vs-live enable methods moved to
+  `RailDriverPreferencesManager` (above) and are no longer on
+  `RailDriverMenuItem`.
 
 The Javadoc tasks are scheduled on the same phase that lands the
 class itself (Phase 1 for the engine, Phase 2 for the
@@ -1906,7 +2151,7 @@ support API).
 
 - `help/en/html/tools/usb/RailDriverSemiRealistic.shtml` *(new)*
   — overview of the semi-realistic throttle, the lever mapping
-  (§4), the Settings tab fields (§9.6), the `Light engine` →
+  (§4), the Semi-Realistic panel fields (§9.6), the `Light engine` →
   `Unit train` scenarios, and a short troubleshooting guide
   (e.g. "Loco accelerates immediately when I move the throttle
   → check Step size per ramp tick / acceleration repeat").
@@ -1915,9 +2160,9 @@ support API).
   what right-click → Settings does, and the persistent-vs-session
   semantics (§9.1 / §9.2).
 - `help/en/html/tools/usb/RailDriverSettings.shtml` *(updated to
-  reflect the §9.5 unified pane, the new fields, the Save /
-  Apply / Cancel semantics, and the legacy-file migration in
-  §9.13.)*
+  reflect the §9.5 SPI `PreferencesPanel` delivery, the new
+  fields, the JMRI Preferences-window Save / Apply / Cancel
+  semantics, and the legacy-file migration in §9.13.)*
 
 The two new pages are written in Phase 2 (Settings UI lands) and
 Phase 6 (Jynstrument lands) respectively. The updated existing
@@ -1931,32 +2176,34 @@ the per-phase bullet lists in §11 so they don't slip.
 
 ## 13. Open design questions for review
 
-1. **Load multiplier computation (§7).** The proposed baseline is the
-   named-scenario picker with EngineDriver-derived round-number
-   multipliers. Iterate after first review per user request.
-2. **Soft-stop button assignment.** Which front-edge button (if any)
-   should map to the `THROTTLE_STOP_BRAKE_FULL` sequence?
-3. **Air-system simulation off.** Should we expose a session-level
-   "Air off" toggle (sets `airLineValue = 100` and freezes the
-   repeaters), or rely on the operator parking the Auto Brake at
-   Released and ignoring it? The latter is more prototypical; the
-   former is the EngineDriver behaviour.
-4. **Emit-rate vs decoder DCC update rate.** EngineDriver emits one
-   step per Δt, which can be as fast as 300 ms. JMRI's DCC dispatch
-   may coalesce successive `setSpeedSetting` calls. If that's a
-   problem, we throttle emissions to a min interval (e.g. 50 ms)
-   while keeping the underlying step counter accurate. Validate
-   during phase 2 hardware testing.
-5. **`AuxiliaryConfiguration` namespace and XSD URLs.** §9.11 / §9.12
-   pick `http://jmri.org/xml/schema/raildriver/3` as the fragment
-   namespace, two XSDs at
-   `http://jmri.org/xml/schema/raildriver-hardware-calibration-3.xsd`
-   and `http://jmri.org/xml/schema/raildriver-semi-realistic-3.xsd`,
-   and a shared/private split (hardware → private, semi-realistic →
-   shared). §9.13 migrates the legacy `raildriver-calibration.xml`
-   into both fragments. Confirm the namespace shape and the
-   `*Xml` reader/writer FQNs to embed in the `<jmri:usingclass>`
-   annotations.
+The package placement, SPI integration, and engine cross-tree
+coupling questions raised in the original draft are **resolved**:
+
+- All RailDriver code relocates from `jmri.util.usb` to
+  `jmri.jmrit.usb` (§11.0). This satisfies the `jmri-structure`
+  rules: `jmrit` is the correct home for user-level tools, and
+  references to `jmri.jmrit.throttle.ThrottleFrame` /
+  `jmri.jmrit.roster.RosterEntry` from `RailDriverMenuItem` /
+  caller code are now legal.
+- The settings UI ships as two `jmri.swing.PreferencesPanel` SPI
+  providers grouped under a "RailDriver" entry in the standard
+  JMRI Preferences window (§9.5); `RailDriverSettingsFrame` /
+  `RailDriverSettingsAction` are retired.
+- Persistence and the `liveEnabled` / `persistedEnabled` plumbing
+  live on a `jmri.spi.PreferencesManager` SPI provider,
+  `RailDriverPreferencesManager` (§9.4 / §11.0).
+- The engine reads ESU configuration from `SemiRealisticSettings`
+  only — no per-roster overrides, no `RosterEntry` lookup, no
+  `jmrit` types in the engine API surface (§5.1 / §6.4).
+- Persistence shape: namespace
+  `http://jmri.org/xml/schema/raildriver/3`, two XSDs under
+  `xml/schema/raildriver/` suffixed with the matching
+  fragment-namespace generation (`-3`), shared
+  `<rd:semiRealistic>` and private `<rd:hardwareCalibration>`
+  fragments, `<jmri:usingclass>` FQNs in
+  `jmri.jmrit.usb.configurexml` (§9.11 / §9.12 / §11.0).
+
+No open design questions remain.
 
 ---
 
