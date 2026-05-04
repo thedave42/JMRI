@@ -20,7 +20,7 @@ Operator expectations the engine matches:
 
 Key separation from the rejected Newton's-law model:
 
-- **Drive and brake do not "compete" via force summation.** Drive raises `s` at a fixed operator-tunable rate when `sTarget > s`. Brakes lower `s` at their own rates. The integrator subtracts brake rates from drive rate; if the result is non-positive while `s < sTarget`, `s` simply doesn't increase — no asymptote, no "drive force can't beat resistance" surprise.
+- **Drive and brake do not "compete" via force summation.** Drive raises `s` at a fixed operator-tunable rate when `s + deadband < sTarget`, drops to a drag-matched "hold" rate within ±deadband of `sTarget` (so `s` settles on `sTarget` exactly, no limit cycle), and is zero when `s > sTarget + deadband`. Brakes lower `s` at their own rates and can still pull `s` below `sTarget` from hold mode, because hold mode matches drag only — not brake terms. The integrator subtracts brake rates from drive rate; if the result is non-positive while `s < sTarget`, `s` simply doesn't increase — no asymptote, no "drive force can't beat resistance" surprise. After integration, an overshoot clamp lands `s` exactly on `sTarget` if drive was active and a single tick would have crossed it.
 - **Acceleration rate is mass-independent by default.** A simple "feel" parameter (e.g. 0.10 fraction/s wall-clock = 0 → full in 10 s) tuned for desired operator UX, not derived from prototype HP/TE. Per-scenario constants modulate it for "heavy train accelerates more slowly" UX.
 - **Coast resistance is a single linear-in-`s` rate.** No quadratic aerodynamic term — eliminated per operator request. Decel from coast = `dragCoeff · s · consistDragFactor`.
 - **Top speed is whatever the decoder produces at `s = 1.0`.** The engine never caps `s` below 1.0 unless brakes overcome drive. There is no `designTopSpeed` field, no scenario top-speed parameter, no `getPhysicsMaxSpeedKmh()` clamp inside the engine.
@@ -37,21 +37,39 @@ float dynApply = throttleBelowIdleFraction;        // 0..1 only when in dyn-brak
 float cylinderPressure = updateWestinghouseAndGetCylinderPressure(autoBrakeLever, dt);
 float autoForce = bailoffPressed ? 0.0f : cylinderPressure;
 
-// 3. Rate composition (all values dimensionless: fraction/sec wall-clock)
-float driveRate = (sTarget > s) ? p.accelRate * p.consistAccelFactor : 0.0f;
+// 3. Decel rates (all values dimensionless: fraction/sec wall-clock)
 float dragRate  = p.dragCoeff * s * p.consistDragFactor;
 float mechRate  = indepBrakeLever * p.indepBrakeRate * p.indepConsistFactor;
 float autoRate  = autoForce * p.autoBrakeRate;                          // not consist-scaled; pipe propagates through trainline
 float dynRate   = (s > 0) ? dynApply * p.dynBrakeRate * p.dynConsistFactor * dynTaper(s) : 0.0f;
 
-// 4. Integrate (no clamp on sign of dsdt — rate-of-change is what we want)
-float dsdt = driveRate - dragRate - mechRate - autoRate - dynRate;
-s += dsdt * TICK_SECONDS;
-s = clamp01(s);
+// 4. Drive rate: full accelRate when below sTarget, drag-matched hold within
+//    ±S_TARGET_DEADBAND, off when above. Hold mode matches drag only — not
+//    brake terms — so brakes can still pull s below sTarget; on the next tick
+//    the gap exceeds the deadband and drive snaps back to full to compete.
+float gap = sTarget - s;
+float driveRate;
+if (gap >  S_TARGET_DEADBAND) {
+    driveRate = p.accelRate * p.consistAccelFactor;
+} else if (gap < -S_TARGET_DEADBAND) {
+    driveRate = 0.0f;
+} else {
+    driveRate = dragRate;       // hold at sTarget against drag; brake terms still subtract
+}
 
-// 5. Emit on EDT
+// 5. Integrate, with drive-overshoot clamp so a one-tick drive-up step lands at sTarget exactly.
+float dsdt  = driveRate - dragRate - mechRate - autoRate - dynRate;
+float sNext = s + dsdt * TICK_SECONDS;
+if (driveRate > 0 && s < sTarget && sNext > sTarget) {
+    sNext = sTarget;
+}
+s = clamp01(sNext);
+
+// 6. Emit on EDT
 ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(s));
 ```
+
+`S_TARGET_DEADBAND = 0.001f` (0.1 % of full scale — well below DCC step granularity at 14/28/128 steps, well above float-arithmetic noise). Drive's hold-mode formulation eliminates the limit cycle that a pure threshold drive (`(sTarget > s) ? full : 0`) would produce when `s` settles near a partial target.
 
 The engine emits `s` directly. No fraction ↔ velocity conversion, no roster speed profile lookup inside the engine, no top-speed clamp. The roster speed profile and `getPhysicsMaxSpeedKmh()` are decoder-layer concerns the engine doesn't touch.
 
@@ -140,6 +158,10 @@ The engine is built around a single integration loop that runs on a dedicated wo
 
 ```java
 public final class SemiRealisticThrottleEngine {
+    /** Hold-mode deadband around sTarget (fraction of full scale).
+     *  0.1% — well below DCC step granularity, well above float noise. */
+    private static final float S_TARGET_DEADBAND = 0.001f;
+
     // — Mode —
     private volatile boolean enabled;            // false => bypass (phase-3 direct setSpeedSetting path)
 
@@ -238,20 +260,34 @@ if (consistCars > 0) {
 }
 float autoForce = bail ? 0.0f : cylinderPressure;
 
-// 3. Compute rate composition (all in fraction/sec wall-clock)
-float driveRate = (sTarget > s) ? accelRate * consistAccelFactor : 0.0f;
+// 3. Decel rates (all in fraction/sec wall-clock)
 float dragRate  = dragCoeff * s * consistDragFactor;
 float mechRate  = indep * indepBrakeRate * indepConsistFactor;
 float autoRate_ = autoForce * autoBrakeRate;                          // not consist-scaled
 float dynTaper  = (dynTaperThreshold > 0) ? Math.min(1.0f, s / dynTaperThreshold) : 1.0f;
 float dynRate   = (s > 0) ? dynApply * dynBrakeRate * dynConsistFactor * dynTaper : 0.0f;
 
-// 4. Integrate
-float dsdt = driveRate - dragRate - mechRate - autoRate_ - dynRate;
-s += dsdt * DT;
-s = clamp01(s);
+// 4. Drive rate: full accelRate below sTarget, drag-matched hold within
+//    ±S_TARGET_DEADBAND, off above. Hold matches drag only — brakes still bite.
+float gap = sTarget - s;
+float driveRate;
+if (gap >  S_TARGET_DEADBAND) {
+    driveRate = accelRate * consistAccelFactor;
+} else if (gap < -S_TARGET_DEADBAND) {
+    driveRate = 0.0f;
+} else {
+    driveRate = dragRate;
+}
 
-// 5. Emit on EDT
+// 5. Integrate, with drive-overshoot clamp.
+float dsdt  = driveRate - dragRate - mechRate - autoRate_ - dynRate;
+float sNext = s + dsdt * DT;
+if (driveRate > 0 && s < sTarget && sNext > sTarget) {
+    sNext = sTarget;
+}
+s = clamp01(sNext);
+
+// 6. Emit on EDT
 final float sFinal = s;
 ThreadingUtil.runOnGUIEventually(() -> throttle.setSpeedSetting(sFinal));
 ```
@@ -275,6 +311,7 @@ Defaults: `accelRate = 0.10`, `consistAccelFactor = 1.0`, `dragCoeff = 0.05`, `c
 | Phenomenon | Formula | Wall-clock outcome |
 |---|---|---:|
 | 0 → full under throttle, no brake, light engine | `s = accelRate · t − ∫dragCoeff·s dt` (linear approach to s = 1 against light drag) | **~13 s to reach s = 0.95** |
+| 0 → 50 % under throttle, no brake, light engine (partial-target landing via overshoot clamp + hold) | `ds/dt = 0.10 − 0.05·s` until clamp; hold mode at sTarget thereafter | **~5.75 s to s = 0.5**, then steady |
 | Full → 0 coast (drop throttle to idle) | `ds/dt = −0.05·s` → exponential, time const 20 s | **~60 s to s = 0.05** (e<sup>−3</sup>) |
 | Full → 0 with full indep brake | `ds/dt = −0.30 − 0.05·s` (s−term tiny) | **~3.3 s** |
 | Full throttle, 50 % indep | `ds/dt = 0.10 − 0.15 − 0.05·s = −0.05 − 0.05·s` (always negative) | loco never accelerates; coasts to halt |
@@ -509,11 +546,13 @@ Both buttons run the same sequence:
 1. Build a fresh `RailDriverCalibration` instance representing the on-disk schema.
 2. Call `settingsTab.validateAndApplyTo(working)` — write the semi-realistic subtree.
 3. Call `calibrationTab.validateAndApplyTo(working)` — write the per-axis detent values.
-4. If either returned false, abort — auto-select that tab, show the validation message in the status line, leave window open, leave dirty set.
-5. Persist `working` to XML.
-6. Call `RailDriverMenuItem.reloadCalibration()` so the polling thread + (when stage 2 lands) the semi-realistic engine pick up the new values without restart.
-7. Re-load `working` from disk (round-trip) and call `resetToFile(roundTripped)` on both tabs — guarantees the in-window state matches the file exactly, clears dirty.
-8. Save closes the window via `dispose()`; Apply does not.
+4. Run **cross-field validation** on the populated `working` (§6 cross-field rules). Blocking-rule failures (e.g. `accelRate · consistAccelFactor ≤ dragCoeff · consistDragFactor`) are reported alongside per-field failures; non-blocking warnings are deferred for display in step 9.
+5. If any per-field validation in steps 2–3 returned false, or any blocking cross-field rule in step 4 failed, abort — auto-select the offending tab (Settings tab for cross-field rules), show the validation message in the status line, leave window open, leave dirty set.
+6. Persist `working` to XML.
+7. Call `RailDriverMenuItem.reloadCalibration()` so the polling thread + (when stage 2 lands) the semi-realistic engine pick up the new values without restart.
+8. Re-load `working` from disk (round-trip) and call `resetToFile(roundTripped)` on both tabs — guarantees the in-window state matches the file exactly, clears dirty.
+9. Show any cross-field warnings recorded in step 4 in the status line.
+10. Save closes the window via `dispose()`; Apply does not.
 
 This consolidation rolls the existing standalone calibration UI together with this feature's settings UI into a single window. **The pre-existing `RailDriverCalibrationFrame` and `RailDriverCalibrationAction` are deleted as part of stage 1; the `RdCalibrate` Bundle key is replaced with `RdSettings`.** Operators who used `Debug → RailDriver Calibration...` will find the same calibration UI on the second tab of `Debug → RailDriver Settings...`.
 
@@ -843,7 +882,8 @@ The engine emits `s` directly via `setSpeedSetting(s)` — no roster speed profi
 **Acceptance:**
 1. The Settings tab is functional: scenario picker shows all 7 scenarios; selecting `Custom` enables all per-rate fields; non-Custom scenarios show the active scenario's preset values as read-only; switching scenarios snaps all per-rate fields to the new scenario's defaults. Westinghouse parameter rows greyed out when `consistCars == 0`. Field validation matches §6's validation ranges.
 2. Mode OFF: throttle behaves exactly as in stage 1 (operator-perceptibly identical).
-3. Mode ON, default Light-engine, indep brake at Full Release: moving the throttle lever from idle to full produces a visible ramp on the loco. Default `accelRate = 0.10` → loco reaches `s ≈ 0.95` in ~13 s wall-clock against light drag. **No snap, no jitter.** Loco eventually reaches `s = 1.0` (lever-target = 1.0, drive overcomes drag) — top speed is whatever the decoder produces at `s = 1.0`.
+3. Mode ON, default Light-engine, indep brake at Full Release: moving the throttle lever from idle to full produces a visible ramp on the loco. Default `accelRate = 0.10` → loco reaches `s ≈ 0.95` in ~13 s wall-clock against light drag. **No snap, no jitter.** Loco eventually reaches `s = 1.0` exactly via the integrator's overshoot clamp; subsequent ticks hold `s = 1.0` via the drag-matched hold-mode branch. Top speed is whatever the decoder produces at `s = 1.0`.
+3a. **Partial-throttle landing.** Mode ON, default Light-engine, indep brake at Full Release, lever at 50 % (sTarget = 0.5): drive runs at full `accelRate` until `s` enters the ±0.001 deadband around 0.5, at which point hold mode engages — drive matches drag, ds/dt = 0, `s` settles at 0.5 with no oscillation or sawtooth. Time from rest: **~5.75 s** wall-clock (analytical: `t = −ln(1 − 0.5/2)/0.05`). Subsequent lever moves take effect on the next tick: nudging the lever up resumes full-rate drive; nudging it down switches to drive-off (coast).
 4. Mode ON, indep brake at Full Application + throttle at zero, Light-engine: `ds/dt = −0.30 − 0.05·s` → s decays exponentially with brake-dominated rate → time from `s = 1.0` to `s ≈ 0.05` is **~3.3 s wall-clock**.
 5. Mode ON, full throttle + full indep brake from rest, Light-engine: `ds/dt = 0.10 − 0.30 − 0.05·s = −0.20 − 0.05·s` ≤ 0 always. **Loco does not move.** Validates "full brake can prevent motion under full throttle" — the operator-described constraint. Reducing brake to 30 %: `ds/dt = 0.10 − 0.09 − 0.05·s` → marginally positive for low s, asymptote at `s ≈ 0.2`. Brake can fully or partially overcome drive, depending on relative rates.
 6. Mode ON, releasing the indep brake while at speed: `mechRate = 0` on the next tick; integrator resumes accelerating toward the lever's target.
@@ -939,7 +979,7 @@ Stacks with mech and auto brake by simple rate summation. No `min/max` selection
 1. With semi-realistic mode OFF, behaviour is identical to the existing RailDriver bring-up (no regression).
 2. With mode ON, all per-stage acceptance criteria pass on a real DCC loco.
 3. **Throttle-fraction-rate invariants per §1.0**: the engine emits `setSpeedSetting(s)` where `s ∈ [0, 1]` is integrated from a sum of operator-tunable rates in fraction/sec wall-clock. There is no mass, no force, no scale factor, no top-speed cap inside the engine. The decoder + speed profile remain the sole authority for physical loco speed at `s = 1.0`.
-4. **No-asymptote invariant.** Under full throttle (`sTarget = 1.0`) and zero brake, default scenario coefficients produce `ds/dt > 0` over `s ∈ [0, 1)`. The loco reaches `s = 1.0` in a finite wall-clock time. Verified per scenario in §2.1's worked-example table.
+4. **No-asymptote invariant.** Under full throttle (`sTarget = 1.0`) and zero brake, scenario coefficients must satisfy `accelRate · consistAccelFactor > dragCoeff · consistDragFactor` so `ds/dt > 0` over `s ∈ [0, 1)`. The loco reaches `s = 1.0` in finite wall-clock time via the overshoot clamp. All default scenarios in §2.4.1 satisfy this by construction; for **Custom** scenarios it is enforced as a blocking cross-field validation rule on Save/Apply (§6). At partial throttle (`sTarget < 1.0`) and zero brake, drive's hold-mode formulation lands `s` exactly on `sTarget` (within ±0.001 deadband) with no limit cycle — verified per scenario in §2.1's worked-example table.
 5. **Brake-can-overcome-drive invariant.** Under full throttle and full indep + auto brake, default scenario coefficients produce `ds/dt ≤ 0` at `s = 0`. The loco does not move from rest. Operators feel "throttle can't beat brake" — the operator-described constraint.
 6. Calibration XML round-trips through Save / Load with the new schema; pre-existing files (version `"1"`) still load cleanly with semi-realistic defaults.
 7. The `activeThrottleFrame == null` invariant from the existing RailDriver bring-up still holds — the engine acquires its `DccThrottle` from `activeThrottleFrame` at attach time and never holds the reference past the throttle's `"ancestor"` close.
@@ -999,6 +1039,14 @@ All design questions for this feature have been resolved. See "Resolved decision
 - **Reverser-interlock setting source (decided 2026-05-02; revised 2026-05-03):** polling-thread Axis 0 dispatch reads `engine.getS()` (volatile, no EDT crossing) and suppresses `setIsForward()` when `settings.liveEnabled && s > epsilon`. See §3.3.
 - **Pending direction change at stop (decided 2026-05-02):** not retried on `s == 0`. Operator must nudge the reverser. See §3.3.
 - **Settings-field validation ranges (decided 2026-05-03):** accelRate 0.001–5.0 fraction/s; consistAccelFactor 0.0–1.0; dragCoeff 0.0–5.0 1/s; consistDragFactor 0.0–1.0; indepBrakeRate / autoBrakeRate / dynBrakeRate 0.0–10.0 fraction/s; indepConsistFactor / dynConsistFactor 0.0–1.0; dynTaperThreshold 0.0–1.0; consistCars 0–500; T_pipe / T_cylinderApply / T_cylinderRelease 0.1–60 s; T_auxDrain / T_recharge 5–600 s; cylinderMagnification 0.5–10.0; ESU thresholds 1–100 monotonically increasing; ESU function numbers 0–28. Validation runs on Save/Apply per §2.4's flow.
+
+- **Drive integration: bang-bang with overshoot clamp and hold-mode deadband (decided 2026-05-03):** drive runs at full `accelRate · consistAccelFactor` when `s + S_TARGET_DEADBAND < sTarget`, drops to drag-matched rate (`driveRate = dragRate`, so `ds/dt = 0` absent brakes) within ±deadband of `sTarget`, and is zero when `s − S_TARGET_DEADBAND > sTarget`. After integration, if drive was on and a single-tick step would have crossed `sTarget`, `sNext` is clamped to `sTarget`. `S_TARGET_DEADBAND = 0.001` (0.1 % of full scale, well below DCC step granularity at 14/28/128 steps, well above float-arithmetic noise). Hold mode matches drag only — not brake terms — so brakes can still pull `s` below `sTarget` and on the next tick drive snaps back to full to compete with the brakes. This eliminates the limit-cycle / sawtooth that a pure threshold drive (`(sTarget > s) ? full : 0`) would produce around partial targets, and preserves the operator-documented "lever at X % → loco at X %" behavior including the linear-ramp UX. See §1.0.1, §2.1.
+
+- **Cross-field validation on Save/Apply (decided 2026-05-03):** the Save/Apply flow (§2.4) runs cross-field rules after per-field validation (step 4 of the persistence flow). Two rules:
+  1. **Drive-overcomes-drag at full lever (blocking):** rejects when `accelRate · consistAccelFactor ≤ dragCoeff · consistDragFactor`. Required so the loco can reach `s = 1.0` at full throttle — without it, the §1.0 "lever at X % → reach X/100" promise breaks because `ds/dt` becomes ≤ 0 before `s` reaches 1.0. Error text: "Drive cannot overcome drag at full throttle. Increase Acceleration rate or Consist accel factor, or decrease Rolling drag rate or Consist drag factor."
+  2. **Brake-can-hold-drive (non-blocking warning):** warns when `indepBrakeRate · indepConsistFactor + autoBrakeRate < accelRate · consistAccelFactor`. The §4 invariant 5 ("full brake holds against full drive") is desired-feel; operators may opt out for unusual scenarios. Warning text: "With these brake rates, full throttle will overpower full brakes — loco will move under combined full-throttle + full-brake."
+
+  Custom is the only scenario where these can be violated; preset scenarios in §2.4.1 satisfy both by construction. Settings tab is auto-selected on blocking-rule failure so the operator can correct.
 - **Jynstrument click behaviour by state (decided 2026-05-02):** five states (no device / device-no-throttle / attaching / bound-elsewhere / fully operational) with distinct behaviours. See §2.6.
 
 ## 7. Known limitations accepted in this feature
