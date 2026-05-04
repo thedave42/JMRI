@@ -55,17 +55,29 @@ classes also relocate from `jmri.util.usb` to `jmri.jmrit.usb`.
 | `LoadScenario`                   | 12 physics coefficients (top speed, vCorner, drag terms, brake decel, etc.) | Two fields: `displayName` + `loadMultiplier`. Multiplier feeds the EngineDriver `getLoadPcnt` slot directly.       |
 | `SemiRealisticSettings`          | ~20 m/s² / m/s / 1/s coefficients                                  | EngineDriver-style integers: speed-step, base accel/decel delay, brake steps, max-brake %, load steps, max-load %. |
 | `SemiRealisticSettingsPanel`     | Velocity-coefficient editors hosted in a Debug-menu frame         | **Retired.** Replaced by `RailDriverSemiRealisticPreferencesPanel` (a `jmri.swing.PreferencesPanel` SPI provider) in `jmri.jmrit.usb.swing`. |
+| `RailDriverSettingsFrame`        | Unified `JmriJFrame` hosting `SemiRealisticSettingsPanel` + `CalibrationTabPanel` as tabs, opened from Debug menu via `RailDriverSettingsAction` | Loses its settings tab (now in JMRI Preferences). Becomes calibration-only, or retired if calibration moves into the new `PreferencesPanel`. |
+| `RailDriverSettingsAction`       | `AbstractAction` registered in `apps.jmrit.DebugMenu` (line 77); opens `RailDriverSettingsFrame` | Updated to open the calibration-only frame (or retired alongside the frame if calibration moves to Preferences). |
 | *(new)* `RailDriverPreferencesManager` | n/a                                                          | `jmri.spi.PreferencesManager` SPI provider; owns the single `enabled` flag, the in-memory settings + calibration records, the §9.13 legacy migration, and PCS event dispatch. |
-| `RailDriverCalibration`          | `<semiRealistic>` subtree with physics block, freestanding XML file | `<rd:semiRealistic>` (shared) + `<rd:hardwareCalibration>` (private) `AuxiliaryConfiguration` fragments; legacy file migrated and renamed to `*.bak` (§9.13). |
+| `RailDriverCalibration`          | `<semiRealistic>` subtree with physics block, freestanding XML file via `SAXBuilder`/`XMLOutputter` at `<profile>/profile/raildriver-calibration.xml` | `<rd:semiRealistic>` (shared) + `<rd:hardwareCalibration>` (private) `AuxiliaryConfiguration` fragments; legacy file migrated and renamed to `*.bak` (§9.13). |
 | `RailDriverMenuItem`             | Velocity inputs (`setIndepBrakeFraction`, etc.); also held the persisted-vs-live enable plumbing | EngineDriver-style inputs (`setBrakeSliderStep`, `setAirLineValue`, `setDynBrakeStep`, etc.); decides engine-vs-direct dispatch strategy once at `notifyAddressThrottleFound` based on the persisted `enabled` flag (§9.1); the strategy is fixed for the throttle frame's lifetime — no live mid-session toggle. |
-| `SemiRealisticThrottleEngineTest` | Davis-shape regression cases                                      | EngineDriver-shape cases (delay multiplier matches `getLoadPcnt`, brake clip matches `getBrakeDecimalPcnt`, etc.). |
+| `SemiRealisticThrottleEngineTest` | No dedicated test exists today                                    | EngineDriver-shape cases (delay multiplier matches `getLoadPcnt`, brake clip matches `getBrakeDecimalPcnt`, etc.). |
 
-All RailDriver-hardware code outside the engine — calibration tabs, button
-mapping, axis decoding, lifecycle wiring (`AddressListener` /
-`ThrottleWindow` plumbing, EDT discipline) — is left functionally
-alone, just relocated and adapted to the SPI persistence path. The
-**physics math, its inputs/outputs, the package home, and the
-Settings-UI delivery path** are what change.
+The following files are **relocated** from `jmri.util.usb` to
+`jmri.jmrit.usb` (and `.swing` sub-package where appropriate) but
+left **functionally unchanged** apart from adapting to the SPI
+persistence path:
+
+- `CalibrationTabPanel`, `CalibrationBar` — calibration tab UI
+  components.
+- `Bundle.properties` (+ 5 locale variants: `_ca`, `_cs`, `_de`,
+  `_fr`, `_nl`) — resource bundles for the package.
+- `apps.jmrit.DebugMenu` (lines 76–77) — external import references
+  updated to the new package.
+
+Button mapping, axis decoding, and lifecycle wiring (`AddressListener`
+/ `ThrottleWindow` plumbing, EDT discipline) are also relocated but
+not restructured. The **physics math, its inputs/outputs, the package
+home, and the Settings-UI delivery path** are what change.
 
 ---
 
