@@ -102,6 +102,11 @@ public final class SemiRealisticThrottleEngine {
     private int prevLoadStep            = 0;
     private Direction direction         = Direction.NEUTRAL;
 
+    // --- ESU decoder brake function tracking ---
+    private boolean esuLowActive  = false;
+    private boolean esuMidActive  = false;
+    private boolean esuHighActive = false;
+
     /** Desired direction stored when a reverser flip is requested while
      *  {@code currentSpeedStep > 0}. Applied automatically when the loco
      *  reaches step 0. {@code null} means no deferred flip is pending. */
@@ -197,6 +202,9 @@ public final class SemiRealisticThrottleEngine {
         this.demandedLineValue = 100;
         this.airLineRecharging = false;
         this.airReservoirRecharging = false;
+        this.esuLowActive = false;
+        this.esuMidActive = false;
+        this.esuHighActive = false;
         log.debug("Engine detached");
     }
 
@@ -260,6 +268,7 @@ public final class SemiRealisticThrottleEngine {
     @InvokeOnLayoutThread
     public void setIndepBrakeFraction(float fraction) {
         this.indepBrakeFraction = clamp01(fraction);
+        evaluateDecoderBrake(Math.round(indepBrakeFraction * 100));
         recomputeTarget();
     }
 
@@ -540,6 +549,69 @@ public final class SemiRealisticThrottleEngine {
         if (step <= 0 || steps <= 0) return 1.0;
         double load = (double) step / (double) steps;
         return ((load * load * (maxLoadPcnt - 100)) + 100) / 100.0;
+    }
+
+    // ======================== ESU Decoder Brake Passthrough ========================
+
+    /**
+     * Evaluates the independent brake percent against ESU decoder brake
+     * thresholds and toggles the configured DCC functions when thresholds
+     * are crossed. Short-circuits when {@code decoderBrakeMode == NONE}.
+     * <p>
+     * Tracks previous function states to avoid redundant
+     * {@code setFunction} calls.
+     *
+     * @param brakePercent independent brake as 0–100 integer percent
+     */
+    private void evaluateDecoderBrake(int brakePercent) {
+        if (settings == null || throttle == null) return;
+        if (settings.decoderBrakeMode == SemiRealisticSettings.DecoderBrakeMode.NONE) return;
+
+        boolean lowNow  = brakePercent >= settings.esuLowThreshold;
+        boolean midNow  = brakePercent >= settings.esuMidThreshold;
+        boolean highNow = brakePercent >= settings.esuHighThreshold;
+
+        if (lowNow != esuLowActive) {
+            esuLowActive = lowNow;
+            throttle.setFunction(settings.esuLowFunction, lowNow);
+            log.debug("ESU decoder brake F{} = {}", settings.esuLowFunction, lowNow);
+        }
+        if (midNow != esuMidActive) {
+            esuMidActive = midNow;
+            throttle.setFunction(settings.esuMidFunction, midNow);
+            log.debug("ESU decoder brake F{} = {}", settings.esuMidFunction, midNow);
+        }
+        if (highNow != esuHighActive) {
+            esuHighActive = highNow;
+            throttle.setFunction(settings.esuHighFunction, highNow);
+            log.debug("ESU decoder brake F{} = {}", settings.esuHighFunction, highNow);
+        }
+    }
+
+    /**
+     * Validates ESU decoder brake thresholds: they must be ascending
+     * ({@code low < mid < high}) and function numbers must be
+     * non-negative.
+     *
+     * @param s the settings to validate
+     * @return {@code null} if valid, or a human-readable error message
+     */
+    @CheckForNull
+    static String validateEsuThresholds(@Nonnull SemiRealisticSettings s) {
+        if (s.decoderBrakeMode == SemiRealisticSettings.DecoderBrakeMode.NONE) {
+            return null; // not active — skip validation
+        }
+        if (s.esuLowThreshold >= s.esuMidThreshold
+                || s.esuMidThreshold >= s.esuHighThreshold) {
+            return "ESU brake thresholds must be ascending: low ("
+                    + s.esuLowThreshold + ") < mid ("
+                    + s.esuMidThreshold + ") < high ("
+                    + s.esuHighThreshold + ")";
+        }
+        if (s.esuLowFunction < 0 || s.esuMidFunction < 0 || s.esuHighFunction < 0) {
+            return "ESU function numbers must be non-negative";
+        }
+        return null;
     }
 
     // ======================== Air brake repeaters ========================

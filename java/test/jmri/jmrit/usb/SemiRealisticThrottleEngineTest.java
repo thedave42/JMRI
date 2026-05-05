@@ -4,6 +4,9 @@ import java.beans.PropertyChangeEvent;
 import java.util.ArrayList;
 import java.util.List;
 
+import jmri.DccLocoAddress;
+import jmri.jmrix.debugthrottle.DebugThrottle;
+
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -255,6 +258,140 @@ public class SemiRealisticThrottleEngineTest {
     public void testPropertyChangeConstants() {
         assertEquals("airLineValue", SemiRealisticThrottleEngine.AIR_LINE_VALUE);
         assertEquals("airReservoirPct", SemiRealisticThrottleEngine.AIR_RESERVOIR_PCT);
+    }
+
+    // ==================== ESU Decoder Brake Passthrough tests ====================
+
+    private DebugThrottle createDebugThrottle() {
+        return new DebugThrottle(new DccLocoAddress(3, false), null);
+    }
+
+    @Test
+    public void testEsuDecoderBrake_noneModeInert() {
+        SemiRealisticThrottleEngine e = new SemiRealisticThrottleEngine();
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.NONE;
+        e.updateSettings(s);
+        DebugThrottle t = createDebugThrottle();
+        e.attachThrottle(t);
+
+        e.setIndepBrakeFraction(1.0f); // 100% — above all thresholds
+        assertFalse(t.getFunction(4), "NONE mode: F4 should not be set");
+        assertFalse(t.getFunction(5), "NONE mode: F5 should not be set");
+        assertFalse(t.getFunction(6), "NONE mode: F6 should not be set");
+        e.detachThrottle();
+    }
+
+    @Test
+    public void testEsuDecoderBrake_esuModeTogglesAtThresholds() {
+        SemiRealisticThrottleEngine e = new SemiRealisticThrottleEngine();
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.ESU;
+        // defaults: F4@30%, F5@60%, F6@98%
+        e.updateSettings(s);
+        DebugThrottle t = createDebugThrottle();
+        e.attachThrottle(t);
+
+        // 0% brake — all off
+        e.setIndepBrakeFraction(0.0f);
+        assertFalse(t.getFunction(4));
+        assertFalse(t.getFunction(5));
+        assertFalse(t.getFunction(6));
+
+        // 30% — F4 on
+        e.setIndepBrakeFraction(0.30f);
+        assertTrue(t.getFunction(4), "F4 should activate at 30%");
+        assertFalse(t.getFunction(5));
+        assertFalse(t.getFunction(6));
+
+        // 60% — F4+F5 on
+        e.setIndepBrakeFraction(0.60f);
+        assertTrue(t.getFunction(4));
+        assertTrue(t.getFunction(5), "F5 should activate at 60%");
+        assertFalse(t.getFunction(6));
+
+        // 98% — all on
+        e.setIndepBrakeFraction(0.98f);
+        assertTrue(t.getFunction(4));
+        assertTrue(t.getFunction(5));
+        assertTrue(t.getFunction(6), "F6 should activate at 98%");
+
+        // Release back to 0 — all off
+        e.setIndepBrakeFraction(0.0f);
+        assertFalse(t.getFunction(4), "F4 should deactivate on release");
+        assertFalse(t.getFunction(5), "F5 should deactivate on release");
+        assertFalse(t.getFunction(6), "F6 should deactivate on release");
+
+        e.detachThrottle();
+    }
+
+    @Test
+    public void testEsuDecoderBrake_redundantCallsNoToggle() {
+        SemiRealisticThrottleEngine e = new SemiRealisticThrottleEngine();
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.ESU;
+        e.updateSettings(s);
+        DebugThrottle t = createDebugThrottle();
+        e.attachThrottle(t);
+
+        e.setIndepBrakeFraction(0.35f); // above 30% — F4 on
+        assertTrue(t.getFunction(4));
+
+        // Manually flip F4 off to detect if the engine redundantly sets it
+        t.setFunction(4, false);
+        e.setIndepBrakeFraction(0.36f); // still above 30%, no threshold crossed
+        assertFalse(t.getFunction(4), "Redundant call should not re-set F4");
+
+        e.detachThrottle();
+    }
+
+    @Test
+    public void testValidateEsuThresholds_validDefaults() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.ESU;
+        assertNull(SemiRealisticThrottleEngine.validateEsuThresholds(s),
+                "Default thresholds should be valid");
+    }
+
+    @Test
+    public void testValidateEsuThresholds_nonAscending() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.ESU;
+        s.esuLowThreshold = 60;
+        s.esuMidThreshold = 30; // out of order
+        s.esuHighThreshold = 98;
+        assertNotNull(SemiRealisticThrottleEngine.validateEsuThresholds(s),
+                "Non-ascending thresholds should fail validation");
+    }
+
+    @Test
+    public void testValidateEsuThresholds_equalThresholds() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.ESU;
+        s.esuLowThreshold = 30;
+        s.esuMidThreshold = 30; // equal to low
+        s.esuHighThreshold = 98;
+        assertNotNull(SemiRealisticThrottleEngine.validateEsuThresholds(s),
+                "Equal thresholds should fail validation (must be strictly ascending)");
+    }
+
+    @Test
+    public void testValidateEsuThresholds_negativeFunction() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.ESU;
+        s.esuLowFunction = -1;
+        assertNotNull(SemiRealisticThrottleEngine.validateEsuThresholds(s),
+                "Negative function number should fail validation");
+    }
+
+    @Test
+    public void testValidateEsuThresholds_noneModeSkipsValidation() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.decoderBrakeMode = SemiRealisticSettings.DecoderBrakeMode.NONE;
+        s.esuLowThreshold = 99;
+        s.esuMidThreshold = 1; // would be invalid for ESU mode
+        assertNull(SemiRealisticThrottleEngine.validateEsuThresholds(s),
+                "NONE mode should skip threshold validation");
     }
 
     @BeforeEach
