@@ -184,6 +184,27 @@ public final class SemiRealisticSettings {
         this.esuHighThreshold = other.esuHighThreshold;
     }
 
+    // ======================== Validation ========================
+
+    /**
+     * Validates that ESU decoder brake thresholds are strictly ascending
+     * ({@code low < mid < high}) and that function numbers are
+     * non-negative.
+     *
+     * @return {@code null} if valid, or a human-readable error message
+     */
+    @CheckForNull
+    public String validateEsuThresholds() {
+        if (esuLowFunction < 0 || esuMidFunction < 0 || esuHighFunction < 0) {
+            return "ESU function numbers must be non-negative.";
+        }
+        if (esuLowThreshold >= esuMidThreshold || esuMidThreshold >= esuHighThreshold) {
+            return "ESU thresholds must be ascending: low (" + esuLowThreshold
+                    + ") < mid (" + esuMidThreshold + ") < high (" + esuHighThreshold + ").";
+        }
+        return null;
+    }
+
     // ======================== XML persistence ========================
 
     /** Populates this instance from a {@code <semiRealistic>} XML element.

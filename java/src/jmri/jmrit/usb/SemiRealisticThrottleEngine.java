@@ -87,6 +87,13 @@ public final class SemiRealisticThrottleEngine {
     private boolean bailoffPressed      = false;
     private Direction direction         = Direction.NEUTRAL;
 
+    // --- ESU decoder brake function state tracking ---
+    /** Previous on/off state for each ESU threshold level, to avoid
+     *  redundant function calls. Reset on attach/detach. */
+    private boolean esuLowActive  = false;
+    private boolean esuMidActive  = false;
+    private boolean esuHighActive = false;
+
     // ======================== Lifecycle ========================
 
     /**
@@ -120,6 +127,9 @@ public final class SemiRealisticThrottleEngine {
         this.targetAcceleration = 0;
         this.attached = true;
         this.lastEmitTimeMs = 0;
+        this.esuLowActive = false;
+        this.esuMidActive = false;
+        this.esuHighActive = false;
 
         log.debug("Engine attached: loco={}, maxSteps={}, seeded step={}",
                 t.getLocoAddress(), maxSpeedSteps, currentSpeedStep);
@@ -131,6 +141,7 @@ public final class SemiRealisticThrottleEngine {
      */
     @InvokeOnLayoutThread
     public void detachThrottle() {
+        clearDecoderBrakeFunctions();
         rampEpoch++;
         deferredEmitEpoch++;
         this.throttle = null;
@@ -179,6 +190,7 @@ public final class SemiRealisticThrottleEngine {
     @InvokeOnLayoutThread
     public void setIndepBrakeFraction(float fraction) {
         this.indepBrakeFraction = clamp01(fraction);
+        updateDecoderBrake();
         recomputeTarget();
     }
 
@@ -353,6 +365,69 @@ public final class SemiRealisticThrottleEngine {
                     lastEmitTimeMs = System.currentTimeMillis();
                 }
             }, (int) remaining);
+        }
+    }
+
+    // ======================== ESU Decoder Brake Passthrough ========================
+
+    /**
+     * Evaluates the current independent brake fraction against the ESU
+     * threshold settings and toggles the configured decoder functions
+     * on/off as thresholds are crossed. Tracks previous function state
+     * to avoid redundant {@code setFunction} calls.
+     * <p>
+     * Short-circuits entirely when {@code decoderBrakeMode == NONE}.
+     * <p>
+     * The brake percent is {@code indepBrakeFraction × 100} (0 = released,
+     * 100 = full application). Each threshold is crossed ascending: when
+     * the percent reaches or exceeds the threshold, the function is turned
+     * on; when it drops below, the function is turned off.
+     */
+    private void updateDecoderBrake() {
+        if (settings == null || throttle == null) return;
+        if (settings.decoderBrakeMode != SemiRealisticSettings.DecoderBrakeMode.ESU) return;
+
+        int brakePcnt = Math.round(indepBrakeFraction * 100f);
+
+        boolean lowWant  = brakePcnt >= settings.esuLowThreshold;
+        boolean midWant  = brakePcnt >= settings.esuMidThreshold;
+        boolean highWant = brakePcnt >= settings.esuHighThreshold;
+
+        if (lowWant != esuLowActive) {
+            throttle.setFunction(settings.esuLowFunction, lowWant);
+            esuLowActive = lowWant;
+            log.debug("ESU decoder brake F{} → {}", settings.esuLowFunction, lowWant);
+        }
+        if (midWant != esuMidActive) {
+            throttle.setFunction(settings.esuMidFunction, midWant);
+            esuMidActive = midWant;
+            log.debug("ESU decoder brake F{} → {}", settings.esuMidFunction, midWant);
+        }
+        if (highWant != esuHighActive) {
+            throttle.setFunction(settings.esuHighFunction, highWant);
+            esuHighActive = highWant;
+            log.debug("ESU decoder brake F{} → {}", settings.esuHighFunction, highWant);
+        }
+    }
+
+    /**
+     * Clears all ESU decoder brake functions on the attached throttle.
+     * Called on detach to leave the decoder in a clean state.
+     */
+    private void clearDecoderBrakeFunctions() {
+        if (throttle == null || settings == null) return;
+        if (settings.decoderBrakeMode != SemiRealisticSettings.DecoderBrakeMode.ESU) return;
+        if (esuLowActive) {
+            throttle.setFunction(settings.esuLowFunction, false);
+            esuLowActive = false;
+        }
+        if (esuMidActive) {
+            throttle.setFunction(settings.esuMidFunction, false);
+            esuMidActive = false;
+        }
+        if (esuHighActive) {
+            throttle.setFunction(settings.esuHighFunction, false);
+            esuHighActive = false;
         }
     }
 
