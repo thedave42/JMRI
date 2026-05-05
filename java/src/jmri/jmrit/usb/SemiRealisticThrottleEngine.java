@@ -98,6 +98,8 @@ public final class SemiRealisticThrottleEngine {
     private float indepBrakeFraction    = 0.0f;
     private float dynBrakeFraction      = 0.0f;
     private boolean bailoffPressed      = false;
+    /** Previous load step for change detection (EngineDriver prevLoads[]). */
+    private int prevLoadStep            = 0;
     private Direction direction         = Direction.NEUTRAL;
 
     /** Desired direction stored when a reverser flip is requested while
@@ -460,6 +462,19 @@ public final class SemiRealisticThrottleEngine {
         double airBrakePcnt = getBrakeDecimalPcnt(effAirStep,
                 settings.numberOfBrakeSteps, MAX_BRAKE);
 
+        // Per-source load scaling (Epic §2e): loco-only brakes (indep,
+        // dyn) are reduced by load; train-wide braking (air) is invariant.
+        boolean loadChanged = (settings.loadSliderPosition != prevLoadStep);
+        prevLoadStep = settings.loadSliderPosition;
+        double loadMultiplier = (settings.loadSliderPosition > 0)
+                ? getLoadPcnt(settings.loadSliderPosition,
+                        settings.numberOfLoadSteps, settings.maxLoadPcnt)
+                : 1.0;
+        if (loadMultiplier > 1.0) {
+            indepBrakePcnt = 1.0 - ((1.0 - indepBrakePcnt) / loadMultiplier);
+            dynBrakePcnt   = 1.0 - ((1.0 - dynBrakePcnt)   / loadMultiplier);
+        }
+
         // Effective brake = min of all sources (smaller = more braking).
         double effectiveBrake = Math.min(indepBrakePcnt,
                 Math.min(dynBrakePcnt, airBrakePcnt));
@@ -496,14 +511,10 @@ public final class SemiRealisticThrottleEngine {
             }
         }
 
-        // --- Load scaling on targetAcceleration (Phase 6 will provide UI) ---
-        // For now, loadSliderPosition is always 0 (light engine), so this
-        // is a no-op. The formula is wired so Phase 6 just needs to set
-        // the setting value.
-        if (settings.loadSliderPosition > 0) {
-            targetAcceleration = targetAcceleration
-                    * getLoadPcnt(settings.loadSliderPosition,
-                            settings.numberOfLoadSteps, settings.maxLoadPcnt);
+        // Load scaling on targetAcceleration (EngineDriver §4):
+        // higher load = longer inter-step delay = slower acceleration.
+        if (loadMultiplier > 1.0) {
+            targetAcceleration = targetAcceleration * loadMultiplier;
         }
 
         // Start a fresh ramp if there is work to do.
