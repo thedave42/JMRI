@@ -107,10 +107,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         @Override
         public void notifyAddressThrottleFound(DccThrottle t) {
             if (engine == null) return;
-            RosterEntry re = (activeThrottleFrame != null)
-                    ? activeThrottleFrame.getRosterEntry() : null;
-            engine.attachThrottle(t, re);
-            engine.setLiveEnabled(getCalibration().semiRealistic().liveEnabled);
+            SemiRealisticSettings s = getCalibration().semiRealistic();
+            engine.updateSettings(s);
+            engine.attachThrottle(t);
         }
 
         @Override
@@ -926,7 +925,8 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         dir = SemiRealisticThrottleEngine.Direction.NEUTRAL;
                     }
                     if (engine != null) {
-                        engine.setDirection(dir);
+                        final SemiRealisticThrottleEngine.Direction fDir = dir;
+                        ThreadingUtil.runOnLayoutEventually(() -> engine.setDirection(fDir));
                     }
                 }
                 break;
@@ -950,11 +950,10 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     // Stage 2: when the engine is driving, route the lever
                     // through it instead of writing setSpeedSetting directly.
                     if (engine != null && engine.isDriving()) {
-                        engine.setThrottleFraction(fractionF);
-                        // Stage 5 will compute a non-zero dyn-brake fraction
-                        // when the lever is below Idle Low; for now keep
-                        // the input zeroed.
-                        engine.setDynBrakeFraction(0f);
+                        ThreadingUtil.runOnLayoutEventually(() -> {
+                            engine.setThrottleFraction(fractionF);
+                            engine.setDynBrakeFraction(0f);
+                        });
                     } else {
                         ThreadingUtil.runOnGUIEventually(() -> t.setSpeedSetting(fractionF));
                     }
@@ -997,7 +996,8 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         float fraction = (float) (fullRelease - byteValue) / (float) range;
                         if (fraction < 0f) fraction = 0f;
                         if (fraction > 1f) fraction = 1f;
-                        engine.setIndepBrakeFraction(fraction);
+                        final float brFrac = fraction;
+                        ThreadingUtil.runOnLayoutEventually(() -> engine.setIndepBrakeFraction(brFrac));
                     }
                 }
                 break;
@@ -1247,7 +1247,6 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         log.info("RailDriver calibration reloaded.");
         if (engine != null) {
             engine.updateSettings(s);
-            engine.setLiveEnabled(s.liveEnabled);
         }
         if (oldPersisted != s.persistedEnabled) {
             firePropertyChange("persistedEnabledChanged", oldPersisted, s.persistedEnabled);
@@ -1289,7 +1288,6 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         boolean wasLive = s.liveEnabled;
         if (wasLive == enabled) return;
         s.liveEnabled = enabled;
-        if (engine != null) engine.setLiveEnabled(enabled);
         firePropertyChange("liveEnabledChanged", wasLive, enabled);
     }
 

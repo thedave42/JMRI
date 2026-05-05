@@ -6,47 +6,58 @@ import javax.annotation.Nonnull;
 import org.jdom2.Element;
 
 /**
- * Persisted-and-live settings POJO for the semi-realistic throttle engine.
- * Mirrors the structure of {@link RailDriverCalibration} for easy
- * round-tripping through the Settings-tab dirty-tracking model.
+ * Settings POJO for the EngineDriver-aligned semi-realistic throttle engine.
+ * <p>
+ * The engine uses a step-rate scheduler: the throttle lever sets a target
+ * decoder speed step and the live speed walks toward that target one step
+ * at a time, with a configurable delay between steps. Brakes, load, and
+ * air-line state modify the delay (and thereby the ramp rate) rather than
+ * applying continuous physics forces.
+ * <p>
+ * Field names and defaults match EngineDriver's
+ * {@code throttle_semi_realistic.java} (SHA {@code 5e722d38}).
  * <p>
  * The {@code persistedEnabled} field is the value last loaded from XML or
  * last saved by the Settings tab; {@code liveEnabled} is the value the
- * engine and Jynstrument act on right now. Per §2.3, these are deliberately
+ * engine and Jynstrument act on right now. These are deliberately
  * decoupled — the Settings tab edits {@code persistedEnabled}, the
  * Jynstrument toggles {@code liveEnabled}.
- * <p>
- * <b>Wall-clock-only model (§1.0).</b> Every coefficient below is in
- * wall-clock m/s² (or 1/s, 1/m) decel/accel space. There is no mass, no
- * force, no scale factor anywhere. The Davis-equation <em>shape</em>
- * (static + linear + quadratic) is preserved as the velocity-shape of
- * coast resistance, but the coefficients are operator-feel-tuned for the
- * desired wall-clock experience, NOT prototype Davis values.
- * <p>
- * Pre-wall-clock-refactor stage-2 XML files (with prototype-frame
- * elements like {@code <locoMassKg>}, {@code <rollingResistanceCoeff>},
- * {@code <physicsTimeScale>}, etc.) load with all wall-clock fields
- * defaulting to scenario values; the legacy elements are silently
- * ignored. Operators are expected to delete development calibration XMLs
- * before testing the wall-clock build (no migration is performed).
- * <p>
- * See {@code docs/rpi-raildriver/semi-realistic-throttle-plan.md} §2.5.
  */
 public final class SemiRealisticSettings {
 
-    /** ESU decoder-brake function defaults (§2.5 schema). */
-    public static final int   DEFAULT_ESU_LOW_FUNCTION  = 4;
-    public static final int   DEFAULT_ESU_MID_FUNCTION  = 5;
-    public static final int   DEFAULT_ESU_HIGH_FUNCTION = 6;
-    public static final int   DEFAULT_ESU_LOW_THRESH    = 30;
-    public static final int   DEFAULT_ESU_MID_THRESH    = 60;
-    public static final int   DEFAULT_ESU_HIGH_THRESH   = 98;
+    // ======================== Defaults ========================
 
-    /** Dynamic-brake taper threshold (mph prototype) — scenario-independent
-     *  per §2.4.1. */
-    public static final float DEFAULT_DYN_BRAKE_V_MIN_MPH = 5f;
+    /** Default ms between speed steps when accelerating. */
+    public static final int DEFAULT_BASE_ACCEL_DELAY_MS = 300;
+    /** Default ms between speed steps when decelerating (coast). */
+    public static final int DEFAULT_BASE_DECEL_DELAY_MS = 800;
+    /** Minimum interval between setSpeedSetting calls (deferred-emit). */
+    public static final int DEFAULT_MIN_EMIT_INTERVAL_MS = 50;
+    /** Number of quantised brake notches. */
+    public static final int DEFAULT_NUMBER_OF_BRAKE_STEPS = 7;
 
-    /** Decoder brake passthrough mode. ESU is wired in stage 6. */
+    // Air brake defaults
+    public static final int DEFAULT_AIR_LINE_RECHARGE_PCNT = 20;
+    public static final int DEFAULT_AIR_REFRESH_RATE_MS = 2000;
+    public static final int DEFAULT_AIR_RESERVOIR_REPLENISH_PCNT = 5;
+
+    // Dynamic brake
+    public static final int DEFAULT_DYN_BRAKE_MIN_SPEED_STEP = 8;
+
+    // Load
+    public static final int DEFAULT_NUMBER_OF_LOAD_STEPS = 5;
+    public static final int DEFAULT_MAX_LOAD_PCNT = 1000;
+    public static final int DEFAULT_LOAD_SLIDER_POSITION = 0;
+
+    // ESU decoder-brake function defaults
+    public static final int DEFAULT_ESU_LOW_FUNCTION  = 4;
+    public static final int DEFAULT_ESU_MID_FUNCTION  = 5;
+    public static final int DEFAULT_ESU_HIGH_FUNCTION = 6;
+    public static final int DEFAULT_ESU_LOW_THRESH    = 30;
+    public static final int DEFAULT_ESU_MID_THRESH    = 60;
+    public static final int DEFAULT_ESU_HIGH_THRESH   = 98;
+
+    /** Decoder brake passthrough mode. */
     public enum DecoderBrakeMode {
         NONE("none"), ESU("ESU");
         private final String token;
@@ -62,6 +73,8 @@ public final class SemiRealisticSettings {
         }
     }
 
+    // ======================== Fields ========================
+
     /** Persisted enable state — what's on disk and what the Settings tab
      *  checkbox shows. */
     public boolean persistedEnabled = false;
@@ -70,40 +83,39 @@ public final class SemiRealisticSettings {
      *  from {@link #persistedEnabled} on load. Not persisted to XML. */
     public boolean liveEnabled = false;
 
-    /** Selected scenario. {@link LoadScenario#LIGHT_ENGINE} by default. */
-    public LoadScenario scenario = LoadScenario.LIGHT_ENGINE;
+    // --- Ramp timing ---
+    /** Milliseconds between speed steps when accelerating. */
+    public int baseAccelDelayMs = DEFAULT_BASE_ACCEL_DELAY_MS;
+    /** Milliseconds between speed steps when decelerating/coasting. */
+    public int baseDecelDelayMs = DEFAULT_BASE_DECEL_DELAY_MS;
+    /** Minimum interval between setSpeedSetting calls to the DCC throttle. */
+    public int minEmitIntervalMs = DEFAULT_MIN_EMIT_INTERVAL_MS;
 
-    // — Drive coefficients (wall-clock m/s² and m/s prototype) —
-    /** Wall-clock m/s² acceleration at v=0 under full throttle. */
-    public float maxAccelAtRestMs2;
-    /** m/s prototype above which a_drive falls as vCorner/v. */
-    public float vCornerMps;
-    /** 0..100 % multiplier on the entire drive curve. */
-    public float driverPowerPercent;
-    /** m/s prototype design top speed (linear-fallback denominator,
-     *  steam-curve denominator, lever-derived vTarget anchor). */
-    public float designTopSpeedMps;
-    /** Steam tractive-effort fall-off flag. */
-    public boolean steam;
+    // --- Brake ---
+    /** Number of quantised brake notches for independent brake lever. */
+    public int numberOfBrakeSteps = DEFAULT_NUMBER_OF_BRAKE_STEPS;
 
-    // — Davis-shape coast resistance coefficients (wall-clock units) —
-    /** m/s² constant decel (Davis A; dominates near halt). */
-    public float resistStaticMs2;
-    /** 1/s — decel = b·v (Davis B). Often 0. */
-    public float resistLinearPerSec;
-    /** 1/m — decel = c·v² (Davis C; aerodynamic-shape, dominates at speed). */
-    public float resistQuadPerMeter;
+    // --- Air brake ---
+    /** Percent of air line recharged per air-repeater tick. */
+    public int airLineRechargePcnt = DEFAULT_AIR_LINE_RECHARGE_PCNT;
+    /** Milliseconds between air-repeater ticks. 0 = flat-mapping (no dynamics). */
+    public int airRefreshRateMs = DEFAULT_AIR_REFRESH_RATE_MS;
+    /** Percent of reservoir replenished per reservoir-repeater tick. */
+    public int airReservoirReplenishPcnt = DEFAULT_AIR_RESERVOIR_REPLENISH_PCNT;
 
-    // — Operator-controlled brake decels (wall-clock m/s²) —
-    public float brakeMaxDecelMs2;
-    public float airBrakeMaxDecelMs2;
-    public float dynBrakeMaxDecelMs2;
-    /** 0..1 dilution coefficient — captures that real dyn brake doesn't
-     *  propagate through trainline air; smaller in heavier scenarios. */
-    public float dynBrakeMassFraction;
-    /** mph prototype taper threshold; below this, dyn brake scales linearly to 0. */
-    public float dynBrakeVMinMph = DEFAULT_DYN_BRAKE_V_MIN_MPH;
+    // --- Dynamic brake ---
+    /** Speed step below which dynamic brake effect tapers linearly to zero. */
+    public int dynBrakeMinSpeedStep = DEFAULT_DYN_BRAKE_MIN_SPEED_STEP;
 
+    // --- Load ---
+    /** Number of load-slider positions (0 = light engine). */
+    public int numberOfLoadSteps = DEFAULT_NUMBER_OF_LOAD_STEPS;
+    /** Maximum load percentage × 100 (e.g. 1000 = 10×). */
+    public int maxLoadPcnt = DEFAULT_MAX_LOAD_PCNT;
+    /** Current load slider position (0 = light engine). */
+    public int loadSliderPosition = DEFAULT_LOAD_SLIDER_POSITION;
+
+    // --- ESU decoder brake ---
     public DecoderBrakeMode decoderBrakeMode = DecoderBrakeMode.NONE;
     public int esuLowFunction  = DEFAULT_ESU_LOW_FUNCTION;
     public int esuMidFunction  = DEFAULT_ESU_MID_FUNCTION;
@@ -112,18 +124,34 @@ public final class SemiRealisticSettings {
     public int esuMidThreshold  = DEFAULT_ESU_MID_THRESH;
     public int esuHighThreshold = DEFAULT_ESU_HIGH_THRESH;
 
+    // ======================== Construction ========================
+
     public SemiRealisticSettings() {
-        resetToDefaults();
+        // All fields initialised to defaults above.
     }
 
-    /** Resets every field to the active scenario's defaults (Light engine
-     *  out of the box). Does not touch on-disk state. */
+    /** Defensive-copy constructor. */
+    public SemiRealisticSettings(@Nonnull SemiRealisticSettings other) {
+        copyFrom(other);
+    }
+
+    // ======================== Operations ========================
+
+    /** Resets every field to defaults. */
     public void resetToDefaults() {
         persistedEnabled = false;
         liveEnabled = false;
-        scenario = LoadScenario.LIGHT_ENGINE;
-        applyScenarioDefaults(scenario);
-        dynBrakeVMinMph = DEFAULT_DYN_BRAKE_V_MIN_MPH;
+        baseAccelDelayMs = DEFAULT_BASE_ACCEL_DELAY_MS;
+        baseDecelDelayMs = DEFAULT_BASE_DECEL_DELAY_MS;
+        minEmitIntervalMs = DEFAULT_MIN_EMIT_INTERVAL_MS;
+        numberOfBrakeSteps = DEFAULT_NUMBER_OF_BRAKE_STEPS;
+        airLineRechargePcnt = DEFAULT_AIR_LINE_RECHARGE_PCNT;
+        airRefreshRateMs = DEFAULT_AIR_REFRESH_RATE_MS;
+        airReservoirReplenishPcnt = DEFAULT_AIR_RESERVOIR_REPLENISH_PCNT;
+        dynBrakeMinSpeedStep = DEFAULT_DYN_BRAKE_MIN_SPEED_STEP;
+        numberOfLoadSteps = DEFAULT_NUMBER_OF_LOAD_STEPS;
+        maxLoadPcnt = DEFAULT_MAX_LOAD_PCNT;
+        loadSliderPosition = DEFAULT_LOAD_SLIDER_POSITION;
         decoderBrakeMode = DecoderBrakeMode.NONE;
         esuLowFunction = DEFAULT_ESU_LOW_FUNCTION;
         esuMidFunction = DEFAULT_ESU_MID_FUNCTION;
@@ -133,41 +161,20 @@ public final class SemiRealisticSettings {
         esuHighThreshold = DEFAULT_ESU_HIGH_THRESH;
     }
 
-    /** Snaps every per-coefficient field to the given scenario's tuned
-     *  defaults. Called when the operator switches scenarios on the
-     *  Settings tab so the per-coefficient rows reflect the new preset. */
-    public void applyScenarioDefaults(@Nonnull LoadScenario s) {
-        maxAccelAtRestMs2     = s.maxAccelAtRestMs2();
-        vCornerMps            = s.vCornerMps();
-        driverPowerPercent    = s.driverPowerPct() * 100f;
-        designTopSpeedMps     = s.designTopSpeedMps();
-        steam                 = s.steamPowerCurve();
-        resistStaticMs2       = s.resistStaticMs2();
-        resistLinearPerSec    = s.resistLinearPerSec();
-        resistQuadPerMeter    = s.resistQuadPerMeter();
-        brakeMaxDecelMs2      = s.brakeMaxDecelMs2();
-        airBrakeMaxDecelMs2   = s.airBrakeMaxDecelMs2();
-        dynBrakeMaxDecelMs2   = s.dynBrakeMaxDecelMs2();
-        dynBrakeMassFraction  = s.dynBrakeMassFraction();
-    }
-
     public void copyFrom(@Nonnull SemiRealisticSettings other) {
         this.persistedEnabled = other.persistedEnabled;
         this.liveEnabled = other.liveEnabled;
-        this.scenario = other.scenario;
-        this.maxAccelAtRestMs2    = other.maxAccelAtRestMs2;
-        this.vCornerMps           = other.vCornerMps;
-        this.driverPowerPercent   = other.driverPowerPercent;
-        this.designTopSpeedMps    = other.designTopSpeedMps;
-        this.steam                = other.steam;
-        this.resistStaticMs2      = other.resistStaticMs2;
-        this.resistLinearPerSec   = other.resistLinearPerSec;
-        this.resistQuadPerMeter   = other.resistQuadPerMeter;
-        this.brakeMaxDecelMs2     = other.brakeMaxDecelMs2;
-        this.airBrakeMaxDecelMs2  = other.airBrakeMaxDecelMs2;
-        this.dynBrakeMaxDecelMs2  = other.dynBrakeMaxDecelMs2;
-        this.dynBrakeMassFraction = other.dynBrakeMassFraction;
-        this.dynBrakeVMinMph      = other.dynBrakeVMinMph;
+        this.baseAccelDelayMs = other.baseAccelDelayMs;
+        this.baseDecelDelayMs = other.baseDecelDelayMs;
+        this.minEmitIntervalMs = other.minEmitIntervalMs;
+        this.numberOfBrakeSteps = other.numberOfBrakeSteps;
+        this.airLineRechargePcnt = other.airLineRechargePcnt;
+        this.airRefreshRateMs = other.airRefreshRateMs;
+        this.airReservoirReplenishPcnt = other.airReservoirReplenishPcnt;
+        this.dynBrakeMinSpeedStep = other.dynBrakeMinSpeedStep;
+        this.numberOfLoadSteps = other.numberOfLoadSteps;
+        this.maxLoadPcnt = other.maxLoadPcnt;
+        this.loadSliderPosition = other.loadSliderPosition;
         this.decoderBrakeMode = other.decoderBrakeMode;
         this.esuLowFunction = other.esuLowFunction;
         this.esuMidFunction = other.esuMidFunction;
@@ -177,14 +184,12 @@ public final class SemiRealisticSettings {
         this.esuHighThreshold = other.esuHighThreshold;
     }
 
+    // ======================== XML persistence ========================
+
     /** Populates this instance from a {@code <semiRealistic>} XML element.
-     *  Missing or empty children fall back to the active scenario's defaults
-     *  (Light engine when no scenario element is present). Legacy
-     *  prototype-frame elements ({@code locoMassKg}, {@code locoPowerKw},
-     *  {@code locoTractiveEffortKn}, {@code additionalWeightTonnes},
-     *  {@code rollingResistanceCoeff}, {@code rollingResistanceStatic},
-     *  {@code rollingResistanceLinear}, {@code aerodynamicDragCoeff},
-     *  {@code physicsTimeScale}) are silently ignored — no migration. */
+     *  Missing or empty children fall back to defaults. Legacy physics
+     *  elements ({@code scenario}, {@code maxAccelAtRestMs2},
+     *  {@code vCornerMps}, etc.) are silently ignored. */
     public void loadFrom(@CheckForNull Element semiRealistic) {
         if (semiRealistic == null) {
             return;
@@ -194,34 +199,21 @@ public final class SemiRealisticSettings {
             persistedEnabled = enabled;
             liveEnabled = enabled;
         }
-        String scenarioText = readText(semiRealistic, "scenario");
-        if (scenarioText != null) {
-            scenario = LoadScenario.fromDisplayName(scenarioText);
-        }
-        // Start from the (possibly newly-loaded) scenario's defaults so any
-        // missing children fall back to scenario values. Children that ARE
-        // present overwrite the defaults below.
-        applyScenarioDefaults(scenario);
-
-        Float f;
-        if ((f = readFloat(semiRealistic, "maxAccelAtRestMs2"))    != null) maxAccelAtRestMs2    = f;
-        if ((f = readFloat(semiRealistic, "vCornerMps"))           != null) vCornerMps           = f;
-        if ((f = readFloat(semiRealistic, "driverPowerPercent"))   != null) driverPowerPercent   = f;
-        if ((f = readFloat(semiRealistic, "designTopSpeedMps"))    != null) designTopSpeedMps    = f;
-        Boolean steamEl = readBool(semiRealistic, "steam");
-        if (steamEl != null) steam = steamEl;
-        if ((f = readFloat(semiRealistic, "resistStaticMs2"))      != null) resistStaticMs2      = f;
-        if ((f = readFloat(semiRealistic, "resistLinearPerSec"))   != null) resistLinearPerSec   = f;
-        if ((f = readFloat(semiRealistic, "resistQuadPerMeter"))   != null) resistQuadPerMeter   = f;
-        if ((f = readFloat(semiRealistic, "brakeMaxDecelMs2"))     != null) brakeMaxDecelMs2     = f;
-        if ((f = readFloat(semiRealistic, "airBrakeMaxDecelMs2"))  != null) airBrakeMaxDecelMs2  = f;
-        if ((f = readFloat(semiRealistic, "dynBrakeMaxDecelMs2"))  != null) dynBrakeMaxDecelMs2  = f;
-        if ((f = readFloat(semiRealistic, "dynBrakeMassFraction")) != null) dynBrakeMassFraction = f;
-        if ((f = readFloat(semiRealistic, "dynBrakeVMinMph"))      != null) dynBrakeVMinMph      = f;
+        Integer i;
+        if ((i = readInt(semiRealistic, "baseAccelDelayMs"))   != null) baseAccelDelayMs   = i;
+        if ((i = readInt(semiRealistic, "baseDecelDelayMs"))   != null) baseDecelDelayMs   = i;
+        if ((i = readInt(semiRealistic, "minEmitIntervalMs"))  != null) minEmitIntervalMs  = i;
+        if ((i = readInt(semiRealistic, "numberOfBrakeSteps")) != null) numberOfBrakeSteps = i;
+        if ((i = readInt(semiRealistic, "airLineRechargePcnt"))       != null) airLineRechargePcnt       = i;
+        if ((i = readInt(semiRealistic, "airRefreshRateMs"))          != null) airRefreshRateMs          = i;
+        if ((i = readInt(semiRealistic, "airReservoirReplenishPcnt")) != null) airReservoirReplenishPcnt = i;
+        if ((i = readInt(semiRealistic, "dynBrakeMinSpeedStep")) != null) dynBrakeMinSpeedStep = i;
+        if ((i = readInt(semiRealistic, "numberOfLoadSteps")) != null) numberOfLoadSteps = i;
+        if ((i = readInt(semiRealistic, "maxLoadPcnt"))        != null) maxLoadPcnt        = i;
+        if ((i = readInt(semiRealistic, "loadSliderPosition")) != null) loadSliderPosition = i;
 
         String mode = readText(semiRealistic, "decoderBrakeMode");
         if (mode != null) decoderBrakeMode = DecoderBrakeMode.fromToken(mode);
-        Integer i;
         if ((i = readInt(semiRealistic, "esuLowFunction"))  != null) esuLowFunction  = i;
         if ((i = readInt(semiRealistic, "esuMidFunction"))  != null) esuMidFunction  = i;
         if ((i = readInt(semiRealistic, "esuHighFunction")) != null) esuHighFunction = i;
@@ -234,20 +226,17 @@ public final class SemiRealisticSettings {
     public Element writeTo() {
         Element e = new Element("semiRealistic");
         e.addContent(child("enabled", Boolean.toString(persistedEnabled)));
-        e.addContent(child("scenario", scenario.displayName()));
-        e.addContent(child("maxAccelAtRestMs2",   Float.toString(maxAccelAtRestMs2)));
-        e.addContent(child("vCornerMps",          Float.toString(vCornerMps)));
-        e.addContent(child("driverPowerPercent",  Float.toString(driverPowerPercent)));
-        e.addContent(child("designTopSpeedMps",   Float.toString(designTopSpeedMps)));
-        e.addContent(child("steam",               Boolean.toString(steam)));
-        e.addContent(child("resistStaticMs2",     Float.toString(resistStaticMs2)));
-        e.addContent(child("resistLinearPerSec",  Float.toString(resistLinearPerSec)));
-        e.addContent(child("resistQuadPerMeter",  Float.toString(resistQuadPerMeter)));
-        e.addContent(child("brakeMaxDecelMs2",    Float.toString(brakeMaxDecelMs2)));
-        e.addContent(child("airBrakeMaxDecelMs2", Float.toString(airBrakeMaxDecelMs2)));
-        e.addContent(child("dynBrakeMaxDecelMs2", Float.toString(dynBrakeMaxDecelMs2)));
-        e.addContent(child("dynBrakeMassFraction", Float.toString(dynBrakeMassFraction)));
-        e.addContent(child("dynBrakeVMinMph",     Float.toString(dynBrakeVMinMph)));
+        e.addContent(child("baseAccelDelayMs", Integer.toString(baseAccelDelayMs)));
+        e.addContent(child("baseDecelDelayMs", Integer.toString(baseDecelDelayMs)));
+        e.addContent(child("minEmitIntervalMs", Integer.toString(minEmitIntervalMs)));
+        e.addContent(child("numberOfBrakeSteps", Integer.toString(numberOfBrakeSteps)));
+        e.addContent(child("airLineRechargePcnt", Integer.toString(airLineRechargePcnt)));
+        e.addContent(child("airRefreshRateMs", Integer.toString(airRefreshRateMs)));
+        e.addContent(child("airReservoirReplenishPcnt", Integer.toString(airReservoirReplenishPcnt)));
+        e.addContent(child("dynBrakeMinSpeedStep", Integer.toString(dynBrakeMinSpeedStep)));
+        e.addContent(child("numberOfLoadSteps", Integer.toString(numberOfLoadSteps)));
+        e.addContent(child("maxLoadPcnt", Integer.toString(maxLoadPcnt)));
+        e.addContent(child("loadSliderPosition", Integer.toString(loadSliderPosition)));
         e.addContent(child("decoderBrakeMode", decoderBrakeMode.token()));
         e.addContent(child("esuLowFunction", Integer.toString(esuLowFunction)));
         e.addContent(child("esuMidFunction", Integer.toString(esuMidFunction)));
@@ -279,14 +268,6 @@ public final class SemiRealisticSettings {
         String t = readText(parent, childName);
         if (t == null) return null;
         return Boolean.parseBoolean(t);
-    }
-
-    @CheckForNull
-    private static Float readFloat(Element parent, String childName) {
-        String t = readText(parent, childName);
-        if (t == null) return null;
-        try { return Float.parseFloat(t); }
-        catch (NumberFormatException ex) { return null; }
     }
 
     @CheckForNull
