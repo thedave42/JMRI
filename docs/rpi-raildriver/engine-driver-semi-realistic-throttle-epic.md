@@ -152,7 +152,6 @@ At light engine (loadMultiplier = 1.0), all three sources pass through unchanged
 
 - As an operator, I want the Independent Brake lever to slow and stop my loco progressively.
 - As an operator, I want the Auto Brake lever to simulate Westinghouse air dynamics — application is fast but release is gradual, just like a real train.
-- As an operator I want to view the current status of my air line and air reservior for my westinghouse brakes in a panel of the JMRI throttle.
 - As an operator, I want to feel the brakes bleed off slowly after I release the auto brake, not snap off instantly.
 - As an operator, I want to hold the auto brake at an intermediate position and have the brake pipe pressure stabilise there (lap behaviour).
 - As an operator, I want emergency brake recovery to take noticeably longer than a normal service release.
