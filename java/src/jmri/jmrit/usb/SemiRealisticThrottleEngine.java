@@ -83,7 +83,6 @@ public final class SemiRealisticThrottleEngine {
     private float throttleFraction      = 0.0f;
     private float indepBrakeFraction    = 0.0f;
     private float dynBrakeFraction      = 0.0f;
-    private float airLineFraction       = 0.0f;
     private boolean bailoffPressed      = false;
     private Direction direction         = Direction.NEUTRAL;
 
@@ -92,10 +91,22 @@ public final class SemiRealisticThrottleEngine {
      *  reaches step 0. {@code null} means no deferred flip is pending. */
     @CheckForNull private Direction pendingDirection = null;
 
-    /** Epoch counter for the air-repeater pipeline (Phase 5). Bumped by
+    // --- Air brake system state (Westinghouse model) ---
+    /** Train brake line pressure, 0..100. 100 = fully charged (no braking). */
+    private int airLineValue = 100;
+    /** Reservoir pressure, 0..100. Drawn from during line recharge. */
+    private int airReservoirPct = 100;
+    /** Demanded line value from the Auto Brake lever, 0..100. */
+    private int demandedLineValue = 100;
+
+    /** Epoch counter for the air-repeater pipeline. Bumped by
      *  {@link #emergencyHalt} and {@link #detachThrottle} so stale air
      *  callbacks cancel. */
     private int airEpoch = 0;
+    /** True when the line repeater is actively recharging. */
+    private boolean airLineRecharging = false;
+    /** True when the reservoir repeater is actively refilling. */
+    private boolean airReservoirRecharging = false;
 
     // ======================== Lifecycle ========================
 
@@ -131,6 +142,16 @@ public final class SemiRealisticThrottleEngine {
         this.attached = true;
         this.lastEmitTimeMs = 0;
 
+        // Reset air system to fully charged.
+        this.airLineValue = 100;
+        this.airReservoirPct = 100;
+        this.demandedLineValue = 100;
+        this.airLineRecharging = false;
+        this.airReservoirRecharging = false;
+
+        // Start the reservoir repeater (always runs while attached).
+        startReservoirRepeater();
+
         log.debug("Engine attached: loco={}, maxSteps={}, seeded step={}",
                 t.getLocoAddress(), maxSpeedSteps, currentSpeedStep);
     }
@@ -151,6 +172,11 @@ public final class SemiRealisticThrottleEngine {
         this.targetSpeedStep = 0;
         this.targetAcceleration = 0;
         this.pendingDirection = null;
+        this.airLineValue = 100;
+        this.airReservoirPct = 100;
+        this.demandedLineValue = 100;
+        this.airLineRecharging = false;
+        this.airReservoirRecharging = false;
         log.debug("Engine detached");
     }
 
@@ -223,10 +249,51 @@ public final class SemiRealisticThrottleEngine {
         recomputeTarget();
     }
 
+    /**
+     * Sets the demanded air brake line value from the Auto Brake lever.
+     * Implements asymmetric apply/release:
+     * <ul>
+     *   <li>Application (demand &lt; current line): instant drop.</li>
+     *   <li>Release (demand &gt; current line): gradual via line repeater.</li>
+     *   <li>Flat-mapping mode ({@code airRefreshRateMs == 0}): instant both ways.</li>
+     * </ul>
+     *
+     * @param demandedValue 0..100 where 100 = fully released, 0 = emergency
+     */
+    @InvokeOnLayoutThread
+    public void setAirBrakeDemand(int demandedValue) {
+        if (demandedValue < 0) demandedValue = 0;
+        if (demandedValue > 100) demandedValue = 100;
+        this.demandedLineValue = demandedValue;
+
+        if (settings == null) return;
+
+        if (settings.airRefreshRateMs <= 0) {
+            // Flat-mapping mode: bypass dynamics, set directly.
+            this.airLineValue = demandedValue;
+            recomputeTarget();
+            return;
+        }
+
+        if (demandedValue < airLineValue) {
+            // Application: instant drop (Westinghouse apply is immediate).
+            this.airLineValue = demandedValue;
+            recomputeTarget();
+        } else if (demandedValue > airLineValue) {
+            // Release: start gradual line recharge if not already running.
+            if (!airLineRecharging) {
+                startLineRepeater();
+            }
+        }
+        // demandedValue == airLineValue: lap — no change.
+    }
+
     @InvokeOnLayoutThread
     public void setAirLineFraction(float fraction) {
-        this.airLineFraction = clamp01(fraction);
-        recomputeTarget();
+        // Convert 0..1 fraction (0=released, 1=full braking) to 0..100 demand
+        // where 100=released, 0=full braking (EngineDriver convention).
+        int demand = 100 - Math.round(clamp01(fraction) * 100);
+        setAirBrakeDemand(demand);
     }
 
     @InvokeOnLayoutThread
@@ -353,10 +420,10 @@ public final class SemiRealisticThrottleEngine {
         int dynNotch = Math.round(dynBrakeFraction * settings.numberOfBrakeSteps);
         double effDynStep = effectiveDynBrakeStep(currentSpeedStep, dynNotch,
                 settings.dynBrakeMinSpeedStep);
-        // Air brake: convert air line fraction (1.0 = released, 0.0 = full app)
-        // to brake steps. airLineFraction is 0..1 where 0=no braking, 1=full braking
-        // (same convention as indep/dyn). Convert to EngineDriver's air-line-as-brake.
-        double airBrakeStep = Math.round(airLineFraction * settings.numberOfBrakeSteps);
+        // Air brake: convert airLineValue (100 = released, 0 = full app)
+        // to brake steps, matching EngineDriver's conversion.
+        double airLine = 1.0 - (airLineValue / 100.0);
+        double airBrakeStep = Math.round(airLine * settings.numberOfBrakeSteps);
 
         // Bail-off: releases all loco-side braking (indep, dyn, loco share of auto).
         // Only car-brake retardation continues. At light engine (load=0), bail-off
@@ -443,6 +510,118 @@ public final class SemiRealisticThrottleEngine {
         double load = (double) step / (double) steps;
         return ((load * load * (maxLoadPcnt - 100)) + 100) / 100.0;
     }
+
+    // ======================== Air brake repeaters ========================
+
+    /**
+     * Starts the line repeater (gradual release). Self-rescheduling via
+     * {@code runOnLayoutDelayed(airRefreshRateMs)}. Each tick adds
+     * {@code airLineRechargePcnt} to {@code airLineValue}, drawing from
+     * the reservoir. Stops when line reaches {@code demandedLineValue} or
+     * reservoir is depleted.
+     */
+    private void startLineRepeater() {
+        if (settings == null || settings.airRefreshRateMs <= 0) return;
+        airLineRecharging = true;
+        airEpoch++;
+        final int epoch = airEpoch;
+        ThreadingUtil.runOnLayoutDelayed(
+                () -> lineRepeaterTick(epoch), settings.airRefreshRateMs);
+    }
+
+    private void lineRepeaterTick(int epoch) {
+        if (epoch != airEpoch) return; // stale
+        if (!attached || settings == null) return;
+
+        // Stop if line has reached demanded level.
+        if (airLineValue >= demandedLineValue) {
+            airLineRecharging = false;
+            // Kick reservoir repeater if reservoir is depleted.
+            if (airReservoirPct < 100 && !airReservoirRecharging) {
+                startReservoirRepeater();
+            }
+            return;
+        }
+
+        // Draw air from reservoir to recharge line.
+        int rechargeAmount = settings.airLineRechargePcnt;
+        if (airReservoirPct >= rechargeAmount) {
+            airLineValue = Math.min(airLineValue + rechargeAmount, demandedLineValue);
+            airReservoirPct -= rechargeAmount;
+        } else if (airReservoirPct > 0) {
+            // Partial recharge with remaining reservoir.
+            airLineValue = Math.min(airLineValue + airReservoirPct, demandedLineValue);
+            airReservoirPct = 0;
+        } else {
+            // Reservoir empty — line cannot recharge. Stop repeater.
+            airLineRecharging = false;
+            return;
+        }
+
+        // Ensure reservoir repeater is running to refill what we drew.
+        if (!airReservoirRecharging) {
+            startReservoirRepeater();
+        }
+
+        recomputeTarget();
+
+        // Continue if not yet at demanded level and reservoir still has air.
+        if (airLineValue < demandedLineValue && airReservoirPct > 0) {
+            ThreadingUtil.runOnLayoutDelayed(
+                    () -> lineRepeaterTick(epoch), settings.airRefreshRateMs);
+        } else {
+            airLineRecharging = false;
+            if (airReservoirPct < 100 && !airReservoirRecharging) {
+                startReservoirRepeater();
+            }
+        }
+    }
+
+    /**
+     * Starts the reservoir repeater (background refill). Runs
+     * unconditionally while attached, adding
+     * {@code airReservoirReplenishPcnt} per tick until reservoir is full.
+     */
+    private void startReservoirRepeater() {
+        if (settings == null || settings.airRefreshRateMs <= 0) return;
+        airReservoirRecharging = true;
+        // Reservoir uses the same airEpoch — bumped on detach/E-stop.
+        final int epoch = airEpoch;
+        ThreadingUtil.runOnLayoutDelayed(
+                () -> reservoirRepeaterTick(epoch), settings.airRefreshRateMs);
+    }
+
+    private void reservoirRepeaterTick(int epoch) {
+        if (epoch != airEpoch) return; // stale
+        if (!attached || settings == null) return;
+
+        if (airReservoirPct >= 100) {
+            airReservoirRecharging = false;
+            return;
+        }
+
+        airReservoirPct = Math.min(airReservoirPct + settings.airReservoirReplenishPcnt, 100);
+
+        // If line is still below demand and wasn't recharging (was blocked
+        // by empty reservoir), restart the line repeater.
+        if (airLineValue < demandedLineValue && !airLineRecharging) {
+            startLineRepeater();
+        }
+
+        // Continue until full.
+        if (airReservoirPct < 100) {
+            ThreadingUtil.runOnLayoutDelayed(
+                    () -> reservoirRepeaterTick(epoch), settings.airRefreshRateMs);
+        } else {
+            airReservoirRecharging = false;
+        }
+    }
+
+    /** Returns the current air line value (0..100). For UI/test access. */
+    public int getAirLineValue() { return airLineValue; }
+
+    /** Returns the current reservoir pressure (0..100). For UI/test access. */
+    public int getAirReservoirPct() { return airReservoirPct; }
 
     /**
      * Computes the inter-step delay in milliseconds.

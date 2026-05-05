@@ -968,9 +968,32 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 }
                 break;
             case "Axis 2":
-                // AUTOBRAKE is the state of the Automatic (trainline) brake.  Large
-                // values for no braking, small values for more braking.
+                // AUTOBRAKE is the state of the Automatic (trainline) brake.
+                // Large values for no braking, small values for more braking.
+                // Converts the calibrated byte range to a 0..100 demanded
+                // air line value (100 = released, 0 = emergency) for the
+                // Westinghouse air model.
                 log.info("AUTOBRAKE value: {}", value);
+                if (engine != null) {
+                    RailDriverCalibration cal = getCalibration();
+                    int released = cal.autoBrake().released != null
+                            ? cal.autoBrake().released
+                            : RailDriverCalibration.DEF_AUTOBRAKE_RELEASED;
+                    int emg = cal.autoBrake().emg != null
+                            ? cal.autoBrake().emg
+                            : RailDriverCalibration.DEF_AUTOBRAKE_EMG;
+                    int range = released - emg;
+                    if (range != 0) {
+                        // Recover byte from the polling thread's (256-byte)/256 transform.
+                        int byteValue = (int) Math.round((1.0 - value) * 256.0);
+                        // Map to 0..100 where released=100, emg=0.
+                        int demand = (int) Math.round(((double)(byteValue - emg) / (double) range) * 100.0);
+                        if (demand < 0) demand = 0;
+                        if (demand > 100) demand = 100;
+                        final int fDemand = demand;
+                        ThreadingUtil.runOnLayoutEventually(() -> engine.setAirBrakeDemand(fDemand));
+                    }
+                }
                 break;
             case "Axis 3":
                 // INDEPENDBRK is the state of the Independent (engine only)
