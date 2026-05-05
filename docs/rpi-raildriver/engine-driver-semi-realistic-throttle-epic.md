@@ -160,6 +160,7 @@ At light engine (loadMultiplier = 1.0), all three sources pass through unchanged
 - As an operator doing a switching move, I want to apply the auto brake to hold my consist, then bail off and creep forward under power for a controlled coupling.
 - As an operator pulling a heavy train, I want the auto brake to stop me effectively while the independent brake alone barely slows me, just like a real locomotive.
 - As an operator running light engine, I want both brakes to feel equally effective since there are no cars to worry about.
+- As an operator, I want to view the current status of my air line and air reservoir for my Westinghouse brakes in a panel of the JMRI throttle.
 
 **Acceptance Criteria:**
 - [ ] At light engine (loadMultiplier = 1.0), all three brake sources pass through unchanged — behaviour is identical to EngineDriver.
