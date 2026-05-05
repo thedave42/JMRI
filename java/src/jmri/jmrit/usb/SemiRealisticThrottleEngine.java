@@ -87,6 +87,16 @@ public final class SemiRealisticThrottleEngine {
     private boolean bailoffPressed      = false;
     private Direction direction         = Direction.NEUTRAL;
 
+    /** Desired direction stored when a reverser flip is requested while
+     *  {@code currentSpeedStep > 0}. Applied automatically when the loco
+     *  reaches step 0. {@code null} means no deferred flip is pending. */
+    @CheckForNull private Direction pendingDirection = null;
+
+    /** Epoch counter for the air-repeater pipeline (Phase 5). Bumped by
+     *  {@link #emergencyHalt} and {@link #detachThrottle} so stale air
+     *  callbacks cancel. */
+    private int airEpoch = 0;
+
     // ======================== Lifecycle ========================
 
     /**
@@ -133,12 +143,14 @@ public final class SemiRealisticThrottleEngine {
     public void detachThrottle() {
         rampEpoch++;
         deferredEmitEpoch++;
+        airEpoch++;
         this.throttle = null;
         this.settings = null;
         this.attached = false;
         this.currentSpeedStep = 0;
         this.targetSpeedStep = 0;
         this.targetAcceleration = 0;
+        this.pendingDirection = null;
         log.debug("Engine detached");
     }
 
@@ -164,6 +176,29 @@ public final class SemiRealisticThrottleEngine {
     @InvokeOnLayoutThread
     public void dispose() {
         detachThrottle();
+    }
+
+    /**
+     * Emergency halt: bumps all three pipeline epochs (ramp, air,
+     * deferred-emit) to cancel any pending callbacks, resets speed state,
+     * and issues a DCC E-Stop ({@code setSpeedSetting(-1)}) directly.
+     * <p>
+     * Recovery is automatic — the next lever-change event calls
+     * {@link #recomputeTarget} which starts a fresh ramp from step 0.
+     */
+    @InvokeOnLayoutThread
+    public void emergencyHalt() {
+        rampEpoch++;
+        deferredEmitEpoch++;
+        airEpoch++;
+        currentSpeedStep = 0;
+        targetSpeedStep = 0;
+        targetAcceleration = 0;
+        pendingDirection = null;
+        if (throttle != null) {
+            throttle.setSpeedSetting(-1f);
+        }
+        log.info("Engine: emergency halt issued");
     }
 
     // ======================== Input setters ========================
@@ -200,10 +235,30 @@ public final class SemiRealisticThrottleEngine {
         recomputeTarget();
     }
 
+    /**
+     * Sets the reverser direction with interlock: NEUTRAL is always
+     * allowed (forces coast-to-stop). Forward↔Reverse is only allowed
+     * when {@code currentSpeedStep == 0}; otherwise the desired direction
+     * is stored as {@link #pendingDirection} and applied automatically
+     * when the loco reaches step 0.
+     */
     @InvokeOnLayoutThread
     public void setDirection(@Nonnull Direction d) {
-        this.direction = d;
-        recomputeTarget();
+        if (d == Direction.NEUTRAL) {
+            // NEUTRAL always accepted immediately.
+            this.direction = d;
+            this.pendingDirection = null;
+            recomputeTarget();
+        } else if (currentSpeedStep == 0) {
+            // At standstill — accept the direction change immediately.
+            this.direction = d;
+            this.pendingDirection = null;
+            recomputeTarget();
+        } else {
+            // Moving — defer the direction change until loco stops.
+            this.pendingDirection = d;
+            log.debug("Direction change to {} deferred (currentSpeedStep={})", d, currentSpeedStep);
+        }
     }
 
     /** Returns the current speed step (0..maxSpeedSteps). */
@@ -214,6 +269,13 @@ public final class SemiRealisticThrottleEngine {
 
     /** Returns the max speed steps for the attached throttle. */
     public int getMaxSpeedSteps() { return maxSpeedSteps; }
+
+    /** Returns the active direction. */
+    public Direction getDirection() { return direction; }
+
+    /** Returns the pending direction (deferred reverser flip), or null. */
+    @CheckForNull
+    public Direction getPendingDirection() { return pendingDirection; }
 
     // ======================== Core algorithm ========================
 
@@ -314,6 +376,15 @@ public final class SemiRealisticThrottleEngine {
 
         // Emit the new speed setting
         emitSpeedSetting(epoch);
+
+        // Apply deferred direction change when we reach standstill.
+        if (currentSpeedStep == 0 && pendingDirection != null) {
+            direction = pendingDirection;
+            pendingDirection = null;
+            log.debug("Deferred direction change applied: {}", direction);
+            recomputeTarget();
+            return; // recomputeTarget starts a fresh ramp if needed
+        }
 
         // Re-post if not yet at target
         if (currentSpeedStep != targetSpeedStep) {

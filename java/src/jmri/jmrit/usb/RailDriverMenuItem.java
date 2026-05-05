@@ -1139,8 +1139,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     case 36:
                     case 37: {  // Emergency Brake up/down
                         if ((throttle != null) && isDown) {
-                            final DccThrottle t = throttle;
-                            ThreadingUtil.runOnGUIEventually(() -> t.setSpeedSetting(-1));
+                            if (engine != null && engine.isDriving()) {
+                                ThreadingUtil.runOnLayoutEventually(() -> engine.emergencyHalt());
+                            } else {
+                                final DccThrottle t = throttle;
+                                ThreadingUtil.runOnGUIEventually(() -> t.setSpeedSetting(-1));
+                            }
                         }
                         break;
                     }
