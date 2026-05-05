@@ -278,9 +278,11 @@ public final class SemiRealisticThrottleEngine {
         if (demandedValue < airLineValue) {
             // Application: instant drop (Westinghouse apply is immediate).
             this.airLineValue = demandedValue;
+            log.info("Air APPLY: line dropped to {}, reservoir={}, demand={}", airLineValue, airReservoirPct, demandedLineValue);
             recomputeTarget();
         } else if (demandedValue > airLineValue) {
             // Release: start gradual line recharge if not already running.
+            log.info("Air RELEASE requested: demand={}, line={}, reservoir={}", demandedLineValue, airLineValue, airReservoirPct);
             if (!airLineRecharging) {
                 startLineRepeater();
             }
@@ -536,6 +538,7 @@ public final class SemiRealisticThrottleEngine {
         // Stop if line has reached demanded level.
         if (airLineValue >= demandedLineValue) {
             airLineRecharging = false;
+            log.info("Air line repeater done: line={}, demand={}, reservoir={}", airLineValue, demandedLineValue, airReservoirPct);
             // Kick reservoir repeater if reservoir is depleted.
             if (airReservoirPct < 100 && !airReservoirRecharging) {
                 startReservoirRepeater();
@@ -555,8 +558,11 @@ public final class SemiRealisticThrottleEngine {
         } else {
             // Reservoir empty — line cannot recharge. Stop repeater.
             airLineRecharging = false;
+            log.info("Air line repeater BLOCKED: reservoir empty, line={}, demand={}", airLineValue, demandedLineValue);
             return;
         }
+
+        log.info("Air line tick: line={}, reservoir={}, demand={}", airLineValue, airReservoirPct, demandedLineValue);
 
         // Ensure reservoir repeater is running to refill what we drew.
         if (!airReservoirRecharging) {
@@ -601,6 +607,7 @@ public final class SemiRealisticThrottleEngine {
         }
 
         airReservoirPct = Math.min(airReservoirPct + settings.airReservoirReplenishPcnt, 100);
+        log.info("Air reservoir tick: reservoir={}, line={}, demand={}", airReservoirPct, airLineValue, demandedLineValue);
 
         // If line is still below demand and wasn't recharging (was blocked
         // by empty reservoir), restart the line repeater.
