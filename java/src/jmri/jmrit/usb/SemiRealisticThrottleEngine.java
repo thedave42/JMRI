@@ -446,8 +446,13 @@ public final class SemiRealisticThrottleEngine {
 
     /**
      * Computes the inter-step delay in milliseconds.
-     * {@code Δt = baseDelay × |targetAcceleration|}
-     * where baseDelay is accel or decel depending on direction.
+     * EngineDriver formula: {@code Δt = baseDelay × |targetAcceleration|}
+     * <p>
+     * For acceleration: magnitude starts at 1.0 (unloaded); load increases
+     * it (e.g. 10× at max load) → longer delay → slower accel.
+     * <p>
+     * For deceleration: magnitude is {@code effectiveBrake} (1.0 = no brake,
+     * ~0.0 = full brake) → smaller value → shorter delay → faster decel.
      */
     private int computeRampDelay() {
         if (settings == null) return 300;
@@ -459,19 +464,7 @@ public final class SemiRealisticThrottleEngine {
         }
         double magnitude = Math.abs(targetAcceleration);
         if (magnitude < 0.01) magnitude = 1.0;
-
-        // EngineDriver: Δt = baseDelay × targetAcceleration
-        // targetAcceleration > 1 means MORE delay (slower ramp — heavier load)
-        // targetAcceleration < 1 (but > 0) means LESS delay (faster ramp — braking)
-        // For braking, we use inverse: stronger brake = smaller delay = faster stop
-        if (targetAcceleration < 0) {
-            // Braking: more brake notches = faster deceleration = shorter delay
-            // magnitude of -1 = coast (baseDecelDelay), -4 = full brake (baseDecelDelay/4)
-            return Math.max(1, (int) Math.round(baseDelay / magnitude));
-        } else {
-            // Accelerating: load multiplier increases delay (slower accel)
-            return Math.max(1, (int) Math.round(baseDelay * magnitude));
-        }
+        return Math.max(1, (int) Math.round(baseDelay * magnitude));
     }
 
     /**
