@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb.swing;
 
 import java.awt.Component;
 import java.awt.FlowLayout;
@@ -17,13 +17,14 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 
-import jmri.util.usb.RailDriverCalibration.AutoBrakeCal;
-import jmri.util.usb.RailDriverCalibration.IndepBrakeCal;
-import jmri.util.usb.RailDriverCalibration.LightsCal;
-import jmri.util.usb.RailDriverCalibration.ReverserCal;
-import jmri.util.usb.RailDriverCalibration.ThrottleCal;
-import jmri.util.usb.RailDriverCalibration.WiperCal;
-import jmri.util.usb.RailDriverSettingsFrame.DirtyTrackingTab;
+import jmri.jmrit.usb.RailDriverCalibration;
+import jmri.jmrit.usb.RailDriverCalibration.AutoBrakeCal;
+import jmri.jmrit.usb.RailDriverCalibration.IndepBrakeCal;
+import jmri.jmrit.usb.RailDriverCalibration.LightsCal;
+import jmri.jmrit.usb.RailDriverCalibration.ReverserCal;
+import jmri.jmrit.usb.RailDriverCalibration.ThrottleCal;
+import jmri.jmrit.usb.RailDriverCalibration.WiperCal;
+import jmri.jmrit.usb.swing.RailDriverSettingsFrame.DirtyTrackingTab;
 
 /**
  * Calibration tab content for {@link RailDriverSettingsFrame}: visual bars

@@ -1,7 +1,9 @@
-package jmri.util.usb;
+package jmri.jmrit.usb.swing;
 
 import java.awt.event.ActionEvent;
 import javax.swing.AbstractAction;
+
+import jmri.jmrit.usb.RailDriverMenuItem;
 
 /**
  * Action that opens the unified {@link RailDriverSettingsFrame}, hosting

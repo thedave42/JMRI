@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb;
 
 /**
  * Catalogue of feel-coefficient presets used by the semi-realistic throttle

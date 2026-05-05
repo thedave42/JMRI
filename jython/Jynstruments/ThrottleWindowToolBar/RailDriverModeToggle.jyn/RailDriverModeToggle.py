@@ -21,7 +21,7 @@
 
 import java
 import jmri.jmrit.jython.Jynstrument as Jynstrument
-import jmri.util.usb.RailDriverMenuItem as RailDriverMenuItem
+import jmri.jmrit.usb.RailDriverMenuItem as RailDriverMenuItem
 from java.awt.event import MouseAdapter
 from java.beans import PropertyChangeListener
 from javax.swing import JButton, JPopupMenu, JMenuItem, ImageIcon
@@ -101,7 +101,7 @@ class RailDriverModeToggle(Jynstrument):
         # is exercised in test contexts where the Java class is not yet
         # on the classpath).
         try:
-            cls = java.lang.Class.forName("jmri.util.usb.RailDriverSettingsAction")
+            cls = java.lang.Class.forName("jmri.jmrit.usb.swing.RailDriverSettingsAction")
             action = cls.getDeclaredConstructor().newInstance()
             action.actionPerformed(evt)
         except Exception:

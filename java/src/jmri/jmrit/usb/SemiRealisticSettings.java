@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb;
 
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;

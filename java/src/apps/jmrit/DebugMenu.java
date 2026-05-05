@@ -73,8 +73,8 @@ public class DebugMenu extends JMenu {
             i.setEnabled(false);
             add(i);
         }
-        add(new jmri.util.usb.RailDriverMenuItem());
-        add(new jmri.util.usb.RailDriverSettingsAction());
+        add(new jmri.jmrit.usb.RailDriverMenuItem());
+        add(new jmri.jmrit.usb.swing.RailDriverSettingsAction());
 
         add(new JSeparator());
         add(new apps.TrainCrew.InstallFromURL());
