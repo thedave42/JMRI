@@ -1,5 +1,8 @@
 package jmri.jmrit.usb;
 
+import java.beans.PropertyChangeListener;
+import java.beans.PropertyChangeSupport;
+
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
 
@@ -38,10 +41,21 @@ import org.slf4j.LoggerFactory;
  *   <li>{@link #dispose}: same as detach; engine is unusable after.
  * </ol>
  * <p>
+ * Property change events: the engine fires {@link #AIR_LINE_VALUE}
+ * and {@link #AIR_RESERVOIR_PCT} PropertyChange events on all air
+ * system state transitions. Events fire on the layout thread; UI
+ * consumers must marshal to the GUI thread via
+ * {@link ThreadingUtil#runOnGUIEventually}.
+ * <p>
  * Algorithm reference: EngineDriver {@code throttle_semi_realistic.java}
  * (SHA {@code 5e722d38}).
  */
 public final class SemiRealisticThrottleEngine {
+
+    /** PropertyChange event name for air line value (brake pipe pressure). */
+    public static final String AIR_LINE_VALUE = "airLineValue";
+    /** PropertyChange event name for air reservoir percentage. */
+    public static final String AIR_RESERVOIR_PCT = "airReservoirPct";
 
     /** Reverser direction. */
     public enum Direction { FORWARD, NEUTRAL, REVERSE }
@@ -108,6 +122,10 @@ public final class SemiRealisticThrottleEngine {
     /** True when the reservoir repeater is actively refilling. */
     private boolean airReservoirRecharging = false;
 
+    // ======================== Property change support ========================
+
+    private final PropertyChangeSupport pcs = new PropertyChangeSupport(this);
+
     // ======================== Lifecycle ========================
 
     /**
@@ -143,8 +161,8 @@ public final class SemiRealisticThrottleEngine {
         this.lastEmitTimeMs = 0;
 
         // Reset air system to fully charged.
-        this.airLineValue = 100;
-        this.airReservoirPct = 100;
+        setAirLineValue(100);
+        setAirReservoirPct(100);
         this.demandedLineValue = 100;
         this.airLineRecharging = false;
         this.airReservoirRecharging = false;
@@ -172,8 +190,8 @@ public final class SemiRealisticThrottleEngine {
         this.targetSpeedStep = 0;
         this.targetAcceleration = 0;
         this.pendingDirection = null;
-        this.airLineValue = 100;
-        this.airReservoirPct = 100;
+        setAirLineValue(100);
+        setAirReservoirPct(100);
         this.demandedLineValue = 100;
         this.airLineRecharging = false;
         this.airReservoirRecharging = false;
@@ -270,14 +288,14 @@ public final class SemiRealisticThrottleEngine {
 
         if (settings.airRefreshRateMs <= 0) {
             // Flat-mapping mode: bypass dynamics, set directly.
-            this.airLineValue = demandedValue;
+            setAirLineValue(demandedValue);
             recomputeTarget();
             return;
         }
 
         if (demandedValue < airLineValue) {
             // Application: instant drop (Westinghouse apply is immediate).
-            this.airLineValue = demandedValue;
+            setAirLineValue(demandedValue);
             log.info("Air APPLY: line dropped to {}, reservoir={}, demand={}", airLineValue, airReservoirPct, demandedLineValue);
             recomputeTarget();
         } else if (demandedValue > airLineValue) {
@@ -549,12 +567,12 @@ public final class SemiRealisticThrottleEngine {
         // Draw air from reservoir to recharge line.
         int rechargeAmount = settings.airLineRechargePcnt;
         if (airReservoirPct >= rechargeAmount) {
-            airLineValue = Math.min(airLineValue + rechargeAmount, demandedLineValue);
-            airReservoirPct -= rechargeAmount;
+            setAirLineValue(Math.min(airLineValue + rechargeAmount, demandedLineValue));
+            setAirReservoirPct(airReservoirPct - rechargeAmount);
         } else if (airReservoirPct > 0) {
             // Partial recharge with remaining reservoir.
-            airLineValue = Math.min(airLineValue + airReservoirPct, demandedLineValue);
-            airReservoirPct = 0;
+            setAirLineValue(Math.min(airLineValue + airReservoirPct, demandedLineValue));
+            setAirReservoirPct(0);
         } else {
             // Reservoir empty — line cannot recharge. Stop repeater.
             airLineRecharging = false;
@@ -606,7 +624,7 @@ public final class SemiRealisticThrottleEngine {
             return;
         }
 
-        airReservoirPct = Math.min(airReservoirPct + settings.airReservoirReplenishPcnt, 100);
+        setAirReservoirPct(Math.min(airReservoirPct + settings.airReservoirReplenishPcnt, 100));
         log.info("Air reservoir tick: reservoir={}, line={}, demand={}", airReservoirPct, airLineValue, demandedLineValue);
 
         // If line is still below demand and wasn't recharging (was blocked
@@ -629,6 +647,41 @@ public final class SemiRealisticThrottleEngine {
 
     /** Returns the current reservoir pressure (0..100). For UI/test access. */
     public int getAirReservoirPct() { return airReservoirPct; }
+
+    /**
+     * Registers a listener for air-state PropertyChange events
+     * ({@link #AIR_LINE_VALUE}, {@link #AIR_RESERVOIR_PCT}).
+     * Thread-safe — may be called from any thread.
+     */
+    public void addPropertyChangeListener(PropertyChangeListener l) {
+        pcs.addPropertyChangeListener(l);
+    }
+
+    /**
+     * Removes a previously registered PropertyChange listener.
+     * Thread-safe — may be called from any thread.
+     */
+    public void removePropertyChangeListener(PropertyChangeListener l) {
+        pcs.removePropertyChangeListener(l);
+    }
+
+    /** Sets {@code airLineValue} and fires a PCS event if changed. */
+    private void setAirLineValue(int newValue) {
+        int oldValue = this.airLineValue;
+        this.airLineValue = newValue;
+        if (oldValue != newValue) {
+            pcs.firePropertyChange(AIR_LINE_VALUE, oldValue, newValue);
+        }
+    }
+
+    /** Sets {@code airReservoirPct} and fires a PCS event if changed. */
+    private void setAirReservoirPct(int newValue) {
+        int oldValue = this.airReservoirPct;
+        this.airReservoirPct = newValue;
+        if (oldValue != newValue) {
+            pcs.firePropertyChange(AIR_RESERVOIR_PCT, oldValue, newValue);
+        }
+    }
 
     /**
      * Computes the inter-step delay in milliseconds.
