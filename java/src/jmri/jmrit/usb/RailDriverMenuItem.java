@@ -1249,7 +1249,17 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     @Nonnull
     public RailDriverCalibration getCalibration() {
         if (calibration == null) {
-            calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+            // Primary path: use PreferencesManager (AuxiliaryConfiguration).
+            RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
+                    RailDriverPreferencesManager.class);
+            if (mgr != null) {
+                calibration = mgr.getCalibration();
+            }
+            // Fallback: legacy file-based load (pre-Phase-8 path).
+            if (calibration == null) {
+                calibration = RailDriverCalibration.loadOrDefault(
+                        RailDriverCalibration.getDefaultFile());
+            }
         }
         return calibration;
     }
@@ -1269,7 +1279,15 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             oldPersisted = calibration.semiRealistic().persistedEnabled;
             oldLive = calibration.semiRealistic().liveEnabled;
         }
-        calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+        // Re-read from PreferencesManager if available, else legacy file.
+        RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
+                RailDriverPreferencesManager.class);
+        if (mgr != null) {
+            calibration = mgr.getCalibration();
+        } else {
+            calibration = RailDriverCalibration.loadOrDefault(
+                    RailDriverCalibration.getDefaultFile());
+        }
         SemiRealisticSettings s = calibration.semiRealistic();
         log.info("RailDriver calibration reloaded.");
         if (engine != null) {
