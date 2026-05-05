@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;

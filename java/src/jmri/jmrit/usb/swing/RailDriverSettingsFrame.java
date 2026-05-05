@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb.swing;
 
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -18,6 +18,8 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
 
+import jmri.jmrit.usb.RailDriverCalibration;
+import jmri.jmrit.usb.RailDriverMenuItem;
 import jmri.util.JmriJFrame;
 
 import org.slf4j.Logger;

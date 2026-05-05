@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb.swing;
 
 import java.awt.BasicStroke;
 import java.awt.Color;

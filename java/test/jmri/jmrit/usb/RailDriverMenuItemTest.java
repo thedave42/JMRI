@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb;
 
 import org.junit.jupiter.api.*;
 

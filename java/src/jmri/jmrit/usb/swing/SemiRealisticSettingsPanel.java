@@ -1,4 +1,4 @@
-package jmri.util.usb;
+package jmri.jmrit.usb.swing;
 
 import java.awt.Component;
 import java.awt.GridBagConstraints;
@@ -23,8 +23,11 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.text.NumberFormatter;
 
-import jmri.util.usb.RailDriverSettingsFrame.DirtyTrackingTab;
-import jmri.util.usb.SemiRealisticSettings.DecoderBrakeMode;
+import jmri.jmrit.usb.swing.RailDriverSettingsFrame.DirtyTrackingTab;
+import jmri.jmrit.usb.LoadScenario;
+import jmri.jmrit.usb.RailDriverCalibration;
+import jmri.jmrit.usb.SemiRealisticSettings;
+import jmri.jmrit.usb.SemiRealisticSettings.DecoderBrakeMode;
 
 /**
  * Settings tab content for the unified RailDriver settings window. Exposes
