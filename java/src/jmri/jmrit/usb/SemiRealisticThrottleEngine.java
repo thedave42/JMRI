@@ -279,6 +279,52 @@ public final class SemiRealisticThrottleEngine {
 
     // ======================== Core algorithm ========================
 
+    /** EngineDriver's maxBrake constant — maximum brake effectiveness as a
+     *  fraction. At 1.0 (100%) braking is "instant zero". Default 0.70. */
+    private static final double MAX_BRAKE = 0.70;
+
+    /** EngineDriver's maxBrakeUnderPower — softer braking when throttle is
+     *  also applied. Default = maxBrake - 0.20. */
+    private static final double MAX_BRAKE_UNDER_POWER = MAX_BRAKE - 0.20;
+
+    /**
+     * EngineDriver's {@code getBrakeDecimalPcnt} — non-linear brake curve.
+     * Returns a value where 1.0 = no braking, approaching 0.0 = full braking.
+     * <p>
+     * Formula: {@code 1 - (sqrt(step) * step * maxBrake / (sqrt(steps) * steps * maxBrake) * maxBrake)}
+     *
+     * @param step  current brake notch (0 = released)
+     * @param steps total number of brake notches
+     * @param maxBrakeDecimal maximum brake effectiveness (e.g. 0.70)
+     * @return brake percentage where 1.0 = free-rolling, 0.0 = full stop
+     */
+    static double getBrakeDecimalPcnt(double step, double steps, double maxBrakeDecimal) {
+        if (steps <= 0 || step <= 0) return 1.0;
+        double max = Math.sqrt(steps) * steps * maxBrakeDecimal;
+        return 1.0 - (Math.sqrt(step) * step * maxBrakeDecimal / max * maxBrakeDecimal);
+    }
+
+    /**
+     * Computes the effective dynamic brake step with low-speed taper.
+     * Below {@code dynBrakeMinSpeedStep}, the dynamic brake fades linearly
+     * to zero at speed 0.
+     *
+     * @param currentSpeed current speed step
+     * @param dynBrakeStep raw dynamic brake notch (0..numberOfBrakeSteps)
+     * @param dynBrakeMinSpeedStep threshold below which taper applies
+     * @return effective dynamic brake step (may be fractional due to taper)
+     */
+    static double effectiveDynBrakeStep(int currentSpeed, int dynBrakeStep,
+                                        int dynBrakeMinSpeedStep) {
+        if (dynBrakeStep <= 0) return 0.0;
+        if (dynBrakeMinSpeedStep <= 0) return dynBrakeStep;
+        if (currentSpeed >= dynBrakeMinSpeedStep) return dynBrakeStep;
+        // Linear taper: at currentSpeed == 0, effect is 0;
+        // at currentSpeed == dynBrakeMinSpeedStep, effect is full.
+        double taper = (double) currentSpeed / (double) dynBrakeMinSpeedStep;
+        return dynBrakeStep * taper;
+    }
+
     /**
      * Computes the target speed step and acceleration from the current
      * input state, bumps the ramp epoch, and posts a fresh ramp callback.
@@ -287,35 +333,90 @@ public final class SemiRealisticThrottleEngine {
     private void recomputeTarget() {
         if (!attached || settings == null) return;
 
+        int sliderSpeed = Math.round(throttleFraction * maxSpeedSteps);
+        if (sliderSpeed > maxSpeedSteps) sliderSpeed = maxSpeedSteps;
+        if (sliderSpeed < 0) sliderSpeed = 0;
+
         // Direction NEUTRAL short-circuits to coast-to-stop.
         if (direction == Direction.NEUTRAL) {
             targetSpeedStep = 0;
             targetAcceleration = -1.0;
         } else {
-            targetSpeedStep = Math.round(throttleFraction * maxSpeedSteps);
-            if (targetSpeedStep > maxSpeedSteps) targetSpeedStep = maxSpeedSteps;
-            if (targetSpeedStep < 0) targetSpeedStep = 0;
+            targetSpeedStep = sliderSpeed;
+            targetAcceleration = 1.0; // default: no modifier
+        }
 
-            if (targetSpeedStep > currentSpeedStep) {
-                // Accelerating
-                targetAcceleration = 1.0;
-            } else if (targetSpeedStep < currentSpeedStep) {
-                // Decelerating
-                targetAcceleration = -1.0;
+        // --- Compute effective brake from all sources ---
+        // Independent brake: quantise lever fraction to notches.
+        int indepNotch = Math.round(indepBrakeFraction * settings.numberOfBrakeSteps);
+        // Dynamic brake: quantise and apply low-speed taper.
+        int dynNotch = Math.round(dynBrakeFraction * settings.numberOfBrakeSteps);
+        double effDynStep = effectiveDynBrakeStep(currentSpeedStep, dynNotch,
+                settings.dynBrakeMinSpeedStep);
+        // Air brake: convert air line fraction (1.0 = released, 0.0 = full app)
+        // to brake steps. airLineFraction is 0..1 where 0=no braking, 1=full braking
+        // (same convention as indep/dyn). Convert to EngineDriver's air-line-as-brake.
+        double airBrakeStep = Math.round(airLineFraction * settings.numberOfBrakeSteps);
+
+        // Bail-off: releases all loco-side braking (indep, dyn, loco share of auto).
+        // Only car-brake retardation continues. At light engine (load=0), bail-off
+        // releases all braking entirely.
+        double effIndepNotch = bailoffPressed ? 0 : indepNotch;
+        double effAirStep = bailoffPressed ? 0 : airBrakeStep;
+        effDynStep = bailoffPressed ? 0 : effDynStep;
+
+        // Compute brake percentages (EngineDriver convention: 1.0 = no braking).
+        double indepBrakePcnt = getBrakeDecimalPcnt(effIndepNotch,
+                settings.numberOfBrakeSteps, MAX_BRAKE);
+        double dynBrakePcnt = getBrakeDecimalPcnt(effDynStep,
+                settings.numberOfBrakeSteps, MAX_BRAKE);
+        double airBrakePcnt = getBrakeDecimalPcnt(effAirStep,
+                settings.numberOfBrakeSteps, MAX_BRAKE);
+
+        // Effective brake = min of all sources (smaller = more braking).
+        double effectiveBrake = Math.min(indepBrakePcnt,
+                Math.min(dynBrakePcnt, airBrakePcnt));
+
+        // --- Apply brake to target/acceleration (EngineDriver §3.5) ---
+        if (direction != Direction.NEUTRAL) {
+            if (effectiveBrake >= 1.0) {
+                // Regime A: no brake force — ramp toward slider.
+                if (targetSpeedStep > currentSpeedStep) {
+                    targetAcceleration = 1.0;
+                } else if (targetSpeedStep < currentSpeedStep) {
+                    targetAcceleration = -1.0;
+                } else {
+                    targetAcceleration = 0;
+                }
+            } else if (targetSpeedStep == 0) {
+                // Regime B: throttle at zero + brake applied.
+                targetAcceleration = -1.0 * effectiveBrake;
             } else {
-                // At target
-                targetAcceleration = 0;
+                // Regime C: throttle and brake both active.
+                // Brake clips the target speed.
+                int brakeReducedTarget = (int) Math.round(
+                        sliderSpeed - sliderSpeed * (1.0 - effectiveBrake));
+                if (brakeReducedTarget < 0) brakeReducedTarget = 0;
+                targetSpeedStep = brakeReducedTarget;
+
+                if (targetSpeedStep <= currentSpeedStep) {
+                    // Slowing down under power — softer braking
+                    targetAcceleration = -1.0 * (1.0 - effectiveBrake * MAX_BRAKE_UNDER_POWER);
+                } else {
+                    // Still accelerating but slower
+                    targetAcceleration = 1.0 + (1.0 - effectiveBrake * MAX_BRAKE);
+                }
             }
         }
 
-        // Apply brake modifier to targetAcceleration.
-        // Independent brake: each notch adds -1 to decel magnitude.
-        if (indepBrakeFraction > 0f && !bailoffPressed) {
-            int brakeNotch = Math.round(indepBrakeFraction * settings.numberOfBrakeSteps);
-            if (brakeNotch > 0) {
-                targetSpeedStep = 0;
-                targetAcceleration = -(1.0 + brakeNotch);
-            }
+        // --- Load scaling on targetAcceleration (Phase 6 will provide UI) ---
+        // For now, loadSliderPosition is always 0 (light engine), so this
+        // is a no-op. The formula is wired so Phase 6 just needs to set
+        // the setting value.
+        if (settings.loadSliderPosition > 0) {
+            targetAcceleration = targetAcceleration
+                    * getLoadPcnt(settings.loadSliderPosition,
+                            settings.numberOfLoadSteps, settings.maxLoadPcnt);
         }
 
         // Start a fresh ramp if there is work to do.
@@ -328,9 +429,30 @@ public final class SemiRealisticThrottleEngine {
     }
 
     /**
+     * EngineDriver's quadratic load formula.
+     * {@code ((load² × (maxLoadPcnt − 100)) + 100) / 100}
+     * where {@code load = step / numberOfLoadSteps}.
+     *
+     * @param step current load slider position (0 = light engine)
+     * @param steps total load slider positions
+     * @param maxLoadPcnt maximum load percentage (e.g. 1000 = 10×)
+     * @return load multiplier (1.0 at step 0, up to maxLoadPcnt/100 at max)
+     */
+    static double getLoadPcnt(int step, int steps, int maxLoadPcnt) {
+        if (step <= 0 || steps <= 0) return 1.0;
+        double load = (double) step / (double) steps;
+        return ((load * load * (maxLoadPcnt - 100)) + 100) / 100.0;
+    }
+
+    /**
      * Computes the inter-step delay in milliseconds.
-     * {@code Δt = baseDelay × |targetAcceleration|}
-     * where baseDelay is accel or decel depending on direction.
+     * EngineDriver formula: {@code Δt = baseDelay × |targetAcceleration|}
+     * <p>
+     * For acceleration: magnitude starts at 1.0 (unloaded); load increases
+     * it (e.g. 10× at max load) → longer delay → slower accel.
+     * <p>
+     * For deceleration: magnitude is {@code effectiveBrake} (1.0 = no brake,
+     * ~0.0 = full brake) → smaller value → shorter delay → faster decel.
      */
     private int computeRampDelay() {
         if (settings == null) return 300;
@@ -342,19 +464,7 @@ public final class SemiRealisticThrottleEngine {
         }
         double magnitude = Math.abs(targetAcceleration);
         if (magnitude < 0.01) magnitude = 1.0;
-
-        // EngineDriver: Δt = baseDelay × targetAcceleration
-        // targetAcceleration > 1 means MORE delay (slower ramp — heavier load)
-        // targetAcceleration < 1 (but > 0) means LESS delay (faster ramp — braking)
-        // For braking, we use inverse: stronger brake = smaller delay = faster stop
-        if (targetAcceleration < 0) {
-            // Braking: more brake notches = faster deceleration = shorter delay
-            // magnitude of -1 = coast (baseDecelDelay), -4 = full brake (baseDecelDelay/4)
-            return Math.max(1, (int) Math.round(baseDelay / magnitude));
-        } else {
-            // Accelerating: load multiplier increases delay (slower accel)
-            return Math.max(1, (int) Math.round(baseDelay * magnitude));
-        }
+        return Math.max(1, (int) Math.round(baseDelay * magnitude));
     }
 
     /**
