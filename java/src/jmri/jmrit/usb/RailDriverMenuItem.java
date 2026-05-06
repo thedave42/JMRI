@@ -595,7 +595,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
                     continue;
                 }
-                if (ret >= 0) {
+                if (ret > 0) {
                     for (int i = 0; i < buff_new.length; i++) {
                         // Per-axis change detection. Analog bytes (0..6) get
                         // hysteresis to absorb the ~1-byte potentiometer
