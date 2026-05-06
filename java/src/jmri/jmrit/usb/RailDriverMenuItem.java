@@ -523,9 +523,6 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             });
         });
         panel.setVisible(true);
-        if (throttleWindow != null) {
-            throttleWindow.getViewAirStatusPanel().setSelected(true);
-        }
         log.debug("Air status panel subscribed to engine and made visible");
     }
 
@@ -539,9 +536,6 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             if (panel != null) {
                 panel.unsubscribeFromEngine();
                 panel.setVisible(false);
-                if (throttleWindow != null) {
-                    throttleWindow.getViewAirStatusPanel().setSelected(false);
-                }
                 log.debug("Air status panel unsubscribed from engine and hidden");
             }
         }
