@@ -475,16 +475,6 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     private void autoInstallJynstrument(ThrottleWindow tw) {
         if (tw == null) return;
 
-        if (!hasJynstrumentInstalled(tw.getContentPane(), "RailDriverModeToggle")) {
-            try {
-                String modePath = FileUtil.getProgramPath()
-                        + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn";
-                tw.ynstrument(modePath);
-            } catch (RuntimeException ex) {
-                log.warn("Auto-install of RailDriverModeToggle Jynstrument failed", ex);
-            }
-        }
-
         if (!hasJynstrumentInstalled(tw.getContentPane(), "RailDriverConnectivityIndicator")) {
             try {
                 String indicatorPath = FileUtil.getProgramPath()
