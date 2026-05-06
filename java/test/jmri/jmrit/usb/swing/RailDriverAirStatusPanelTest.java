@@ -4,7 +4,6 @@ import java.util.Hashtable;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.swing.JLabel;
-import javax.swing.JProgressBar;
 import javax.swing.JSlider;
 
 import jmri.jmrit.usb.SemiRealisticSettings;
@@ -46,9 +45,9 @@ public class RailDriverAirStatusPanelTest {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
         panel.subscribeToEngine(engine, settings, null);
         // Engine defaults to airLineValue = 100, airReservoirPct = 100
-        assertEquals(100, panel.getAirLineBar().getValue());
+        assertEquals(100, panel.getAirLineGauge().getValue());
         assertEquals("100%", panel.getAirLineReadout().getText());
-        assertEquals(100, panel.getAirReservoirBar().getValue());
+        assertEquals(100, panel.getAirReservoirGauge().getValue());
         assertEquals("100%", panel.getAirReservoirReadout().getText());
         panel.destroy();
     }
@@ -73,10 +72,10 @@ public class RailDriverAirStatusPanelTest {
     }
 
     @Test
-    public void testProgressBarsAreVertical() {
+    public void testGaugesAreVertical() {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
-        assertEquals(JProgressBar.VERTICAL, panel.getAirLineBar().getOrientation());
-        assertEquals(JProgressBar.VERTICAL, panel.getAirReservoirBar().getOrientation());
+        assertEquals(JSlider.VERTICAL, panel.getAirLineGauge().getOrientation());
+        assertEquals(JSlider.VERTICAL, panel.getAirReservoirGauge().getOrientation());
         panel.destroy();
     }
 
@@ -190,13 +189,13 @@ public class RailDriverAirStatusPanelTest {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
         panel.setEnabled(false);
         assertFalse(panel.getLoadSlider().isEnabled());
-        assertFalse(panel.getAirLineBar().isEnabled());
-        assertFalse(panel.getAirReservoirBar().isEnabled());
+        assertFalse(panel.getAirLineGauge().isEnabled());
+        assertFalse(panel.getAirReservoirGauge().isEnabled());
 
         panel.setEnabled(true);
         assertTrue(panel.getLoadSlider().isEnabled());
-        assertTrue(panel.getAirLineBar().isEnabled());
-        assertTrue(panel.getAirReservoirBar().isEnabled());
+        assertTrue(panel.getAirLineGauge().isEnabled());
+        assertTrue(panel.getAirReservoirGauge().isEnabled());
         panel.destroy();
     }
 

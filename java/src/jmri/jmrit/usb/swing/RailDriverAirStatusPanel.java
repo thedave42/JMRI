@@ -1,8 +1,6 @@
 package jmri.jmrit.usb.swing;
 
 import java.awt.BorderLayout;
-import java.awt.Color;
-import java.awt.Dimension;
 import java.awt.Font;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
@@ -17,9 +15,7 @@ import javax.swing.BoxLayout;
 import javax.swing.JInternalFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import javax.swing.JProgressBar;
 import javax.swing.JSlider;
-import javax.swing.UIManager;
 import javax.swing.WindowConstants;
 
 import jmri.DccThrottle;
@@ -60,8 +56,8 @@ import org.slf4j.LoggerFactory;
 public class RailDriverAirStatusPanel extends JInternalFrame
         implements PropertyChangeListener, AddressListener {
 
-    private JProgressBar airLineBar;
-    private JProgressBar airReservoirBar;
+    private JSlider airLineGauge;
+    private JSlider airReservoirGauge;
     private JLabel airLineReadout;
     private JLabel airReservoirReadout;
     private JSlider loadSlider;
@@ -99,38 +95,29 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
         Font smallFont = new Font(Font.SANS_SERIF, Font.PLAIN, 10);
 
-        // Use the same fill color as the JSlider track so gauges and
-        // slider look consistent, matching the ControlPanel appearance.
-        Color trackColor = UIManager.getColor("Slider.foreground");
-
-        // --- Air line gauge (vertical) ---
+        // --- Air line gauge (vertical, non-interactive JSlider) ---
+        // Uses a JSlider configured as a read-only gauge so the fill
+        // color matches the ControlPanel speed slider (MetalSliderUI
+        // Ocean gradient).
         JPanel airLinePanel = new JPanel(new BorderLayout());
         JLabel airLineLabel = new JLabel(Bundle.getMessage("RailDriverAirLine"), JLabel.CENTER);
         airLineLabel.setFont(smallFont);
-        airLineBar = new JProgressBar(JProgressBar.VERTICAL, 0, 100);
-        airLineBar.setStringPainted(false);
-        if (trackColor != null) {
-            airLineBar.setForeground(trackColor);
-        }
+        airLineGauge = createGaugeSlider();
         airLineReadout = new JLabel("100%", JLabel.CENTER);
         airLineReadout.setFont(smallFont);
         airLinePanel.add(airLineLabel, BorderLayout.NORTH);
-        airLinePanel.add(airLineBar, BorderLayout.CENTER);
+        airLinePanel.add(airLineGauge, BorderLayout.CENTER);
         airLinePanel.add(airLineReadout, BorderLayout.SOUTH);
 
-        // --- Air reservoir gauge (vertical) ---
+        // --- Air reservoir gauge (vertical, non-interactive JSlider) ---
         JPanel airReservoirPanel = new JPanel(new BorderLayout());
         JLabel airReservoirLabel = new JLabel(Bundle.getMessage("RailDriverAirReservoir"), JLabel.CENTER);
         airReservoirLabel.setFont(smallFont);
-        airReservoirBar = new JProgressBar(JProgressBar.VERTICAL, 0, 100);
-        airReservoirBar.setStringPainted(false);
-        if (trackColor != null) {
-            airReservoirBar.setForeground(trackColor);
-        }
+        airReservoirGauge = createGaugeSlider();
         airReservoirReadout = new JLabel("100%", JLabel.CENTER);
         airReservoirReadout.setFont(smallFont);
         airReservoirPanel.add(airReservoirLabel, BorderLayout.NORTH);
-        airReservoirPanel.add(airReservoirBar, BorderLayout.CENTER);
+        airReservoirPanel.add(airReservoirGauge, BorderLayout.CENTER);
         airReservoirPanel.add(airReservoirReadout, BorderLayout.SOUTH);
 
         // --- Load slider (vertical) ---
@@ -286,8 +273,8 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     public void setEnabled(boolean isEnabled) {
         super.setEnabled(isEnabled);
         loadSlider.setEnabled(isEnabled);
-        airLineBar.setEnabled(isEnabled);
-        airReservoirBar.setEnabled(isEnabled);
+        airLineGauge.setEnabled(isEnabled);
+        airReservoirGauge.setEnabled(isEnabled);
     }
 
     // ======================== XML Persistence ========================
@@ -340,13 +327,36 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     }
 
     private void setAirLineValue(int value) {
-        airLineBar.setValue(value);
+        airLineGauge.setValue(value);
         airLineReadout.setText(value + "%");
     }
 
     private void setAirReservoirPct(int value) {
-        airReservoirBar.setValue(value);
+        airReservoirGauge.setValue(value);
         airReservoirReadout.setText(value + "%");
+    }
+
+    /**
+     * Creates a vertical JSlider configured as a non-interactive gauge.
+     * Uses the same MetalSliderUI rendering as the ControlPanel speed
+     * slider, so the fill color/gradient matches exactly. The slider
+     * is marked as a filled slider via the {@code JSlider.isFilled}
+     * client property, and mouse/keyboard input is disabled.
+     */
+    private static JSlider createGaugeSlider() {
+        JSlider gauge = new JSlider(JSlider.VERTICAL, 0, 100, 100);
+        gauge.putClientProperty("JSlider.isFilled", Boolean.TRUE);
+        gauge.setPaintTicks(false);
+        gauge.setPaintLabels(false);
+        gauge.setFocusable(false);
+        // Disable mouse interaction so it acts as a display-only gauge.
+        for (java.awt.event.MouseListener ml : gauge.getMouseListeners()) {
+            gauge.removeMouseListener(ml);
+        }
+        for (java.awt.event.MouseMotionListener mml : gauge.getMouseMotionListeners()) {
+            gauge.removeMouseMotionListener(mml);
+        }
+        return gauge;
     }
 
     private JSlider buildLoadSlider(@Nonnull SemiRealisticSettings settings,
@@ -395,11 +405,11 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
     // ======================== Package-visible for testing ========================
 
-    /** @return the air line progress bar (for testing). */
-    JProgressBar getAirLineBar() { return airLineBar; }
+    /** @return the air line gauge slider (for testing). */
+    JSlider getAirLineGauge() { return airLineGauge; }
 
-    /** @return the air reservoir progress bar (for testing). */
-    JProgressBar getAirReservoirBar() { return airReservoirBar; }
+    /** @return the air reservoir gauge slider (for testing). */
+    JSlider getAirReservoirGauge() { return airReservoirGauge; }
 
     /** @return the air line numeric readout label (for testing). */
     JLabel getAirLineReadout() { return airLineReadout; }
