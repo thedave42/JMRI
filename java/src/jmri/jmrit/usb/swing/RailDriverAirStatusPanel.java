@@ -1,6 +1,7 @@
 package jmri.jmrit.usb.swing;
 
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.beans.PropertyChangeEvent;
@@ -18,6 +19,7 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JProgressBar;
 import javax.swing.JSlider;
+import javax.swing.UIManager;
 import javax.swing.WindowConstants;
 
 import jmri.DccThrottle;
@@ -97,12 +99,19 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
         Font smallFont = new Font(Font.SANS_SERIF, Font.PLAIN, 10);
 
+        // Use the same fill color as the JSlider track so gauges and
+        // slider look consistent, matching the ControlPanel appearance.
+        Color trackColor = UIManager.getColor("Slider.foreground");
+
         // --- Air line gauge (vertical) ---
         JPanel airLinePanel = new JPanel(new BorderLayout());
         JLabel airLineLabel = new JLabel(Bundle.getMessage("RailDriverAirLine"), JLabel.CENTER);
         airLineLabel.setFont(smallFont);
         airLineBar = new JProgressBar(JProgressBar.VERTICAL, 0, 100);
         airLineBar.setStringPainted(false);
+        if (trackColor != null) {
+            airLineBar.setForeground(trackColor);
+        }
         airLineReadout = new JLabel("100%", JLabel.CENTER);
         airLineReadout.setFont(smallFont);
         airLinePanel.add(airLineLabel, BorderLayout.NORTH);
@@ -115,6 +124,9 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         airReservoirLabel.setFont(smallFont);
         airReservoirBar = new JProgressBar(JProgressBar.VERTICAL, 0, 100);
         airReservoirBar.setStringPainted(false);
+        if (trackColor != null) {
+            airReservoirBar.setForeground(trackColor);
+        }
         airReservoirReadout = new JLabel("100%", JLabel.CENTER);
         airReservoirReadout.setFont(smallFont);
         airReservoirPanel.add(airReservoirLabel, BorderLayout.NORTH);
