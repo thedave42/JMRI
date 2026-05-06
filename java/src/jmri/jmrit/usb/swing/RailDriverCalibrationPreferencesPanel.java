@@ -122,7 +122,7 @@ public class RailDriverCalibrationPreferencesPanel
         mgr.applyCalibration(working);
 
         // Reset editor dirty state from the now-persisted calibration.
-        editor.resetFromCalibration(mgr.getCalibration());
+        editor.resetToFile(mgr.getCalibration());
 
         log.info("RailDriver hardware calibration saved.");
     }

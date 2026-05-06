@@ -545,7 +545,7 @@ public final class SemiRealisticThrottleEngine {
      * @param maxLoadPcnt maximum load percentage (e.g. 1000 = 10×)
      * @return load multiplier (1.0 at step 0, up to maxLoadPcnt/100 at max)
      */
-    static double getLoadPcnt(int step, int steps, int maxLoadPcnt) {
+    public static double getLoadPcnt(int step, int steps, int maxLoadPcnt) {
         if (step <= 0 || steps <= 0) return 1.0;
         double load = (double) step / (double) steps;
         return ((load * load * (maxLoadPcnt - 100)) + 100) / 100.0;

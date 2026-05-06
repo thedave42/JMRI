@@ -113,7 +113,7 @@ public class RailDriverSemiRealisticPreferencesPanel
         mgr.applySettings(newSettings);
 
         // Reset editor dirty state from the now-persisted calibration.
-        editor.resetFromCalibration(mgr.getCalibration());
+        editor.resetToFile(mgr.getCalibration());
         enabledAtLoad = newSettings.persistedEnabled;
 
         // Alert the user if the enabled flag changed (TASK-058).
