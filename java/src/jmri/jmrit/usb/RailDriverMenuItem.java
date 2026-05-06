@@ -636,12 +636,16 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                             buff_old[i] = buff_new[i];
                         }
                     }
-                } else {
-                    String error = hidDevice.getLastErrorMessage();
+                } else if (ret < 0) {
+                    // Genuine error (not a timeout). Use the local dev
+                    // snapshot to avoid NPE if hidDevice is nulled during
+                    // shutdown.
+                    String error = dev.getLastErrorMessage();
                     if (error != null) {
                         log.error("hidDevice.read error: {}", error);
                     }
                 }
+                // ret == 0 means timeout with no data — silently continue.
             }
         });
         thread.setName("RailDriver");
