@@ -408,9 +408,10 @@ public class RailDriverPreferencesManager extends AbstractPreferencesManager {
 
         log.info("Migrating RailDriver settings from legacy file: {}", legacyFile);
 
-        // Use existing loader to parse the legacy file.
-        RailDriverCalibration legacy =
-                RailDriverCalibration.loadOrDefault(legacyFile);
+        // Parse the legacy file directly (parser moved here from
+        // RailDriverCalibration to remove file-based persistence from
+        // that class — TASK-053).
+        RailDriverCalibration legacy = loadLegacyFile(legacyFile);
 
         // Migrate calibration detents (private) if not already loaded.
         if (!hwCalAlreadyLoaded) {
@@ -449,6 +450,105 @@ public class RailDriverPreferencesManager extends AbstractPreferencesManager {
     private static File getLegacyFile(@Nonnull Profile profile) {
         return new File(new File(profile.getPath(), Profile.PROFILE),
                 LEGACY_FILE_NAME);
+    }
+
+    // ======================== Legacy file parser ========================
+
+    /**
+     * Parses a legacy {@code raildriver-calibration.xml} file into a
+     * {@link RailDriverCalibration}. Returns defaults if the file is
+     * unreadable. This is a one-way migration helper; no write-back
+     * is supported.
+     */
+    @Nonnull
+    private static RailDriverCalibration loadLegacyFile(@Nonnull File file) {
+        RailDriverCalibration cal = new RailDriverCalibration();
+        if (!file.exists() || !file.canRead()) {
+            return cal;
+        }
+        try {
+            org.jdom2.Document doc = new org.jdom2.input.SAXBuilder().build(file);
+            org.jdom2.Element root = doc.getRootElement();
+            populateLegacySection(root, "reverser", cal.reverser(),
+                    "forward", "neutral", "reverse");
+            populateLegacySection(root, "throttle", cal.throttle(),
+                    "fullThrottle", "idleLow", "idleHigh", "fullDynBrake");
+            populateLegacySection(root, "autoBrake", cal.autoBrake(),
+                    "released", "sup", "cs", "emg");
+            populateLegacySection(root, "indepBrake", cal.indepBrake(),
+                    "fullRelease", "fullApplication", "bailoffRest", "bailoffPressed");
+            populateLegacySection(root, "wiper", cal.wiper(),
+                    "off", "slow", "full");
+            populateLegacySection(root, "lights", cal.lights(),
+                    "off", "dim", "full");
+            cal.semiRealistic().loadFrom(root.getChild("semiRealistic"));
+        } catch (java.io.IOException | org.jdom2.JDOMException ex) {
+            log.warn("Failed to parse legacy RailDriver calibration file '{}'; using defaults", file, ex);
+        }
+        return cal;
+    }
+
+    /**
+     * Reads named int children from a legacy XML section into the matching
+     * fields of a calibration sub-POJO. Uses the same reflection-free
+     * type dispatch as {@link #readInts}.
+     */
+    private static void populateLegacySection(
+            @Nonnull org.jdom2.Element root,
+            @Nonnull String sectionName,
+            @Nonnull Object pojo,
+            @Nonnull String... fields) {
+        org.jdom2.Element section = root.getChild(sectionName);
+        if (section == null) return;
+        if (pojo instanceof RailDriverCalibration.ReverserCal) {
+            RailDriverCalibration.ReverserCal r = (RailDriverCalibration.ReverserCal) pojo;
+            r.forward = readLegacyInt(section, "forward");
+            r.neutral = readLegacyInt(section, "neutral");
+            r.reverse = readLegacyInt(section, "reverse");
+        } else if (pojo instanceof RailDriverCalibration.ThrottleCal) {
+            RailDriverCalibration.ThrottleCal t = (RailDriverCalibration.ThrottleCal) pojo;
+            t.fullThrottle = readLegacyInt(section, "fullThrottle");
+            t.idleLow = readLegacyInt(section, "idleLow");
+            t.idleHigh = readLegacyInt(section, "idleHigh");
+            t.fullDynBrake = readLegacyInt(section, "fullDynBrake");
+        } else if (pojo instanceof RailDriverCalibration.AutoBrakeCal) {
+            RailDriverCalibration.AutoBrakeCal a = (RailDriverCalibration.AutoBrakeCal) pojo;
+            a.released = readLegacyInt(section, "released");
+            a.sup = readLegacyInt(section, "sup");
+            a.cs = readLegacyInt(section, "cs");
+            a.emg = readLegacyInt(section, "emg");
+        } else if (pojo instanceof RailDriverCalibration.IndepBrakeCal) {
+            RailDriverCalibration.IndepBrakeCal i = (RailDriverCalibration.IndepBrakeCal) pojo;
+            i.fullRelease = readLegacyInt(section, "fullRelease");
+            i.fullApplication = readLegacyInt(section, "fullApplication");
+            i.bailoffRest = readLegacyInt(section, "bailoffRest");
+            i.bailoffPressed = readLegacyInt(section, "bailoffPressed");
+        } else if (pojo instanceof RailDriverCalibration.WiperCal) {
+            RailDriverCalibration.WiperCal w = (RailDriverCalibration.WiperCal) pojo;
+            w.off = readLegacyInt(section, "off");
+            w.slow = readLegacyInt(section, "slow");
+            w.full = readLegacyInt(section, "full");
+        } else if (pojo instanceof RailDriverCalibration.LightsCal) {
+            RailDriverCalibration.LightsCal l = (RailDriverCalibration.LightsCal) pojo;
+            l.off = readLegacyInt(section, "off");
+            l.dim = readLegacyInt(section, "dim");
+            l.full = readLegacyInt(section, "full");
+        }
+    }
+
+    @CheckForNull
+    private static Integer readLegacyInt(
+            @Nonnull org.jdom2.Element parent, @Nonnull String name) {
+        org.jdom2.Element child = parent.getChild(name);
+        if (child == null) return null;
+        String text = child.getTextTrim();
+        if (text == null || text.isEmpty()) return null;
+        try {
+            int v = Integer.parseInt(text);
+            return (v >= 0 && v <= 255) ? v : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     // ======================== Logging ========================

@@ -137,10 +137,10 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
 
     /**
      * Static accessor for the most recently constructed RailDriverMenuItem,
-     * used by {@link RailDriverSettingsFrame} to subscribe to live byte
-     * events and to trigger a calibration reload after Save. Returns null
-     * if the user has not yet constructed an instance (i.e. the Debug menu
-     * with the RailDriver entry has not been opened).
+     * used by the Preferences panels to subscribe to live byte events
+     * and to trigger calibration reloads. Returns null if the user has
+     * not yet constructed an instance (i.e. the Debug menu with the
+     * RailDriver entry has not been opened).
      */
     private static RailDriverMenuItem instance = null;
 
@@ -163,6 +163,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         super();
         initGUI(name);
         setupListeners();
+        wirePreferencesManagerEvents();
         instance = this;
     }
 
@@ -189,6 +190,75 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 attachThrottleWindow();
             }
         });
+    }
+
+    /**
+     * Subscribes to {@link RailDriverPreferencesManager} PCS events so
+     * that settings/calibration changes made via the JMRI Preferences
+     * window are pushed to the running engine immediately.
+     */
+    private void wirePreferencesManagerEvents() {
+        RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
+                RailDriverPreferencesManager.class);
+        if (mgr == null) {
+            log.debug("RailDriverPreferencesManager not yet available; "
+                    + "PCS wiring deferred until first getCalibration() call.");
+            return;
+        }
+        mgr.addPropertyChangeListener(evt -> {
+            String prop = evt.getPropertyName();
+            if (RailDriverPreferencesManager.SETTINGS_CHANGED.equals(prop)) {
+                onSettingsChanged();
+            } else if (RailDriverPreferencesManager.CALIBRATION_CHANGED.equals(prop)) {
+                onCalibrationChanged();
+            }
+        });
+    }
+
+    /**
+     * Called when the PreferencesManager fires {@code "settingsChanged"}.
+     * Pushes the new settings to the engine and fires PCS events for
+     * enabled-state changes.
+     */
+    private void onSettingsChanged() {
+        RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
+                RailDriverPreferencesManager.class);
+        if (mgr == null) return;
+
+        boolean oldPersisted = false;
+        boolean oldLive = false;
+        if (calibration != null) {
+            oldPersisted = calibration.semiRealistic().persistedEnabled;
+            oldLive = calibration.semiRealistic().liveEnabled;
+        }
+        // Re-read from the manager so we pick up the new settings.
+        calibration = mgr.getCalibration();
+        SemiRealisticSettings s = calibration.semiRealistic();
+
+        if (engine != null) {
+            ThreadingUtil.runOnLayout(() -> engine.updateSettings(s));
+        }
+        if (oldPersisted != s.persistedEnabled) {
+            firePropertyChange("persistedEnabledChanged", oldPersisted, s.persistedEnabled);
+        }
+        if (oldLive != s.liveEnabled) {
+            firePropertyChange("liveEnabledChanged", oldLive, s.liveEnabled);
+        }
+        log.info("RailDriver settings updated from PreferencesManager.");
+    }
+
+    /**
+     * Called when the PreferencesManager fires {@code "calibrationChanged"}.
+     * Invalidates the cached calibration so the next polling-thread read
+     * picks up the new detent values.
+     */
+    private void onCalibrationChanged() {
+        RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
+                RailDriverPreferencesManager.class);
+        if (mgr != null) {
+            calibration = mgr.getCalibration();
+        }
+        log.info("RailDriver calibration updated from PreferencesManager.");
     }
 
     protected void setupHidServices() {
@@ -251,10 +321,10 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      * calibration if not already loaded, and starts the polling thread
      * if not already running. Does not open or attach a throttle window.
      * <p>
-     * Both the throttle menu's action listener and
-     * {@link RailDriverSettingsAction} call this to bring the device
-     * live without needing a throttle window. Calibration can therefore
-     * run with or without an active throttle.
+     * Both the throttle menu's action listener and the Preferences
+     * calibration panel call this to bring the device live without
+     * needing a throttle window. Calibration can therefore run with
+     * or without an active throttle.
      *
      * @return true if the device is open and polling at return; false if
      *         hid4java init failed or no matching device is connected.
@@ -281,7 +351,13 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             }
         }
         if (calibration == null) {
-            calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
+            RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
+                    RailDriverPreferencesManager.class);
+            if (mgr != null) {
+                calibration = mgr.getCalibration();
+            } else {
+                calibration = new RailDriverCalibration();
+            }
         }
         setLEDs("Pro");
         speakerOn();
@@ -1249,28 +1325,24 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     @Nonnull
     public RailDriverCalibration getCalibration() {
         if (calibration == null) {
-            // Primary path: use PreferencesManager (AuxiliaryConfiguration).
             RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
                     RailDriverPreferencesManager.class);
             if (mgr != null) {
                 calibration = mgr.getCalibration();
             }
-            // Fallback: legacy file-based load (pre-Phase-8 path).
             if (calibration == null) {
-                calibration = RailDriverCalibration.loadOrDefault(
-                        RailDriverCalibration.getDefaultFile());
+                calibration = new RailDriverCalibration();
             }
         }
         return calibration;
     }
 
     /**
-     * Re-reads the calibration file from disk. Called by the unified
-     * settings frame after Save so subsequent control movements use the
-     * new values without restarting JMRI. Stage 2: also pushes the new
-     * settings to the engine and fires {@code "liveEnabledChanged"} /
-     * {@code "persistedEnabledChanged"} when those values changed across
-     * the reload.
+     * Re-reads the calibration from the PreferencesManager. Called after
+     * Save so subsequent control movements use the new values without
+     * restarting JMRI. Also pushes the new settings to the engine and
+     * fires {@code "liveEnabledChanged"} / {@code "persistedEnabledChanged"}
+     * when those values changed across the reload.
      */
     public void reloadCalibration() {
         boolean oldPersisted = false;
@@ -1279,14 +1351,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             oldPersisted = calibration.semiRealistic().persistedEnabled;
             oldLive = calibration.semiRealistic().liveEnabled;
         }
-        // Re-read from PreferencesManager if available, else legacy file.
         RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
                 RailDriverPreferencesManager.class);
         if (mgr != null) {
             calibration = mgr.getCalibration();
         } else {
-            calibration = RailDriverCalibration.loadOrDefault(
-                    RailDriverCalibration.getDefaultFile());
+            calibration = new RailDriverCalibration();
         }
         SemiRealisticSettings s = calibration.semiRealistic();
         log.info("RailDriver calibration reloaded.");
@@ -1318,15 +1388,10 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      * write XML; persisted state is unchanged. The session-only flag resets
      * to {@code persistedEnabled} on next launch.
      * <p>
-     * The Settings-tab Save/Apply path is implemented inside
-     * {@link RailDriverSettingsFrame#doSaveOrApply(boolean)} as a direct
-     * {@code working.save(file)} + {@link #reloadCalibration()} sequence;
-     * there is no equivalent {@code applyPersistedEnabled} entry point on
-     * this class, because the Settings tab needs to persist the entire
-     * calibration (including the calibration tab's per-axis bytes), not
-     * just the {@code persistedEnabled} flag. {@code reloadCalibration}
-     * fires {@code persistedEnabledChanged} and {@code liveEnabledChanged}
-     * when the values change across the reload.
+     * Persistence of the {@code persistedEnabled} flag is handled by the
+     * JMRI Preferences panels via {@link RailDriverPreferencesManager}.
+     * {@code reloadCalibration} fires {@code persistedEnabledChanged} and
+     * {@code liveEnabledChanged} when the values change across the reload.
      */
     public void setSemiRealisticEnabledSessionOnly(boolean enabled) {
         SemiRealisticSettings s = getCalibration().semiRealistic();
