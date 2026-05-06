@@ -583,7 +583,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 byte[] buff_new = new byte[14]; // read buffer
                 int ret;
                 try {
-                    ret = dev.read(buff_new);
+                    // Use a 50ms timeout so the loop's isInterrupted() check
+                    // runs regularly and Thread.interrupt() can cleanly stop
+                    // the thread during JMRI shutdown. The no-timeout overload
+                    // (read(byte[])) blocks indefinitely in native code and
+                    // does not respond to Java's interrupt mechanism.
+                    ret = dev.read(buff_new, 50);
                 } catch (IllegalStateException ex) {
                     log.warn("RailDriver HID device read failed; pausing polling", ex);
                     try { TimeUnit.MILLISECONDS.sleep(500); }
