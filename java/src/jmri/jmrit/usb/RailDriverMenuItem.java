@@ -555,7 +555,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     continue;
                 }
                 try {
-                    if (!dev.isOpen()) {
+                    if (dev.isClosed()) {
                         dev.open();
                     }
                 } catch (IllegalStateException ex) {
@@ -833,7 +833,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         }
         // Ensure device is open after an attach/detach event
         try {
-            if (!dev.isOpen()) {
+            if (dev.isClosed()) {
                 dev.open();
             }
         } catch (IllegalStateException ex) {
