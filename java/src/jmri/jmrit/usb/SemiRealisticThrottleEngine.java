@@ -120,10 +120,16 @@ public final class SemiRealisticThrottleEngine {
     /** Demanded line value from the Auto Brake lever, 0..100. */
     private int demandedLineValue = 100;
 
-    /** Epoch counter for the air-repeater pipeline. Bumped by
-     *  {@link #emergencyHalt} and {@link #detachThrottle} so stale air
-     *  callbacks cancel. */
-    private int airEpoch = 0;
+    /** Epoch counter for the line repeater. Bumped by
+     *  {@link #startLineRepeater}, {@link #emergencyHalt}, and
+     *  {@link #detachThrottle} so stale line-recharge callbacks cancel
+     *  without affecting the reservoir repeater. */
+    private int airLineEpoch = 0;
+    /** Epoch counter for the reservoir repeater. Bumped only by
+     *  {@link #emergencyHalt} and {@link #detachThrottle} — never by
+     *  {@link #startLineRepeater}, so the reservoir keeps refilling
+     *  while the line repeater restarts. */
+    private int airReservoirEpoch = 0;
     /** True when the line repeater is actively recharging. */
     private boolean airLineRecharging = false;
     /** True when the reservoir repeater is actively refilling. */
@@ -189,7 +195,8 @@ public final class SemiRealisticThrottleEngine {
     public void detachThrottle() {
         rampEpoch++;
         deferredEmitEpoch++;
-        airEpoch++;
+        airLineEpoch++;
+        airReservoirEpoch++;
         this.throttle = null;
         this.settings = null;
         this.attached = false;
@@ -244,7 +251,8 @@ public final class SemiRealisticThrottleEngine {
     public void emergencyHalt() {
         rampEpoch++;
         deferredEmitEpoch++;
-        airEpoch++;
+        airLineEpoch++;
+        airReservoirEpoch++;
         currentSpeedStep = 0;
         targetSpeedStep = 0;
         targetAcceleration = 0;
@@ -626,14 +634,14 @@ public final class SemiRealisticThrottleEngine {
     private void startLineRepeater() {
         if (settings == null || settings.airRefreshRateMs <= 0) return;
         airLineRecharging = true;
-        airEpoch++;
-        final int epoch = airEpoch;
+        airLineEpoch++;
+        final int epoch = airLineEpoch;
         ThreadingUtil.runOnLayoutDelayed(
                 () -> lineRepeaterTick(epoch), settings.airRefreshRateMs);
     }
 
     private void lineRepeaterTick(int epoch) {
-        if (epoch != airEpoch) return; // stale
+        if (epoch != airLineEpoch) return; // stale
         if (!attached || settings == null) return;
 
         // Stop if line has reached demanded level.
@@ -692,14 +700,13 @@ public final class SemiRealisticThrottleEngine {
     private void startReservoirRepeater() {
         if (settings == null || settings.airRefreshRateMs <= 0) return;
         airReservoirRecharging = true;
-        // Reservoir uses the same airEpoch — bumped on detach/E-stop.
-        final int epoch = airEpoch;
+        final int epoch = airReservoirEpoch;
         ThreadingUtil.runOnLayoutDelayed(
                 () -> reservoirRepeaterTick(epoch), settings.airRefreshRateMs);
     }
 
     private void reservoirRepeaterTick(int epoch) {
-        if (epoch != airEpoch) return; // stale
+        if (epoch != airReservoirEpoch) return; // stale
         if (!attached || settings == null) return;
 
         if (airReservoirPct >= 100) {
