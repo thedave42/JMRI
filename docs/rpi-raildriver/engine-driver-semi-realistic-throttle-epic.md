@@ -12,7 +12,7 @@ The current in-progress physics engine (`SemiRealisticThrottleEngine`) uses a Da
 
 ## Scope
 
-All work is contained within the JMRI desktop codebase. The RailDriver USB integration, throttle window plumbing, and JMRI Preferences framework are the primary integration surfaces. No changes to EngineDriver, WiThrottle protocol, or DCC decoder behaviour are in scope.
+All work is contained within the JMRI desktop codebase. The RailDriver USB integration, throttle window plumbing, and bespoke settings frame are the primary integration surfaces. No changes to EngineDriver, WiThrottle protocol, or DCC decoder behaviour are in scope.
 
 ---
 
@@ -278,43 +278,6 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ---
 
-### Feature 6: JMRI Preferences Integration (Settings UI)
-
-**Description:** Retire the bespoke `RailDriverSettingsFrame` and deliver settings through two `jmri.swing.PreferencesPanel` SPI providers grouped under "RailDriver" in the standard JMRI Preferences window. A new `RailDriverPreferencesManager` (`jmri.spi.PreferencesManager` SPI provider) owns persistence and the in-memory settings records.
-
-**Panels:**
-
-| Panel                                       | Role                                     | Persistence space |
-|---------------------------------------------|------------------------------------------|-------------------|
-| `RailDriverSemiRealisticPreferencesPanel`   | Operator-feel preferences (ramp, brake, air, load, decoder integration) | Shared            |
-| `RailDriverCalibrationPreferencesPanel`     | Per-machine HID calibration (existing visual-bar UI) | Private           |
-
-**Live-apply settings model.** When the operator saves settings via the JMRI Preferences window, the `RailDriverPreferencesManager` persists the new values and fires a `"settingsChanged"` PCS event. `RailDriverMenuItem` subscribes to this event and, if an engine is currently attached, pushes the new `SemiRealisticSettings` snapshot to the engine via `updateSettings()` on the layout thread. The engine replaces its internal settings copy and calls `recomputeTarget()` so the new values (ramp delays, brake parameters, load slider position, etc.) take effect on the next ramp tick — no close-and-reopen required.
-
-**Exception: the `enabled` flag.** The dispatch strategy (engine vs direct) is still decided once at `notifyAddressThrottleFound` and fixed for the throttle frame's lifetime, because switching dispatch strategy mid-session while a loco is moving would require complex handover logic. Changes to the `enabled` checkbox require closing and reopening the throttle. A `JmriJOptionPane` alert surfaces this only when `enabled` actually changed across a save.
-
-**Calibration follows the same live-apply model.** When the operator saves calibration, the manager fires a `"calibrationChanged"` PCS event. `RailDriverMenuItem` subscribes and picks up the new axis detents for subsequent HID byte → step conversions. No close-and-reopen required.
-
-**User Stories:**
-
-- As an operator, I want to configure semi-realistic throttle settings through the standard JMRI Preferences window, not a separate custom frame.
-- As an operator, I want validation feedback when I enter invalid settings (e.g. brake thresholds out of order).
-- As an operator, I want a clear "Reset to defaults" button that restores semi-realistic fields to default values.
-- As an operator, I want saved settings to take effect immediately on my running throttle without closing and reopening it.
-- As an operator, I want to be told when I change the enable/disable mode that I need to reopen the throttle for that specific change.
-
-**Acceptance Criteria:**
-- [ ] Both panels appear under a "RailDriver" group in JMRI Preferences.
-- [ ] Save/Apply/Cancel use the standard JMRI Preferences framework — no custom button bar.
-- [ ] All blocking validation rules from the spec are enforced on save.
-- [ ] Non-blocking warnings are surfaced via status labels.
-- [ ] Saving settings fires `"settingsChanged"` PCS event; `RailDriverMenuItem` pushes new settings to any attached engine immediately.
-- [ ] Saving calibration fires `"calibrationChanged"` PCS event; `RailDriverMenuItem` picks up new axis detents immediately.
-- [ ] The engine's `updateSettings()` replaces its internal copy and calls `recomputeTarget()` so new values take effect on the next ramp tick.
-- [ ] `JmriJOptionPane` alert fires only when the `enabled` flag changed, telling the operator to reopen the throttle for mode changes.
-- [ ] `isDirty()` tracks changes correctly across all input controls.
-- [ ] The `enabled` checkbox state is persisted; dispatch strategy (engine vs direct) is fixed at bind time.
-
 ---
 
 ### Feature 7: Profile-Aware Persistence (`AuxiliaryConfiguration`)
@@ -371,7 +334,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ### Feature 9: Throttle-Toolbar Connectivity Indicator (Jynstrument)
 
-**Description:** A passive RailDriver-USB connectivity indicator on the throttle window toolbar. Two visual states only: active (connected) or greyed (disconnected). Clicking opens JMRI Preferences → RailDriver. Not mode-aware.
+**Description:** A passive RailDriver-USB connectivity indicator on the throttle window toolbar. Two visual states only: active (connected) or greyed (disconnected). Clicking opens the RailDriver Settings window. Not mode-aware.
 
 **User Stories:**
 
@@ -380,7 +343,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 **Acceptance Criteria:**
 - [ ] Active icon when `isRailDriverConnected()` is true; greyed when false.
-- [ ] Left-click opens JMRI Preferences → RailDriver group.
+- [ ] Left-click opens the RailDriver Settings window.
 - [ ] Right-click shows a popup with a "Settings..." item that does the same.
 - [ ] Both click paths work in both visual states (no `setEnabled(false)`).
 - [ ] `quit()` deregisters the PCS listener (no listener leak).
@@ -396,12 +359,8 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 - `CalibrationTabPanel`, `CalibrationBar` — calibration UI components
 - `Bundle.properties` (+ 5 locale variants)
 - `RailDriverMenuItem` — button mapping, axis decoding, lifecycle wiring
+- `RailDriverSettingsFrame`, `RailDriverSettingsAction`, `SemiRealisticSettingsPanel` — bespoke settings UI
 - `apps.jmrit.DebugMenu` import references updated
-
-**Retired:**
-- `RailDriverSettingsFrame` — replaced by PreferencesPanel SPI providers
-- `RailDriverSettingsAction` — replaced by standard Preferences navigation
-- `SemiRealisticSettingsPanel` — replaced by `RailDriverSemiRealisticPreferencesPanel`
 
 **User Stories:**
 
@@ -454,7 +413,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
   - **Dyn-brake low-speed taper** (Feature 2c) — EngineDriver has no dynamic brake input; we add one with a prototype-like low-speed fade.
   - **Per-source brake load scaling** (Feature 2e) — EngineDriver applies load uniformly because it has a single brake slider. We differentiate: loco-only brakes (independent, dynamic) are reduced by load; train-wide braking (auto/air) is load-invariant. Justified by the RailDriver's separate physical levers and real-locomotive physics.
 - **JMRI threading conventions:** All timed events through `ThreadingUtil`, never `ScheduledExecutorService` or `java.util.Timer`.
-- **JMRI SPI patterns:** Settings UI via `PreferencesPanel`, persistence via `PreferencesManager`, both discovered via `ServiceLoader`.
+- **JMRI SPI patterns:** Persistence via `PreferencesManager`, discovered via `ServiceLoader`.
 - **Backward compatibility:** Legacy calibration files must migrate without data loss (detents preserved, physics coefficients discarded with warning).
 - **Live-apply for settings and calibration:** Saved settings and calibration are pushed to any attached engine / dispatcher immediately via PCS events. The engine accepts mid-session updates via `updateSettings()` on the layout thread. Exception: the `enabled` flag (dispatch strategy) is fixed at bind time — changing it requires closing and reopening the throttle.
 
