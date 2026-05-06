@@ -63,6 +63,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     //private final boolean invokeOnMenuOnly = true;
 
     private Thread thread = null;
+    private boolean shutdownRegistered = false;
     private ThrottleWindow throttleWindow = null;
     private ThrottleFrame activeThrottleFrame = null;
     private AddressPanel attachedAddressPanel = null;
@@ -289,7 +290,49 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         if (thread == null || !thread.isAlive()) {
             startPollingThread();
         }
+        if (!shutdownRegistered) {
+            shutdownRegistered = true;
+            InstanceManager.getDefault(ShutDownManager.class).register(
+                    this::stopPollingAndReleaseDevice);
+        }
         return true;
+    }
+
+    /**
+     * Cleanly stops the polling thread and releases the HID device.
+     * Registered with {@link ShutDownManager} so JMRI can shut down
+     * without the non-exiting polling thread blocking the JVM, and so
+     * the USB port is released for the next JMRI session.
+     */
+    private void stopPollingAndReleaseDevice() {
+        Thread t = thread;
+        if (t != null && t.isAlive()) {
+            t.interrupt();
+            try {
+                t.join(2000);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+            thread = null;
+        }
+        HidDevice dev = hidDevice;
+        if (dev != null) {
+            try {
+                dev.close();
+            } catch (Exception ex) {
+                log.debug("Error closing HID device during shutdown", ex);
+            }
+            hidDevice = null;
+        }
+        if (hidServices != null) {
+            try {
+                hidServices.shutdown();
+            } catch (Exception ex) {
+                log.debug("Error shutting down HID services", ex);
+            }
+            hidServices = null;
+        }
+        log.info("RailDriver polling stopped and HID device released.");
     }
 
     /** Returns true while the device polling thread is alive. */
@@ -505,7 +548,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     }
 
     private void startPollingThread() {
-        thread = new Thread(() -> {
+        thread = new Thread(ThreadingUtil.getJmriThreadGroup(), () -> {
             byte[] buff_old = new byte[14]; // read buffer
             Arrays.fill(buff_old, (byte) 0);
             // Use Thread.currentThread() so the loop condition does not
@@ -603,6 +646,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             }
         });
         thread.setName("RailDriver");
+        thread.setDaemon(true);
         thread.start();
     }
 
