@@ -1,7 +1,6 @@
 package jmri.jmrit.usb;
 
 
-import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.event.ActionEvent;
@@ -77,16 +76,6 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
      * the engine is unreachable.
      */
     private SemiRealisticThrottleEngine engine = null;
-
-    /**
-     * Air status panel installed in the throttle window when
-     * semi-realistic mode is enabled. {@code null} when not installed.
-     */
-    private RailDriverAirStatusPanel airStatusPanel = null;
-
-    /** The ThrottleWindow that currently owns {@link #airStatusPanel},
-     *  tracked so the panel can be moved/removed if the window changes. */
-    private ThrottleWindow airStatusOwner = null;
 
     /**
      * True between {@link #requestAttachToThrottle} and the matching
@@ -465,26 +454,22 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     }
 
     /**
-     * Installs the {@link RailDriverAirStatusPanel} at the bottom of the
-     * throttle window when semi-realistic mode is enabled. Idempotent:
-     * skips if already installed on the current throttle window.
+     * Subscribes the {@link RailDriverAirStatusPanel} (which lives inside
+     * the {@code ThrottleFrame}) to the semi-realistic engine's air state
+     * events, and makes it visible. Idempotent — skips if already wired
+     * to the same engine.
      * <p>
-     * Must be called on the EDT after engine and throttle window are set.
+     * Must be called on the EDT after engine and throttle frame are set.
      */
     private void installAirStatusPanel() {
-        if (throttleWindow == null || engine == null) return;
+        if (activeThrottleFrame == null || engine == null) return;
         if (!isSemiRealisticLiveEnabled()) return;
 
-        // Already installed on this window — nothing to do.
-        if (airStatusPanel != null && airStatusOwner == throttleWindow) return;
-
-        // Installed on a different window — clean up first.
-        if (airStatusPanel != null) {
-            removeAirStatusPanel();
-        }
+        RailDriverAirStatusPanel panel = activeThrottleFrame.getAirStatusPanel();
+        if (panel == null) return;
 
         SemiRealisticSettings s = getCalibration().semiRealistic();
-        airStatusPanel = new RailDriverAirStatusPanel(engine, s, (newPos) -> {
+        panel.subscribeToEngine(engine, s, (newPos) -> {
             SemiRealisticSettings snapshot = new SemiRealisticSettings(getCalibration().semiRealistic());
             snapshot.loadSliderPosition = newPos;
             getCalibration().semiRealistic().loadSliderPosition = newPos;
@@ -494,28 +479,28 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                 }
             });
         });
-        airStatusOwner = throttleWindow;
-        throttleWindow.add(airStatusPanel, BorderLayout.PAGE_END);
-        throttleWindow.revalidate();
-        throttleWindow.repaint();
-        log.debug("Air status panel installed on throttle window");
+        panel.setVisible(true);
+        if (throttleWindow != null) {
+            throttleWindow.getViewAirStatusPanel().setSelected(true);
+        }
+        log.debug("Air status panel subscribed to engine and made visible");
     }
 
     /**
-     * Removes and disposes the {@link RailDriverAirStatusPanel} from the
-     * throttle window. Safe to call when the panel is not installed.
+     * Unsubscribes the air status panel from the engine and hides it.
+     * Safe to call when the panel is not connected.
      */
     private void removeAirStatusPanel() {
-        if (airStatusPanel != null) {
-            airStatusPanel.dispose();
-            if (airStatusOwner != null) {
-                airStatusOwner.remove(airStatusPanel);
-                airStatusOwner.revalidate();
-                airStatusOwner.repaint();
+        if (activeThrottleFrame != null) {
+            RailDriverAirStatusPanel panel = activeThrottleFrame.getAirStatusPanel();
+            if (panel != null) {
+                panel.unsubscribeFromEngine();
+                panel.setVisible(false);
+                if (throttleWindow != null) {
+                    throttleWindow.getViewAirStatusPanel().setSelected(false);
+                }
+                log.debug("Air status panel unsubscribed from engine and hidden");
             }
-            airStatusPanel = null;
-            airStatusOwner = null;
-            log.debug("Air status panel removed from throttle window");
         }
     }
 
@@ -1360,12 +1345,11 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             engine.updateSettings(s);
         }
         // Update the air status panel's slider labels/range if settings changed.
-        if (airStatusPanel != null) {
-            ThreadingUtil.runOnGUIEventually(() -> {
-                if (airStatusPanel != null) {
-                    airStatusPanel.updateSettings(s);
-                }
-            });
+        if (activeThrottleFrame != null) {
+            RailDriverAirStatusPanel panel = activeThrottleFrame.getAirStatusPanel();
+            if (panel != null) {
+                ThreadingUtil.runOnGUIEventually(() -> panel.updateSettings(s));
+            }
         }
         if (oldPersisted != s.persistedEnabled) {
             firePropertyChange("persistedEnabledChanged", oldPersisted, s.persistedEnabled);

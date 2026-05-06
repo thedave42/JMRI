@@ -42,6 +42,7 @@ public class ThrottleWindow extends JmriJFrame implements ThrottleControllersUIC
     private JCheckBoxMenuItem viewFunctionPanel;
     private JCheckBoxMenuItem viewAddressPanel;
     private JCheckBoxMenuItem viewSpeedPanel;
+    private JCheckBoxMenuItem viewAirStatusPanel;
     private JMenuItem viewAllButtons;
     private JMenuItem fileMenuSave;
     private JMenuItem editMenuExportRoster;
@@ -193,11 +194,13 @@ public class ThrottleWindow extends JmriJFrame implements ThrottleControllersUIC
         viewControlPanel.setEnabled(isEditMode);
         viewFunctionPanel.setEnabled(isEditMode);
         viewSpeedPanel.setEnabled(isEditMode);
+        viewAirStatusPanel.setEnabled(isEditMode);
         if (isEditMode) {
             viewAddressPanel.setSelected(getCurrentThrottleFrame().getAddressPanel().isVisible());
             viewControlPanel.setSelected(getCurrentThrottleFrame().getControlPanel().isVisible());
             viewFunctionPanel.setSelected(getCurrentThrottleFrame().getFunctionPanel().isVisible());
             viewSpeedPanel.setSelected(getCurrentThrottleFrame().getSpeedPanel().isVisible());
+            viewAirStatusPanel.setSelected(getCurrentThrottleFrame().getAirStatusPanel().isVisible());
         }
         fileMenuSave.setEnabled(getCurrentThrottleFrame().getLastUsedSaveFile() != null || getCurrentThrottleFrame().getRosterEntry() != null);
         editMenuExportRoster.setEnabled(getCurrentThrottleFrame().getRosterEntry() != null);
@@ -468,6 +471,10 @@ public class ThrottleWindow extends JmriJFrame implements ThrottleControllersUIC
         viewSpeedPanel.setSelected(false);
         viewSpeedPanel.addItemListener(e -> getCurrentThrottleFrame().getSpeedPanel().setVisible(e.getStateChange() == ItemEvent.SELECTED));
 
+        viewAirStatusPanel = new JCheckBoxMenuItem(Bundle.getMessage("ThrottleMenuViewAirStatusPanel"));
+        viewAirStatusPanel.setSelected(false);
+        viewAirStatusPanel.addItemListener(e -> getCurrentThrottleFrame().getAirStatusPanel().setVisible(e.getStateChange() == ItemEvent.SELECTED));
+
         viewAllButtons = new JMenuItem(Bundle.getMessage("ThrottleMenuViewAllFunctionButtons"));
         viewAllButtons.addActionListener(new AbstractAction() {
 
@@ -502,6 +509,7 @@ public class ThrottleWindow extends JmriJFrame implements ThrottleControllersUIC
         viewMenu.add(viewControlPanel);
         viewMenu.add(viewFunctionPanel);
         viewMenu.add(viewSpeedPanel);
+        viewMenu.add(viewAirStatusPanel);
         viewMenu.addSeparator();
         viewMenu.add(viewAllButtons);
         viewMenu.add(makeAllComponentsInBounds);
@@ -606,6 +614,10 @@ public class ThrottleWindow extends JmriJFrame implements ThrottleControllersUIC
 
     public JCheckBoxMenuItem getViewSpeedPanel() {
         return viewSpeedPanel;
+    }
+
+    public JCheckBoxMenuItem getViewAirStatusPanel() {
+        return viewAirStatusPanel;
     }
     
     private void updateCurentThrottleFrame() {
