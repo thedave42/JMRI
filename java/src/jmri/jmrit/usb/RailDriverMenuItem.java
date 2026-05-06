@@ -495,20 +495,31 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         return false;
     }
 
-    /** Auto-install the {@code RailDriverModeToggle.jyn} Jynstrument onto the
-     *  throttle toolbar if not already present. Errors are tolerated — this
-     *  is a UX nicety, not a correctness requirement. */
+    /** Auto-install the RailDriver Jynstruments onto the throttle toolbar
+     *  if not already present. Each install is independent so one failure
+     *  does not prevent the other. Errors are tolerated — this is a UX
+     *  nicety, not a correctness requirement. */
     private void autoInstallJynstrument(ThrottleWindow tw) {
         if (tw == null) return;
-        try {
-            if (hasJynstrumentInstalled(tw.getContentPane(), "RailDriverModeToggle")) {
-                return; // already installed (saved-layout restore or repeat attach)
+
+        if (!hasJynstrumentInstalled(tw.getContentPane(), "RailDriverModeToggle")) {
+            try {
+                String modePath = FileUtil.getProgramPath()
+                        + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn";
+                tw.ynstrument(modePath);
+            } catch (RuntimeException ex) {
+                log.warn("Auto-install of RailDriverModeToggle Jynstrument failed", ex);
             }
-            String jynPath = FileUtil.getProgramPath()
-                    + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverModeToggle.jyn";
-            tw.ynstrument(jynPath);
-        } catch (RuntimeException ex) {
-            log.warn("Auto-install of RailDriverModeToggle Jynstrument failed", ex);
+        }
+
+        if (!hasJynstrumentInstalled(tw.getContentPane(), "RailDriverConnectivityIndicator")) {
+            try {
+                String indicatorPath = FileUtil.getProgramPath()
+                        + "jython/Jynstruments/ThrottleWindowToolBar/RailDriverConnectivityIndicator.jyn";
+                tw.ynstrument(indicatorPath);
+            } catch (RuntimeException ex) {
+                log.warn("Auto-install of RailDriverConnectivityIndicator Jynstrument failed", ex);
+            }
         }
     }
 
