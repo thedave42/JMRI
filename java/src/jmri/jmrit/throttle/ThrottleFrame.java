@@ -36,6 +36,7 @@ import jmri.jmrit.XmlFile;
 import jmri.jmrit.jython.Jynstrument;
 import jmri.jmrit.jython.JynstrumentFactory;
 import jmri.jmrit.roster.RosterEntry;
+import jmri.jmrit.usb.swing.RailDriverAirStatusPanel;
 import jmri.util.FileUtil;
 import jmri.util.iharder.dnd.URIDrop;
 import jmri.util.swing.JmriJOptionPane;
@@ -66,7 +67,8 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
     private static final int CONTROL_PANEL_INDEX = 1;
     private static final int FUNCTION_PANEL_INDEX = 2;
     private static final int SPEED_DISPLAY_INDEX = 3;
-    private static final int NUM_FRAMES = 4;
+    private static final int AIR_STATUS_PANEL_INDEX = 4;
+    private static final int NUM_FRAMES = 5;
 
     private JInternalFrame[] frameList;
     private int activeFrame;
@@ -79,6 +81,7 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
     private BackgroundPanel backgroundPanel;
     private FrameListener frameListener;
     private SpeedPanel speedPanel;
+    private RailDriverAirStatusPanel airStatusPanel;
 
     private String title;
     private String lastUsedSaveFile = null;
@@ -145,6 +148,10 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
 
     public SpeedPanel getSpeedPanel() {
         return speedPanel;
+    }
+
+    public RailDriverAirStatusPanel getAirStatusPanel() {
+        return airStatusPanel;
     }
 
     /**
@@ -378,6 +385,16 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
         controlPanel.setAddressPanel(addressPanel);
         speedPanel.setAddressPanel(addressPanel);
 
+        airStatusPanel = new RailDriverAirStatusPanel();
+        airStatusPanel.setResizable(true);
+        airStatusPanel.setVisible(false);
+        airStatusPanel.setClosable(true);
+        airStatusPanel.setIconifiable(true);
+        airStatusPanel.setTitle(Bundle.getMessage("ThrottleMenuViewAirStatusPanel"));
+        airStatusPanel.addInternalFrameListener(frameListener);
+        airStatusPanel.setAddressPanel(addressPanel);
+        airStatusPanel.pack();
+
         if (controlPanel.getHeight() < functionPanel.getHeight() + addressPanel.getHeight()) {
             controlPanel.setSize(controlPanel.getWidth(), functionPanel.getHeight() + addressPanel.getHeight());
         }
@@ -391,15 +408,22 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
         speedPanel.setSize(addressPanel.getWidth() + controlPanel.getWidth(), addressPanel.getHeight() / 2);
         speedPanel.setLocation(0, controlPanel.getHeight());
 
+        // Size air status panel to match the control panel height; position
+        // to the right of the existing panels.
+        airStatusPanel.setSize(200, controlPanel.getHeight());
+        airStatusPanel.setLocation(controlPanel.getWidth() + functionPanel.getWidth(), 0);
+
         addressPanel.addAddressListener(controlPanel);
         addressPanel.addAddressListener(functionPanel);
         addressPanel.addAddressListener(speedPanel);
+        addressPanel.addAddressListener(airStatusPanel);
         addressPanel.addAddressListener(this);
 
         add(controlPanel, PANEL_LAYER_FRAME);
         add(functionPanel, PANEL_LAYER_FRAME);
         add(addressPanel, PANEL_LAYER_FRAME);
         add(speedPanel, PANEL_LAYER_FRAME);
+        add(airStatusPanel, PANEL_LAYER_FRAME);
 
         backgroundPanel = new BackgroundPanel();
         backgroundPanel.setAddressPanel(addressPanel); // reusing same way to do it than existing thing in functionPanel
@@ -415,6 +439,7 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
         frameList[CONTROL_PANEL_INDEX] = controlPanel;
         frameList[FUNCTION_PANEL_INDEX] = functionPanel;
         frameList[SPEED_DISPLAY_INDEX] = speedPanel;
+        frameList[AIR_STATUS_PANEL_INDEX] = airStatusPanel;
         activeFrame = ADDRESS_PANEL_INDEX;
 
         setPreferredSize(new Dimension(Math.max(controlPanel.getWidth() + functionPanel.getWidth(), controlPanel.getWidth() + addressPanel.getWidth()),
@@ -657,6 +682,7 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
         functionPanel.destroy();
         speedPanel.destroy();
         backgroundPanel.destroy();
+        airStatusPanel.destroy();
         // dispose of this last because it will release and destroy the throttle.
         addressPanel.destroy();
     }
@@ -704,6 +730,9 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
             } else if (e.getSource() == speedPanel) {
                 throttleWindow.getViewSpeedPanel().setSelected(false);
                 speedPanel.setVisible(false);
+            } else if (e.getSource() == airStatusPanel) {
+                throttleWindow.getViewAirStatusPanel().setSelected(false);
+                airStatusPanel.setVisible(false);
             } else {
                 try { // #JYNSTRUMENT#, Very important, clean the Jynstrument
                     if ((e.getSource() instanceof JInternalFrame)) {
@@ -776,6 +805,7 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
         children.add(functionPanel.getXml());
         children.add(addressPanel.getXml());
         children.add(speedPanel.getXml());
+        children.add(airStatusPanel.getXml());
         // Save Jynstruments
         Component[] cmps = getComponents();
         for (Component cmp : cmps) {
@@ -875,6 +905,13 @@ public class ThrottleFrame extends JDesktopPane implements ComponentListener, Ad
             speedPanel.setXml(speedPanelElement);
             if (((javax.swing.plaf.basic.BasicInternalFrameUI) speedPanel.getUI()).getNorthPane() != null) {
                 ((javax.swing.plaf.basic.BasicInternalFrameUI) speedPanel.getUI()).getNorthPane().setPreferredSize(new Dimension(0, bSize));
+            }
+        }
+        Element airStatusPanelElement = e.getChild("AirStatusPanel");
+        if (airStatusPanelElement != null) { // older throttle configs may not have this element
+            airStatusPanel.setXml(airStatusPanelElement);
+            if (((javax.swing.plaf.basic.BasicInternalFrameUI) airStatusPanel.getUI()).getNorthPane() != null) {
+                ((javax.swing.plaf.basic.BasicInternalFrameUI) airStatusPanel.getUI()).getNorthPane().setPreferredSize(new Dimension(0, bSize));
             }
         }
 
