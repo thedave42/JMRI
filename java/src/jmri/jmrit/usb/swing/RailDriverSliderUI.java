@@ -410,12 +410,22 @@ public class RailDriverSliderUI extends BasicSliderUI {
                 ? getThumbColorForValue(slider.getValue())
                 : thumbDisabled;
         g2d.setPaint(fillColor);
-        g2d.fillRect(x1, y1, x2 - x1, y2 - y1);
+        if (readOnlyMode) {
+            int arc = 8;
+            g2d.fillRoundRect(x1, y1, x2 - x1, y2 - y1, arc, arc);
+        } else {
+            g2d.fillRect(x1, y1, x2 - x1, y2 - y1);
+        }
 
         // Dark contour stroke
         g2d.setStroke(new BasicStroke(2f));
         g2d.setPaint(THUMB_CONTOUR);
-        g2d.drawRect(x1, y1, x2 - x1, y2 - y1);
+        if (readOnlyMode) {
+            int arc = 8;
+            g2d.drawRoundRect(x1, y1, x2 - x1, y2 - y1, arc, arc);
+        } else {
+            g2d.drawRect(x1, y1, x2 - x1, y2 - y1);
+        }
 
         g2d.setStroke(oldStroke);
         g2d.setPaint(oldPaint);
