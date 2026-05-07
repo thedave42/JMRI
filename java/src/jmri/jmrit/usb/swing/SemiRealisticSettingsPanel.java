@@ -36,7 +36,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
     // Ramp timing
     private final JSpinner accelDelaySpinner = new JSpinner(new SpinnerNumberModel(300, 10, 5000, 10));
     private final JSpinner decelDelaySpinner = new JSpinner(new SpinnerNumberModel(800, 10, 5000, 10));
-    private final JSpinner emitIntervalSpinner = new JSpinner(new SpinnerNumberModel(50, 10, 1000, 10));
 
     // Brake
     private final JSpinner brakeStepsSpinner = new JSpinner(new SpinnerNumberModel(7, 1, 20, 1));
@@ -71,7 +70,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         enableCheckbox.addItemListener(e -> { if (!populating) markDirty(); refreshEnableState(); });
         attachDirtyOnSpinner(accelDelaySpinner);
         attachDirtyOnSpinner(decelDelaySpinner);
-        attachDirtyOnSpinner(emitIntervalSpinner);
         attachDirtyOnSpinner(brakeStepsSpinner);
         attachDirtyOnSpinner(airRechargePcntSpinner);
         attachDirtyOnSpinner(airRefreshRateSpinner);
@@ -103,7 +101,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         working.liveEnabled = working.persistedEnabled;
         working.baseAccelDelayMs = intOf(accelDelaySpinner);
         working.baseDecelDelayMs = intOf(decelDelaySpinner);
-        working.minEmitIntervalMs = intOf(emitIntervalSpinner);
         working.numberOfBrakeSteps = intOf(brakeStepsSpinner);
         working.airLineRechargePcnt = intOf(airRechargePcntSpinner);
         working.airRefreshRateMs = intOf(airRefreshRateSpinner);
@@ -148,7 +145,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         addSectionLabel(body, gc, "Ramp timing");
         addLabeled(body, gc, "Acceleration delay (ms/step):", accelDelaySpinner);
         addLabeled(body, gc, "Deceleration delay (ms/step):", decelDelaySpinner);
-        addLabeled(body, gc, "Min emit interval (ms):", emitIntervalSpinner);
         addLabeled(body, gc, "Speed step increment:", speedStepIncrementSpinner);
 
         addSectionLabel(body, gc, "Brakes");
@@ -207,7 +203,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
             enableCheckbox.setSelected(working.persistedEnabled);
             accelDelaySpinner.setValue(working.baseAccelDelayMs);
             decelDelaySpinner.setValue(working.baseDecelDelayMs);
-            emitIntervalSpinner.setValue(working.minEmitIntervalMs);
             speedStepIncrementSpinner.setValue(working.speedStepIncrement);
             brakeStepsSpinner.setValue(working.numberOfBrakeSteps);
             airRechargePcntSpinner.setValue(working.airLineRechargePcnt);
@@ -226,7 +221,6 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         boolean enabled = enableCheckbox.isSelected();
         accelDelaySpinner.setEnabled(enabled);
         decelDelaySpinner.setEnabled(enabled);
-        emitIntervalSpinner.setEnabled(enabled);
         speedStepIncrementSpinner.setEnabled(enabled);
         brakeStepsSpinner.setEnabled(enabled);
         airRechargePcntSpinner.setEnabled(enabled);
