@@ -12,7 +12,7 @@ tags: [feature, refactor, architecture]
 
 ![Status: In progress](https://img.shields.io/badge/status-In_progress-yellow)
 
-Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEngine`) with an EngineDriver-aligned step-rate scheduler. The throttle lever sets a target decoder speed step, and the live speed walks toward that target one fixed-size step every Δt milliseconds, where Δt is scaled by brake position, air-line state, load scenario, and direction. This plan covers 10 features from the [EngineDriver-aligned epic](engine-driver-semi-realistic-throttle-epic.md): core engine rewrite, multi-source brake system (independent, Westinghouse air with real-time throttle-panel status display, dynamic, bail-off), ESU decoder brake passthrough, EngineDriver-aligned load slider, direction/E-Stop semantics, configurable ramp step size, connectivity indicator Jynstrument, package relocation, custom status slider UI component, and comprehensive testing/documentation. Settings UI remains the bespoke `RailDriverSettingsFrame`. Phases 1–9 are complete; remaining work covers the custom slider UI component (Phase 10) and final testing/documentation (Phase 11).
+Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEngine`) with an EngineDriver-aligned step-rate scheduler. The throttle lever sets a target decoder speed step, and the live speed walks toward that target one fixed-size step every Δt milliseconds, where Δt is scaled by brake position, air-line state, load scenario, and direction. This plan covers 10 features from the [EngineDriver-aligned epic](engine-driver-semi-realistic-throttle-epic.md): core engine rewrite, multi-source brake system (independent, Westinghouse air with real-time throttle-panel status display, dynamic, bail-off), ESU decoder brake passthrough, EngineDriver-aligned load slider, direction/E-Stop semantics, configurable ramp step size, connectivity indicator Jynstrument, package relocation, custom status slider UI component, and comprehensive testing/documentation. Settings UI remains the bespoke `RailDriverSettingsFrame`. Phases 1–10 are complete; remaining work covers configurable ramp step size (Phase 11) and final testing/documentation (Phase 12).
 
 ## 1. Requirements & Constraints
 
@@ -170,9 +170,21 @@ Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEng
 | ~~TASK-088~~ | ~~Retrofit load slider on `RailDriverAirStatusPanel` to use `RailDriverSliderUI`: horizontal slider with `snapToTicks(true)`, tick positions at each load step (0..`numberOfLoadSteps`), tick labels showing quadratic multiplier values from `getLoadPcnt`. Orange fill. Green-at-0 → yellow-at-mid → red-at-max thumb gradient.~~ | N/A | Removed — load slider stays vertical; retrofit merged into TASK-087. |
 | TASK-089 | Write unit tests for `RailDriverSliderUI`: thumb colour interpolation at min/mid/max/quarter values; read-only mode blocks mouse/keyboard events while `setValue()` works; snap-to-ticks rounds to nearest tick; tick and label painting with mock `Graphics2D`; builder defaults produce valid UI; horizontal and vertical orientations; `preferredSize` and `fillParent` mutually exclusive; `fillParent` updates on parent resize. | ✅ | 2026-05-07 |
 
-### Phase 11 — Testing & Documentation
+### Phase 11 — Configurable Ramp Step Size
 
-- GOAL-011: Comprehensive test suite with EngineDriver-verified expected values and user-facing documentation. (Epic Feature 10)
+- GOAL-011: Expose the ramp increment/decrement step size as an operator-configurable setting. (Epic Feature 6)
+
+| Task | Description | Completed | Date |
+|------|-------------|-----------|------|
+| TASK-090 | Add `speedStepIncrement` field to `SemiRealisticSettings`: integer, default 1, minimum 1. Add corresponding `DEFAULT_SPEED_STEP_INCREMENT = 1` constant. Update `copyFrom()`, `resetToDefaults()`, and the defensive-copy constructor to include the new field. | | |
+| TASK-091 | Add XML persistence for `speedStepIncrement` in `SemiRealisticSettings.loadFrom()` / `writeTo()`: read/write a `<speedStepIncrement>` child element inside the `<semiRealistic>` fragment. Missing element defaults to 1 (backward-compatible with existing files). | | |
+| TASK-092 | Update `SemiRealisticThrottleEngine` ramp scheduler to advance by `settings.speedStepIncrement` speed steps per tick instead of a hard-coded 1. Clamp at `targetSpeedStep` to avoid overshoot. The minimum emit interval (`minEmitIntervalMs`) remains a code constant — not affected by this change. | | |
+| TASK-093 | Add a `JSpinner` for "Speed step increment" to `SemiRealisticSettingsPanel` (range 1–10, default 1). Wire it into `validateAndApplyTo()` and `resetToFile()` alongside the existing spinner fields. The setting is persisted via the existing `RailDriverSettingsFrame` Save/Apply flow: `validateAndApplyTo()` → `working.save(file)` → `mi.reloadCalibration()` → `engine.updateSettings(s)`. | | |
+| TASK-094 | Write unit tests: `SemiRealisticSettings` round-trip (default, custom, missing element backward compat); engine ramp with `speedStepIncrement > 1` reaches target in fewer ticks; `speedStepIncrement = 1` matches current behaviour; overshoot clamping at target. | | |
+
+### Phase 12 — Testing & Documentation
+
+- GOAL-012: Comprehensive test suite with EngineDriver-verified expected values and user-facing documentation. (Epic Feature 10)
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
