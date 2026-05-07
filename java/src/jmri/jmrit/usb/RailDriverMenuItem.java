@@ -38,9 +38,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * RailDriver support
+ * Main lifecycle and dispatch class for the RailDriver USB controller.
+ * <p>
+ * Manages HID device discovery (via hid4java), axis/button polling on a
+ * dedicated thread, calibration loading, semi-realistic throttle engine
+ * integration, and throttle window attachment. Registered on the Debug
+ * menu and instantiated on first user click.
+ * <p>
+ * The polling thread fires {@code "Value"} {@link java.beans.PropertyChangeEvent}s
+ * which are dispatched to the layout thread via
+ * {@link jmri.util.ThreadingUtil#runOnLayout}.
  *
  * @author George Warner Copyright (c) 2017-2018
+ * @since 5.13.1
  */
 public class RailDriverMenuItem extends JMenuItem implements HidServicesListener, PropertyChangeListener {
 

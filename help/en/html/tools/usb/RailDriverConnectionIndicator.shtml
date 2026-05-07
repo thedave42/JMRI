@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="generator" content="HTML Tidy for HTML5 for Apple macOS version 5.8.0">
+  <title>JMRI: RailDriver Connection Indicator</title>
+  <!--#include virtual="/help/en/parts/Style.shtml" -->
+</head>
+<body>
+  <!--#include virtual="/help/en/parts/Header.shtml" -->
+
+  <div id="mBody">
+    <!--#include virtual="Sidebar.shtml" -->
+
+    <div id="mainContent">
+      <h1>RailDriver Connection Indicator</h1>
+
+      <p>The RailDriver Connection Indicator is a small toolbar
+      component (Jynstrument) that shows whether the RailDriver USB
+      controller is currently connected to JMRI.</p>
+
+      <h2 id="states">Visual States</h2>
+
+      <ul>
+        <li><strong>Active (coloured icon)</strong> &mdash; the
+        RailDriver device is connected and communicating.</li>
+        <li><strong>Greyed icon</strong> &mdash; the RailDriver device
+        is not detected or has been disconnected.</li>
+      </ul>
+
+      <h2 id="interaction">Interaction</h2>
+
+      <ul>
+        <li><strong>Left-click</strong> &mdash; opens the
+        <a href="RailDriverSettings.shtml">RailDriver Settings
+        window</a>.</li>
+        <li><strong>Right-click</strong> &mdash; shows a popup menu
+        with a <strong>Settings&hellip;</strong> item that does the
+        same.</li>
+      </ul>
+
+      <p>Both click actions work regardless of the connection state
+      (the indicator is never disabled).</p>
+
+      <h2 id="install">Installation</h2>
+
+      <p>The indicator is automatically installed on the throttle
+      window toolbar when a RailDriver device is detected. No manual
+      configuration is needed.</p>
+
+      <p>The indicator deregisters its listener when the throttle
+      window is closed, preventing memory leaks.</p>
+
+      <!--#include virtual="/help/en/parts/Footer.shtml" -->
+    </div><!-- closes #mainContent -->
+  </div><!-- closes #mBody -->
+  <script src="/js/help.js"></script>
+</body>
+</html>

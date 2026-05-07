@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="generator" content="HTML Tidy for HTML5 for Apple macOS version 5.8.0">
+  <title>JMRI: RailDriver Settings Window</title>
+  <!--#include virtual="/help/en/parts/Style.shtml" -->
+</head>
+<body>
+  <!--#include virtual="/help/en/parts/Header.shtml" -->
+
+  <div id="mBody">
+    <!--#include virtual="Sidebar.shtml" -->
+
+    <div id="mainContent">
+      <h1>RailDriver Settings Window</h1>
+
+      <p>The RailDriver Settings window provides centralised
+      configuration for the RailDriver USB controller. Open it from
+      <strong>Debug &rarr; RailDriver Settings</strong>, or by clicking
+      the <a href="RailDriverConnectionIndicator.shtml">toolbar
+      connection indicator</a>.</p>
+
+      <p>The window has two tabs: <strong>Settings</strong> and
+      <strong>Calibration</strong>.</p>
+
+      <h2 id="settings">Settings Tab</h2>
+
+      <p>Controls the <a href="RailDriverSemiRealistic.shtml">semi-realistic
+      throttle engine</a> parameters:</p>
+
+      <h3>Ramp Timing</h3>
+      <ul>
+        <li><strong>Enable semi-realistic throttle</strong> &mdash;
+        master on/off toggle. A restart is recommended after
+        changing.</li>
+        <li><strong>Acceleration delay (ms/step)</strong> &mdash;
+        milliseconds between speed steps when accelerating
+        (default 300).</li>
+        <li><strong>Deceleration delay (ms/step)</strong> &mdash;
+        milliseconds between speed steps when decelerating
+        (default 800).</li>
+        <li><strong>Speed step increment</strong> &mdash; number of
+        speed steps per ramp tick (default 1). Higher values produce
+        a coarser, faster ramp.</li>
+      </ul>
+
+      <h3>Brakes</h3>
+      <ul>
+        <li><strong>Independent brake steps</strong> &mdash; number of
+        quantised brake notches (default 7).</li>
+        <li><strong>Dynamic brake min speed step</strong> &mdash; speed
+        step below which dynamic brake effect tapers to zero
+        (default 8).</li>
+      </ul>
+
+      <h3>Air Brake</h3>
+      <ul>
+        <li><strong>Line recharge (%/tick)</strong> &mdash; percentage
+        of brake pipe recharged per air-repeater tick
+        (default 20).</li>
+        <li><strong>Air refresh rate (ms, 0=flat)</strong> &mdash;
+        milliseconds between air-repeater ticks. Set to 0 for
+        flat-mapping mode with no Westinghouse dynamics
+        (default 2000).</li>
+        <li><strong>Reservoir replenish (%/tick)</strong> &mdash;
+        percentage of reservoir replenished per tick
+        (default 5).</li>
+      </ul>
+
+      <h3>Load</h3>
+      <ul>
+        <li><strong>Number of load steps</strong> &mdash; positions on
+        the load slider (default 5). Step 0 is always &ldquo;light
+        engine&rdquo; (1.0&times;).</li>
+        <li><strong>Max load percentage (&times;100)</strong> &mdash;
+        maximum load multiplier expressed as a percentage (default 1000
+        = 10&times;).</li>
+      </ul>
+
+      <h3>Decoder Integration</h3>
+      <ul>
+        <li><strong>Decoder brake mode</strong> &mdash;
+        <code>NONE</code> (default) or <code>ESU</code>. When ESU is
+        selected, independent brake percentage is mapped to DCC
+        function toggles at configurable thresholds.</li>
+      </ul>
+
+      <h2 id="calibration">Calibration Tab</h2>
+
+      <p>Shows live HID byte values from each RailDriver axis and
+      button, with visual calibration bars. Use this tab to verify
+      that your RailDriver's physical controls map correctly to the
+      expected value ranges.</p>
+
+      <p>Calibration data is per-machine and stored in the JMRI
+      profile directory.</p>
+
+      <h2 id="saveapply">Save, Apply &amp; Cancel</h2>
+
+      <ul>
+        <li><strong>Save</strong> &mdash; validates both tabs, writes
+        the calibration file to disk, reloads calibration into the
+        running engine, and closes the window.</li>
+        <li><strong>Apply</strong> &mdash; same as Save but keeps the
+        window open.</li>
+        <li><strong>Cancel</strong> &mdash; discards unsaved changes
+        and closes the window.</li>
+      </ul>
+
+      <p>Settings are pushed live to any attached semi-realistic
+      engine on Save/Apply — no restart is needed for parameter
+      changes (only for the enable/disable toggle).</p>
+
+      <!--#include virtual="/help/en/parts/Footer.shtml" -->
+    </div><!-- closes #mainContent -->
+  </div><!-- closes #mBody -->
+  <script src="/js/help.js"></script>
+</body>
+</html>

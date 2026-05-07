@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="generator" content="HTML Tidy for HTML5 for Apple macOS version 5.8.0">
+  <title>JMRI: RailDriver Semi-Realistic Throttle</title>
+  <!--#include virtual="/help/en/parts/Style.shtml" -->
+</head>
+<body>
+  <!--#include virtual="/help/en/parts/Header.shtml" -->
+
+  <div id="mBody">
+    <!--#include virtual="Sidebar.shtml" -->
+
+    <div id="mainContent">
+      <h1>RailDriver Semi-Realistic Throttle</h1>
+
+      <p>The semi-realistic throttle mode transforms the RailDriver USB
+      desktop controller into a train-handling experience that mimics
+      prototype locomotive behaviour. Instead of the throttle lever
+      directly commanding a decoder speed, the lever sets a <em>target
+      speed step</em> and the engine ramps the live speed toward that
+      target one step at a time, modulated by brakes, air-line state,
+      load, and direction.</p>
+
+      <p>This mode is inspired by the EngineDriver Android app's
+      semi-realistic throttle and uses the same core algorithms.</p>
+
+      <h2 id="enable">Enabling Semi-Realistic Mode</h2>
+
+      <p>Open the <a href="RailDriverSettings.shtml">RailDriver Settings
+      window</a> (Debug &rarr; RailDriver Settings) and check
+      <strong>Enable semi-realistic throttle</strong>. Click
+      <strong>Save</strong>. A restart is recommended for the change to
+      take full effect.</p>
+
+      <h2 id="ramp">Speed Ramp</h2>
+
+      <p>The ramp scheduler walks the decoder speed step toward the
+      target at a configurable rate:</p>
+      <ul>
+        <li><strong>Acceleration delay</strong> &mdash; milliseconds
+        between steps when accelerating (default 300 ms).</li>
+        <li><strong>Deceleration delay</strong> &mdash; milliseconds
+        between steps when decelerating/coasting (default 800 ms).</li>
+        <li><strong>Speed step increment</strong> &mdash; number of
+        speed steps per ramp tick (default 1, smoothest; higher values
+        produce a coarser, faster ramp).</li>
+      </ul>
+      <p>The minimum interval between actual decoder speed commands is a
+      fixed 50&nbsp;ms constant and is not user-configurable.</p>
+
+      <h2 id="brakes">Brake System</h2>
+
+      <p>The semi-realistic mode provides four brake sources, each
+      contributing to total braking effort:</p>
+
+      <h3 id="indep">Independent Brake</h3>
+      <p>Mapped to the RailDriver's independent brake lever. Applies
+      locomotive-only braking as a non-linear curve (matching
+      EngineDriver's <code>getBrakeDecimalPcnt</code> formula). The
+      number of quantised brake notches is configurable (default 7).</p>
+
+      <h3 id="air">Westinghouse Air Brake</h3>
+      <p>Mapped to the RailDriver's automatic brake lever. Simulates a
+      Westinghouse-style air brake system with three interacting state
+      variables:</p>
+      <ul>
+        <li><strong>Brake pipe (air line)</strong> &mdash; 0&ndash;100%.
+        Dropping the pipe applies brakes to the entire train. The pipe
+        drops instantly on application and recharges gradually on
+        release.</li>
+        <li><strong>Main reservoir</strong> &mdash; 0&ndash;100%.
+        Supplies air to recharge the brake pipe. Depletes during
+        release cycles and replenishes slowly. When the reservoir is
+        empty, the brake pipe cannot recharge (the brakes are
+        &ldquo;gone&rdquo;).</li>
+        <li><strong>Demanded line value</strong> &mdash; the target
+        brake pipe pressure set by the lever position.</li>
+      </ul>
+      <p>The air brake status is displayed in the
+      <strong>Air Status Panel</strong> on the throttle window, showing
+      brake pipe and reservoir gauges with colour-coded indicators.</p>
+
+      <h3 id="dynamic">Dynamic Brake</h3>
+      <p>Activated by the RailDriver's dynamic brake zone. Contributes
+      proportional braking that tapers linearly to zero below a
+      configurable speed-step threshold (default 8), preventing a
+      stall at very low speeds.</p>
+
+      <h3 id="bailoff">Bail-Off</h3>
+      <p>When the bail-off button is held, all locomotive-side braking
+      (independent, dynamic, and the locomotive's share of air braking)
+      is released. Car-side air braking continues, so the train
+      decelerates but the locomotive is free to pull against the
+      consist. Releasing the bail-off button restores normal braking.
+      On a light engine (load step 0), bail-off results in no braking
+      at all.</p>
+
+      <h2 id="load">Load Slider</h2>
+
+      <p>The load slider on the Air Status Panel sets a multiplier
+      that stretches both acceleration and braking delays, simulating
+      the effect of train weight. The multiplier follows a quadratic
+      curve:</p>
+
+      <table>
+        <tr><th>Slider Step</th><th>Multiplier (default settings)</th></tr>
+        <tr><td>0 (light engine)</td><td>1.00&times;</td></tr>
+        <tr><td>1</td><td>1.36&times;</td></tr>
+        <tr><td>2</td><td>2.44&times;</td></tr>
+        <tr><td>3</td><td>4.24&times;</td></tr>
+        <tr><td>4</td><td>6.76&times;</td></tr>
+        <tr><td>5 (full load)</td><td>10.00&times;</td></tr>
+      </table>
+
+      <p>The formula is:
+      <code>((load&sup2; &times; (maxLoadPcnt &minus; 100)) + 100) / 100</code>,
+      where <code>load = step / numberOfLoadSteps</code>. Both
+      <code>maxLoadPcnt</code> (default 1000 = 10&times;) and
+      <code>numberOfLoadSteps</code> (default 5) are configurable in
+      the <a href="RailDriverSettings.shtml">Settings window</a>.</p>
+
+      <h2 id="esu">ESU Decoder Brake Passthrough</h2>
+
+      <p>When decoder brake mode is set to <strong>ESU</strong>, the
+      independent brake percentage is mapped to DCC function toggles at
+      configurable thresholds. This lets ESU decoders with built-in
+      brake sound effects synchronise their audio with the
+      semi-realistic brake state.</p>
+
+      <h2 id="direction">Direction &amp; E-Stop</h2>
+
+      <p>The reverser lever sets the direction of travel. Changing
+      direction while the locomotive is moving triggers a deferred
+      direction change: the engine ramps to a stop first, then applies
+      the new direction and resumes. Setting the reverser to Neutral
+      is always allowed immediately.</p>
+
+      <p>The E-Stop button immediately cancels all ramp activity,
+      commands speed step 0, and issues an emergency stop to the
+      decoder.</p>
+
+      <!--#include virtual="/help/en/parts/Footer.shtml" -->
+    </div><!-- closes #mainContent -->
+  </div><!-- closes #mBody -->
+  <script src="/js/help.js"></script>
+</body>
+</html>

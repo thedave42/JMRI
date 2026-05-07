@@ -1,0 +1,29 @@
+<!-- Sidebar.shtml -->
+<!-- This is the common sidebar for help/en/html/tools/usb pages -->
+ <hr class="hide">
+
+    <div id="side"> <!-- Block of text on left side of page -->
+        <div style="text-align: center">JMRI&reg; is...</div>
+        <dl>
+
+        <dt>RailDriver USB</dt>
+        <dd>
+          <ul>
+            <li><a href="/help/en/html/hardware/raildriver/index.shtml">Hardware Setup</a></li>
+            <li><a href="RailDriverSemiRealistic.shtml">Semi-Realistic Throttle</a></li>
+            <li><a href="RailDriverConnectionIndicator.shtml">Connection Indicator</a></li>
+            <li><a href="RailDriverSettings.shtml">Settings Window</a></li>
+          </ul>
+        </dd>
+
+        <!--#include virtual="../../../parts/SidebarTools.shtml" -->
+
+         </dl>
+
+    <!--#include virtual="../../../parts/SidebarTail.shtml" -->
+
+    </div> <!-- closes #side -->
+
+<!-- button is in /Header -->
+<script src="/js/side.js"></script>
+<!-- /Sidebar.shtml -->
