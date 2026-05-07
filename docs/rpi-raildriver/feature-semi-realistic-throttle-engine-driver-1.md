@@ -34,7 +34,7 @@ Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEng
 - **PAT-001**: Self-rescheduling callbacks with epoch-counter cancellation (same pattern as existing JMRI codebase).
 - **PAT-002**: Settings captured as defensive copy at attach time; mid-session updates via `updateSettings()` on the layout thread.
 - **PAT-003**: `@InvokeOnLayoutThread` annotation on all public engine methods.
-- **REQ-008**: Air line and air reservoir status must be observable in real time from a panel in the JMRI throttle window when Westinghouse dynamics are active (`airRefreshRateMs > 0`).
+- **REQ-008**: Air line and air reservoir status must be observable in real time from a panel in the JMRI throttle window when semi-realistic mode is enabled.
 
 ## 2. Implementation Steps
 
@@ -162,15 +162,16 @@ Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEng
 
 ### Phase 10 — Air Status Throttle Panel
 
-- GOAL-010: Create a real-time air status display panel embedded in the JMRI throttle window showing current brake pipe (air line) pressure and main reservoir level for the Westinghouse brake system. Visible only when Westinghouse dynamics are active. (Epic Feature 2 user story: view air line and reservoir status)
+- GOAL-010: Create a real-time air status and load display panel embedded in the JMRI throttle window showing current brake pipe (air line) pressure, main reservoir level for the Westinghouse brake system, and user-adjustable load. Visible only when semi-realistic mode is enabled. (Epic Feature 2 user story: view air line and reservoir status)
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
 | TASK-075 | Create `jmri.jmrit.usb.swing.RailDriverAirStatusPanel` extending `JPanel`. Display `airLineValue` (brake pipe pressure, 0–100) and `airReservoirPct` (main reservoir, 0–100) as labeled `JProgressBar` gauges with numeric readouts. Panel layout must be compact enough to fit in a throttle window without dominating the view. Subscribe to `"airLineValue"` and `"airReservoirPct"` PropertyChange events from the engine. Marshal updates to the GUI thread via `ThreadingUtil.runOnGUIEventually`. | | |
 | TASK-076 | Wire panel installation into `RailDriverMenuItem.attachThrottleWindow()`: when semi-realistic mode is enabled and engine is attached, instantiate `RailDriverAirStatusPanel`, subscribe it to the engine's PropertyChange events, and add it to the throttle window panel area. Remove and dispose the panel on engine detach or throttle window close. Installation must be idempotent. | | |
-| TASK-077 | Implement visibility gating: the air status panel is only installed when `airRefreshRateMs > 0` (Westinghouse dynamics active). When `airRefreshRateMs == 0` (flat-mapping mode), do not install the panel — there is no dynamic air state to display. On live settings update via `"settingsChanged"` PCS, add or remove the panel if `airRefreshRateMs` transitioned to/from zero. | | |
+| TASK-077 | Implement visibility gating: panel is only installed when the `Enable semi-realistic mode` checkbox is checked (semi-realistic mode enabled). When semi-realistic mode is disabled, do not install the panel. Since toggling the semi-realistic mode setting requires the user to reload the throttle, the panel is included or removed on the next throttle reload — no live add/remove transition is needed. | | |
 | TASK-078 | Implement `dispose()` on `RailDriverAirStatusPanel`: deregister all PropertyChange listeners from the engine to prevent listener leaks. Called from `RailDriverMenuItem` on throttle window close or engine detach. | | |
-| TASK-079 | Write unit tests for `RailDriverAirStatusPanel`: verify panel gauge values update on PropertyChange events; verify `dispose()` deregisters listeners (no listener leak); verify panel is not installed when `airRefreshRateMs == 0`; verify panel is installed when `airRefreshRateMs > 0`; verify panel is removed/added on live `airRefreshRateMs` transition. | | |
+| TASK-079 | Write unit tests for `RailDriverAirStatusPanel`: verify panel gauge values update on PropertyChange events; verify load slider tick count matches `numberOfLoadSteps` and tick labels show correct quadratic load percentages from Phase 6 formula; verify `dispose()` deregisters listeners (no listener leak); verify panel is not installed when semi-realistic mode is disabled; verify panel is installed when semi-realistic mode is enabled. | | |
+| TASK-080 | Add a load slider to `RailDriverAirStatusPanel` whose tick count equals `numberOfLoadSteps` from the engine settings. Label each tick with the load percentage computed by the Phase 6 quadratic formula `getLoadPcnt(step, numberOfLoadSteps, maxLoadPcnt)` — i.e. `((load² × (maxLoadPcnt − 100)) + 100) / 100` where `load = step / numberOfLoadSteps`. The first tick (step 0) is labeled 100% (loco weight only); subsequent ticks show the quadratic curve values (e.g. at defaults of 5 steps / maxLoadPcnt=1000: 100%, 136%, 244%, 424%, 676%, 1000%). | | |
 
 ### Phase 11 — Testing & Documentation
 
@@ -268,7 +269,7 @@ Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEng
 - **TEST-011**: Legacy migration tests — v1 file (detents migrate, defaults for semi-realistic), v2 file (detents migrate, semi-realistic discarded with warn), both exist (new wins), neither exists (defaults). Idempotency verified.
 - **TEST-012**: `warnOnce`/`infoOnce` paths follow JMRI JUnit reset guidance.
 - **TEST-013**: `ArchitectureTest` — no new violations from package relocation.
-- **TEST-014**: Air status panel integration tests — PropertyChange-driven gauge updates reflect engine air state, `dispose()` deregisters listeners (no leak), panel not installed in flat-mapping mode (`airRefreshRateMs == 0`), panel installed when Westinghouse dynamics active, panel added/removed on live `airRefreshRateMs` transitions.
+- **TEST-014**: Air status panel integration tests — PropertyChange-driven gauge updates reflect engine air state, load slider tick count and labels match quadratic formula, `dispose()` deregisters listeners (no leak), panel not installed when semi-realistic mode disabled, panel installed when semi-realistic mode enabled, panel included/removed on next throttle reload after toggling semi-realistic mode.
 
 ## 7. Risks & Assumptions
 

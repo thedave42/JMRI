@@ -20,7 +20,7 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 
 ### Feature 1: Step-Rate Throttle Engine (Core Algorithm)
 
-**Description:** Rewrite `SemiRealisticThrottleEngine` as a step-rate scheduler that walks the live `setSpeedSetting` value toward a `targetSpeed` one fixed-size step every Δt ms. Δt = `baseDelay × |targetAcceleration|`, where `baseDelay` is 300 ms (accel) or 800 ms (decel) by default.
+**Description:** Rewrite `SemiRealisticThrottleEngine` as a step-rate scheduler that walks the live `setSpeedSetting` value toward a `targetSpeed` by `speedStepIncrement` steps (default 1, configurable — see Feature 6) every Δt ms. Δt = `baseDelay × |targetAcceleration|`, where `baseDelay` is 300 ms (accel) or 800 ms (decel) by default.
 
 **User Stories:**
 
@@ -31,7 +31,7 @@ All work is contained within the JMRI desktop codebase. The RailDriver USB integ
 **Key Behaviours:**
 - Single-threaded on the JMRI layout thread — no `ScheduledExecutorService`, no `volatile`, no `synchronized`. Self-rescheduling via `ThreadingUtil.runOnLayoutDelayed`; cancellation by epoch counters.
 - Lever-input setters only store values; `recomputeTarget()` runs `setTargetSpeed`, bumps the ramp epoch, and posts a fresh ramp callback.
-- Decoder-side dispatch is throttled by a configurable minimum emit interval (default 50 ms) so DCC backends that coalesce or rate-limit stay in sync.
+- Decoder-side dispatch is throttled by a constant minimum emit interval (50 ms) so DCC backends that coalesce or rate-limit stay in sync.
 - Lifecycle is two-state: DETACHED → ATTACHED. Settings are captured as a defensive copy at attach time. A running engine accepts mid-session settings updates via `updateSettings(SemiRealisticSettings s)` on the layout thread — the engine replaces its internal copy atomically (single-threaded, no lock needed) and calls `recomputeTarget()` so the new values take effect on the next ramp tick.
 
 **Acceptance Criteria:**
@@ -277,6 +277,26 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 - [ ] After E-Stop, the next lever-change event resumes normal ramp behaviour.
 
 ---
+
+### Feature 6: Configurable Ramp Step Size
+
+**Description:** Expose the ramp increment/decrement step size as an operator-configurable setting (default 1). Each ramp tick advances `speedSetting` by `speedStepIncrement` speed steps toward `targetSpeed`. Larger values produce a coarser, faster ramp; a value of 1 gives the smoothest motion. The minimum emit interval that throttles decoder-side dispatch is a constant (50 ms), not user-configurable.
+
+**User Stories:**
+
+- As an operator, I want to adjust the ramp step size so I can trade ramp smoothness for speed — a larger step reaches the target faster but with visible jumps.
+- As an operator, I want the default step size of 1 to give me the smoothest possible speed ramp.
+
+**Key Behaviours:**
+- `speedStepIncrement` (integer, default 1, minimum 1) is persisted in the `<rd:semiRealistic>` fragment and pushed live to any attached engine on Save/Apply.
+- The ramp scheduler advances `speedSetting` by `speedStepIncrement` steps per tick (clamping at `targetSpeed` to avoid overshoot).
+- The minimum emit interval remains a constant 50 ms — not exposed in settings.
+
+**Acceptance Criteria:**
+- [ ] `speedStepIncrement` defaults to 1 when not present in the settings fragment.
+- [ ] Increasing `speedStepIncrement` produces a proportionally coarser ramp (fewer ticks to reach target).
+- [ ] `speedStepIncrement` is persisted, validated (≥ 1), and pushed live to the engine on save.
+- [ ] Min emit interval is a code constant (50 ms), not user-configurable.
 
 ---
 
