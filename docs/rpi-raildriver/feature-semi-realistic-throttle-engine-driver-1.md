@@ -12,7 +12,7 @@ tags: [feature, refactor, architecture]
 
 ![Status: In progress](https://img.shields.io/badge/status-In_progress-yellow)
 
-Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEngine`) with an EngineDriver-aligned step-rate scheduler. The throttle lever sets a target decoder speed step, and the live speed walks toward that target one fixed-size step every Δt milliseconds, where Δt is scaled by brake position, air-line state, load scenario, and direction. This plan covers 10 features from the [EngineDriver-aligned epic](engine-driver-semi-realistic-throttle-epic.md): core engine rewrite, multi-source brake system (independent, Westinghouse air with real-time throttle-panel status display, dynamic, bail-off), ESU decoder brake passthrough, EngineDriver-aligned load slider, direction/E-Stop semantics, configurable ramp step size, connectivity indicator Jynstrument, package relocation, custom status slider UI component, and comprehensive testing/documentation. Settings UI remains the bespoke `RailDriverSettingsFrame`. Phases 1–10 are complete; remaining work covers configurable ramp step size (Phase 11) and final testing/documentation (Phase 12).
+Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEngine`) with an EngineDriver-aligned step-rate scheduler. The throttle lever sets a target decoder speed step, and the live speed walks toward that target one fixed-size step every Δt milliseconds, where Δt is scaled by brake position, air-line state, load scenario, and direction. This plan covers 10 features from the [EngineDriver-aligned epic](engine-driver-semi-realistic-throttle-epic.md): core engine rewrite, multi-source brake system (independent, Westinghouse air with real-time throttle-panel status display, dynamic, bail-off), ESU decoder brake passthrough, EngineDriver-aligned load slider, direction/E-Stop semantics, configurable ramp step size, connectivity indicator Jynstrument, package relocation, custom status slider UI component, and comprehensive testing/documentation. Settings UI remains the bespoke `RailDriverSettingsFrame`. All phases (1–12) are complete.
 
 ## 1. Requirements & Constraints
 
@@ -188,13 +188,13 @@ Replace the in-progress velocity-based physics engine (`SemiRealisticThrottleEng
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-066 | Write/verify pure-math unit tests: `getBrakeDecimalPcnt` at each notch, `getLoadPcnt` table-driven (including non-default `maxLoadPcnt`), `effectiveDynBrakeStep` with taper. All expected values verified against EngineDriver source. | | |
-| TASK-067 | Write/verify engine integration tests with mock `DccThrottle`: pure-throttle ramp (idle→full, full→idle), brake clip (brake applied during ramp), brake to zero (full brake to stop), air depletion (reservoir empty prevents release), bail-off (loco free-rolls while cars braked), direction interlock (reject reverser flip at speed), load multiplier scaling (verify acceleration stretch). | | |
-| TASK-069 | Verify `warnOnce`/`infoOnce` test paths follow JMRI JUnit reset guidance (`Log4JFixture.setUp()`/`tearDown()` reset one-shot state). | | |
-| TASK-070 | Create help page `help/en/html/tools/usb/RailDriverSemiRealistic.shtml` — operator-facing documentation covering the semi-realistic throttle mode, brake system (independent, air/Westinghouse, dynamic, bail-off), load slider, ESU decoder brake, and direction/E-Stop semantics. Include the key multiplier table from the epic. | | |
-| TASK-071 | Create help page `help/en/html/tools/usb/RailDriverConnectionIndicator.shtml` — operator-facing documentation for the toolbar connectivity indicator. | | |
-| TASK-072 | Update existing help page `help/en/html/tools/usb/RailDriverSettings.shtml` — document the bespoke settings frame tabs (Settings + Calibration). | | |
-| TASK-073 | Add Javadoc on every new public or protected API across all new/changed classes. Ensure `ant javadoc` produces no new warnings for the `jmri.jmrit.usb` package. | | |
+| TASK-066 | Write/verify pure-math unit tests: `getBrakeDecimalPcnt` at each notch, `getLoadPcnt` table-driven (including non-default `maxLoadPcnt`), `effectiveDynBrakeStep` with taper. All expected values verified against EngineDriver source. | ✅ | 2026-05-07 |
+| TASK-067 | Write/verify engine integration tests with mock `DccThrottle`: pure-throttle ramp (idle→full, full→idle), brake clip (brake applied during ramp), brake to zero (full brake to stop), air depletion (reservoir empty prevents release), bail-off (loco free-rolls while cars braked), direction interlock (reject reverser flip at speed), load multiplier scaling (verify acceleration stretch). | ✅ | 2026-05-07 |
+| TASK-069 | Verify `warnOnce`/`infoOnce` test paths follow JMRI JUnit reset guidance (`Log4JFixture.setUp()`/`tearDown()` reset one-shot state). | N/A | No warnOnce/infoOnce calls in usb package. |
+| TASK-070 | Create help page `help/en/html/tools/usb/RailDriverSemiRealistic.shtml` — operator-facing documentation covering the semi-realistic throttle mode, brake system (independent, air/Westinghouse, dynamic, bail-off), load slider, ESU decoder brake, and direction/E-Stop semantics. Include the key multiplier table from the epic. | ✅ | 2026-05-07 |
+| TASK-071 | Create help page `help/en/html/tools/usb/RailDriverConnectionIndicator.shtml` — operator-facing documentation for the toolbar connectivity indicator. | ✅ | 2026-05-07 |
+| TASK-072 | Update existing help page `help/en/html/tools/usb/RailDriverSettings.shtml` — document the bespoke settings frame tabs (Settings + Calibration). | ✅ | 2026-05-07 |
+| TASK-073 | Add Javadoc on every new public or protected API across all new/changed classes. Ensure `ant javadoc` produces no new warnings for the `jmri.jmrit.usb` package. | ✅ | 2026-05-07 |
 
 ## 3. Alternatives
 
