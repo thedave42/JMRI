@@ -1,10 +1,7 @@
 package jmri.jmrit.usb.swing;
 
-import java.util.Hashtable;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.swing.JLabel;
-import javax.swing.JProgressBar;
 import javax.swing.JSlider;
 
 import jmri.jmrit.usb.SemiRealisticSettings;
@@ -46,9 +43,9 @@ public class RailDriverAirStatusPanelTest {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
         panel.subscribeToEngine(engine, settings, null);
         // Engine defaults to airLineValue = 100, airReservoirPct = 100
-        assertEquals(100, panel.getAirLineBar().getValue());
+        assertEquals(100, panel.getAirLineGauge().getValue());
         assertEquals("100%", panel.getAirLineReadout().getText());
-        assertEquals(100, panel.getAirReservoirBar().getValue());
+        assertEquals(100, panel.getAirReservoirGauge().getValue());
         assertEquals("100%", panel.getAirReservoirReadout().getText());
         panel.destroy();
     }
@@ -65,18 +62,43 @@ public class RailDriverAirStatusPanelTest {
     }
 
     @Test
-    public void testLoadSliderIsVertical() {
+    public void testLoadSliderIsHorizontal() {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
         JSlider slider = panel.getLoadSlider();
-        assertEquals(JSlider.VERTICAL, slider.getOrientation());
+        assertEquals(JSlider.HORIZONTAL, slider.getOrientation());
         panel.destroy();
     }
 
     @Test
-    public void testProgressBarsAreVertical() {
+    public void testGaugesAreVertical() {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
-        assertEquals(JProgressBar.VERTICAL, panel.getAirLineBar().getOrientation());
-        assertEquals(JProgressBar.VERTICAL, panel.getAirReservoirBar().getOrientation());
+        assertEquals(JSlider.VERTICAL, panel.getAirLineGauge().getOrientation());
+        assertEquals(JSlider.VERTICAL, panel.getAirReservoirGauge().getOrientation());
+        panel.destroy();
+    }
+
+    @Test
+    public void testGaugesUseRailDriverSliderUI() {
+        RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
+        assertInstanceOf(RailDriverSliderUI.class, panel.getAirLineGauge().getUI());
+        assertInstanceOf(RailDriverSliderUI.class, panel.getAirReservoirGauge().getUI());
+        panel.destroy();
+    }
+
+    @Test
+    public void testGaugesAreReadOnly() {
+        RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
+        RailDriverSliderUI airLineUI = (RailDriverSliderUI) panel.getAirLineGauge().getUI();
+        RailDriverSliderUI reservoirUI = (RailDriverSliderUI) panel.getAirReservoirGauge().getUI();
+        assertTrue(airLineUI.isReadOnly());
+        assertTrue(reservoirUI.isReadOnly());
+        panel.destroy();
+    }
+
+    @Test
+    public void testLoadSliderUsesRailDriverSliderUI() {
+        RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
+        assertInstanceOf(RailDriverSliderUI.class, panel.getLoadSlider().getUI());
         panel.destroy();
     }
 
@@ -94,39 +116,36 @@ public class RailDriverAirStatusPanelTest {
     }
 
     @Test
-    public void testLoadSliderLabelsDefaultSettings() {
+    public void testLoadLabelTextsDefaultSettings() {
         // Default: numberOfLoadSteps=5, maxLoadPcnt=1000
-        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 10);
-        Hashtable<Integer, JLabel> labels = RailDriverAirStatusPanel.buildLoadLabels(5, 1000, font);
+        String[] labels = RailDriverAirStatusPanel.buildLoadLabelTexts(5, 1000);
 
-        assertEquals(6, labels.size()); // 0 through 5
-        assertEquals("100%", labels.get(0).getText());
-        assertEquals("136%", labels.get(1).getText());
-        assertEquals("244%", labels.get(2).getText());
-        assertEquals("424%", labels.get(3).getText());
-        assertEquals("676%", labels.get(4).getText());
-        assertEquals("1000%", labels.get(5).getText());
+        assertEquals(6, labels.length); // 0 through 5
+        assertEquals("100%", labels[0]);
+        assertEquals("136%", labels[1]);
+        assertEquals("244%", labels[2]);
+        assertEquals("424%", labels[3]);
+        assertEquals("676%", labels[4]);
+        assertEquals("1000%", labels[5]);
     }
 
     @Test
-    public void testLoadSliderLabelsStep0AlwaysLightEngine() {
-        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 10);
-        Hashtable<Integer, JLabel> labels = RailDriverAirStatusPanel.buildLoadLabels(3, 500, font);
-        assertEquals("100%", labels.get(0).getText());
+    public void testLoadLabelTextsStep0AlwaysLightEngine() {
+        String[] labels = RailDriverAirStatusPanel.buildLoadLabelTexts(3, 500);
+        assertEquals("100%", labels[0]);
     }
 
     @Test
-    public void testLoadSliderLabelsCustomSettings() {
-        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 10);
-        Hashtable<Integer, JLabel> labels = RailDriverAirStatusPanel.buildLoadLabels(3, 500, font);
+    public void testLoadLabelTextsCustomSettings() {
+        String[] labels = RailDriverAirStatusPanel.buildLoadLabelTexts(3, 500);
 
-        assertEquals(4, labels.size());
-        assertEquals("100%", labels.get(0).getText());
+        assertEquals(4, labels.length);
+        assertEquals("100%", labels[0]);
 
         double expected1 = SemiRealisticThrottleEngine.getLoadPcnt(1, 3, 500);
-        assertEquals(Math.round(expected1 * 100) + "%", labels.get(1).getText());
+        assertEquals(Math.round(expected1 * 100) + "%", labels[1]);
 
-        assertEquals("500%", labels.get(3).getText());
+        assertEquals("500%", labels[3]);
     }
 
     @Test
@@ -190,13 +209,13 @@ public class RailDriverAirStatusPanelTest {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
         panel.setEnabled(false);
         assertFalse(panel.getLoadSlider().isEnabled());
-        assertFalse(panel.getAirLineBar().isEnabled());
-        assertFalse(panel.getAirReservoirBar().isEnabled());
+        assertFalse(panel.getAirLineGauge().isEnabled());
+        assertFalse(panel.getAirReservoirGauge().isEnabled());
 
         panel.setEnabled(true);
         assertTrue(panel.getLoadSlider().isEnabled());
-        assertTrue(panel.getAirLineBar().isEnabled());
-        assertTrue(panel.getAirReservoirBar().isEnabled());
+        assertTrue(panel.getAirLineGauge().isEnabled());
+        assertTrue(panel.getAirReservoirGauge().isEnabled());
         panel.destroy();
     }
 
@@ -225,15 +244,14 @@ public class RailDriverAirStatusPanelTest {
     }
 
     @Test
-    public void testBuildLoadLabelsMonotonicIncrease() {
-        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 10);
+    public void testBuildLoadLabelTextsMonotonicIncrease() {
         for (int steps = 1; steps <= 10; steps++) {
             for (int maxLoad : new int[]{200, 500, 1000, 2000}) {
-                Hashtable<Integer, JLabel> labels =
-                        RailDriverAirStatusPanel.buildLoadLabels(steps, maxLoad, font);
+                String[] labels =
+                        RailDriverAirStatusPanel.buildLoadLabelTexts(steps, maxLoad);
                 int prev = 0;
                 for (int i = 0; i <= steps; i++) {
-                    String text = labels.get(i).getText().replace("%", "");
+                    String text = labels[i].replace("%", "");
                     int val = Integer.parseInt(text);
                     assertTrue(val >= prev,
                             "Step " + i + " (" + val + "%) should be >= step " + (i - 1)

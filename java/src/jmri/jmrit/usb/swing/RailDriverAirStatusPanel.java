@@ -1,11 +1,12 @@
 package jmri.jmrit.usb.swing;
 
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Font;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
-import java.util.Hashtable;
 import java.util.function.IntConsumer;
+import java.util.stream.IntStream;
 
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
@@ -15,7 +16,6 @@ import javax.swing.BoxLayout;
 import javax.swing.JInternalFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import javax.swing.JProgressBar;
 import javax.swing.JSlider;
 import javax.swing.WindowConstants;
 
@@ -37,9 +37,10 @@ import org.slf4j.LoggerFactory;
  * RailDriver semi-realistic throttle mode.
  * <p>
  * Shows brake pipe (air line) pressure and main reservoir level as vertical
- * {@link JProgressBar} gauges with numeric readouts, and a user-adjustable
- * vertical {@link JSlider} for load whose tick labels show the quadratic load
- * percentages from {@link SemiRealisticThrottleEngine#getLoadPcnt}.
+ * {@link JSlider} gauges (read-only, using {@link RailDriverSliderUI}) with
+ * numeric readouts, and a user-adjustable horizontal {@link JSlider} for load
+ * whose tick labels show the quadratic load percentages from
+ * {@link SemiRealisticThrottleEngine#getLoadPcnt}.
  * <p>
  * Follows the standard JMRI throttle panel pattern established by
  * {@code ControlPanel} and {@code SpeedPanel}: extends {@code JInternalFrame},
@@ -57,8 +58,20 @@ import org.slf4j.LoggerFactory;
 public class RailDriverAirStatusPanel extends JInternalFrame
         implements PropertyChangeListener, AddressListener {
 
-    private JProgressBar airLineBar;
-    private JProgressBar airReservoirBar;
+    // Tango palette colours for air gauges
+    static final Color AIR_GAUGE_FILL = new Color(0x4e, 0x9a, 0x06, 0xCC);
+    static final Color AIR_THUMB_RED = new Color(0xcc, 0x00, 0x00);
+    static final Color AIR_THUMB_YELLOW = new Color(0xed, 0xd4, 0x00);
+    static final Color AIR_THUMB_GREEN = new Color(0x4e, 0x9a, 0x06);
+
+    // Tango palette colours for load slider
+    static final Color LOAD_TRACK_FILL = new Color(0xf5, 0x79, 0x00, 0xCC);
+    static final Color LOAD_THUMB_GREEN = new Color(0x4e, 0x9a, 0x06);
+    static final Color LOAD_THUMB_YELLOW = new Color(0xed, 0xd4, 0x00);
+    static final Color LOAD_THUMB_RED = new Color(0xcc, 0x00, 0x00);
+
+    private JSlider airLineGauge;
+    private JSlider airReservoirGauge;
     private JLabel airLineReadout;
     private JLabel airReservoirReadout;
     private JSlider loadSlider;
@@ -89,38 +102,60 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
     private void initGUI() {
         JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.X_AXIS));
+        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
         this.setContentPane(mainPanel);
         this.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
 
         Font smallFont = new Font(Font.SANS_SERIF, Font.PLAIN, 10);
 
-        // --- Air line gauge (vertical) ---
+        // --- Gauges row (air line + reservoir, vertical) ---
+        JPanel gaugesRow = new JPanel();
+        gaugesRow.setLayout(new BoxLayout(gaugesRow, BoxLayout.X_AXIS));
+
+        // Air line gauge (vertical, read-only RailDriverSliderUI)
         JPanel airLinePanel = new JPanel(new BorderLayout());
         JLabel airLineLabel = new JLabel(Bundle.getMessage("RailDriverAirLine"), JLabel.CENTER);
         airLineLabel.setFont(smallFont);
-        airLineBar = new JProgressBar(JProgressBar.VERTICAL, 0, 100);
-        airLineBar.setStringPainted(false);
+        airLineGauge = new JSlider(JSlider.VERTICAL, 0, 100, 100);
+        new RailDriverSliderUI.Builder(airLineGauge)
+                .trackFill(AIR_GAUGE_FILL)
+                .thumbColorBottom(AIR_THUMB_RED)
+                .thumbColorMiddle(AIR_THUMB_YELLOW)
+                .thumbColorTop(AIR_THUMB_GREEN)
+                .readOnly(true)
+                .fillParent(true)
+                .build();
         airLineReadout = new JLabel("100%", JLabel.CENTER);
         airLineReadout.setFont(smallFont);
         airLinePanel.add(airLineLabel, BorderLayout.NORTH);
-        airLinePanel.add(airLineBar, BorderLayout.CENTER);
+        airLinePanel.add(airLineGauge, BorderLayout.CENTER);
         airLinePanel.add(airLineReadout, BorderLayout.SOUTH);
 
-        // --- Air reservoir gauge (vertical) ---
+        // Air reservoir gauge (vertical, read-only RailDriverSliderUI)
         JPanel airReservoirPanel = new JPanel(new BorderLayout());
         JLabel airReservoirLabel = new JLabel(Bundle.getMessage("RailDriverAirReservoir"), JLabel.CENTER);
         airReservoirLabel.setFont(smallFont);
-        airReservoirBar = new JProgressBar(JProgressBar.VERTICAL, 0, 100);
-        airReservoirBar.setStringPainted(false);
+        airReservoirGauge = new JSlider(JSlider.VERTICAL, 0, 100, 100);
+        new RailDriverSliderUI.Builder(airReservoirGauge)
+                .trackFill(AIR_GAUGE_FILL)
+                .thumbColorBottom(AIR_THUMB_RED)
+                .thumbColorMiddle(AIR_THUMB_YELLOW)
+                .thumbColorTop(AIR_THUMB_GREEN)
+                .readOnly(true)
+                .fillParent(true)
+                .build();
         airReservoirReadout = new JLabel("100%", JLabel.CENTER);
         airReservoirReadout.setFont(smallFont);
         airReservoirPanel.add(airReservoirLabel, BorderLayout.NORTH);
-        airReservoirPanel.add(airReservoirBar, BorderLayout.CENTER);
+        airReservoirPanel.add(airReservoirGauge, BorderLayout.CENTER);
         airReservoirPanel.add(airReservoirReadout, BorderLayout.SOUTH);
 
-        // --- Load slider (vertical) ---
+        gaugesRow.add(airLinePanel);
+        gaugesRow.add(Box.createHorizontalStrut(6));
+        gaugesRow.add(airReservoirPanel);
+
+        // --- Load slider (horizontal) ---
         JPanel loadPanel = new JPanel(new BorderLayout());
         JLabel loadLabel = new JLabel(Bundle.getMessage("RailDriverLoad"), JLabel.CENTER);
         loadLabel.setFont(smallFont);
@@ -128,10 +163,8 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         loadPanel.add(loadLabel, BorderLayout.NORTH);
         loadPanel.add(loadSlider, BorderLayout.CENTER);
 
-        mainPanel.add(airLinePanel);
-        mainPanel.add(Box.createHorizontalStrut(6));
-        mainPanel.add(airReservoirPanel);
-        mainPanel.add(Box.createHorizontalStrut(6));
+        mainPanel.add(gaugesRow);
+        mainPanel.add(Box.createVerticalStrut(4));
         mainPanel.add(loadPanel);
     }
 
@@ -191,9 +224,23 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     public void updateSettings(@Nonnull SemiRealisticSettings settings) {
         Font smallFont = new Font(Font.SANS_SERIF, Font.PLAIN, 10);
         int steps = Math.max(1, settings.numberOfLoadSteps);
+        loadSlider.setMinimum(0);
         loadSlider.setMaximum(steps);
-        loadSlider.setMajorTickSpacing(1);
-        loadSlider.setLabelTable(buildLoadLabels(steps, settings.maxLoadPcnt, smallFont));
+        loadSlider.setFont(smallFont);
+
+        int[] ticks = IntStream.rangeClosed(0, steps).toArray();
+        String[] labels = buildLoadLabelTexts(steps, settings.maxLoadPcnt);
+
+        new RailDriverSliderUI.Builder(loadSlider)
+                .trackFill(LOAD_TRACK_FILL)
+                .thumbColorBottom(LOAD_THUMB_GREEN)
+                .thumbColorMiddle(LOAD_THUMB_YELLOW)
+                .thumbColorTop(LOAD_THUMB_RED)
+                .snapToTicks(true)
+                .ticks(ticks)
+                .tickLabels(labels)
+                .build();
+
         loadSlider.setValue(Math.min(settings.loadSliderPosition, steps));
         loadSlider.revalidate();
         loadSlider.repaint();
@@ -273,8 +320,8 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     public void setEnabled(boolean isEnabled) {
         super.setEnabled(isEnabled);
         loadSlider.setEnabled(isEnabled);
-        airLineBar.setEnabled(isEnabled);
-        airReservoirBar.setEnabled(isEnabled);
+        airLineGauge.setEnabled(isEnabled);
+        airReservoirGauge.setEnabled(isEnabled);
     }
 
     // ======================== XML Persistence ========================
@@ -327,25 +374,34 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     }
 
     private void setAirLineValue(int value) {
-        airLineBar.setValue(value);
+        airLineGauge.setValue(value);
         airLineReadout.setText(value + "%");
     }
 
     private void setAirReservoirPct(int value) {
-        airReservoirBar.setValue(value);
+        airReservoirGauge.setValue(value);
         airReservoirReadout.setText(value + "%");
     }
 
     private JSlider buildLoadSlider(@Nonnull SemiRealisticSettings settings,
                                     @Nonnull Font labelFont) {
         int steps = Math.max(1, settings.numberOfLoadSteps);
-        JSlider slider = new JSlider(JSlider.VERTICAL, 0, steps,
+        JSlider slider = new JSlider(JSlider.HORIZONTAL, 0, steps,
                 Math.min(settings.loadSliderPosition, steps));
-        slider.setMajorTickSpacing(1);
-        slider.setPaintTicks(true);
-        slider.setPaintLabels(true);
-        slider.setSnapToTicks(true);
-        slider.setLabelTable(buildLoadLabels(steps, settings.maxLoadPcnt, labelFont));
+        slider.setFont(labelFont);
+
+        int[] ticks = IntStream.rangeClosed(0, steps).toArray();
+        String[] labels = buildLoadLabelTexts(steps, settings.maxLoadPcnt);
+
+        new RailDriverSliderUI.Builder(slider)
+                .trackFill(LOAD_TRACK_FILL)
+                .thumbColorBottom(LOAD_THUMB_GREEN)
+                .thumbColorMiddle(LOAD_THUMB_YELLOW)
+                .thumbColorTop(LOAD_THUMB_RED)
+                .snapToTicks(true)
+                .ticks(ticks)
+                .tickLabels(labels)
+                .build();
 
         slider.addChangeListener(e -> {
             if (!slider.getValueIsAdjusting()) {
@@ -360,33 +416,28 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     }
 
     /**
-     * Builds the tick label table for the load slider.
+     * Builds text labels for the load slider tick positions.
      *
      * @param steps total load slider positions (numberOfLoadSteps)
      * @param maxLoadPcnt maximum load percentage
-     * @param font font for labels
-     * @return label table for JSlider
+     * @return array of label texts, one per tick position (0 through steps)
      */
-    static Hashtable<Integer, JLabel> buildLoadLabels(int steps, int maxLoadPcnt,
-                                                       @Nonnull Font font) {
-        Hashtable<Integer, JLabel> labels = new Hashtable<>();
+    static String[] buildLoadLabelTexts(int steps, int maxLoadPcnt) {
+        String[] labels = new String[steps + 1];
         for (int i = 0; i <= steps; i++) {
             double pct = SemiRealisticThrottleEngine.getLoadPcnt(i, steps, maxLoadPcnt);
-            String text = Math.round(pct * 100) + "%";
-            JLabel lbl = new JLabel(text);
-            lbl.setFont(font);
-            labels.put(i, lbl);
+            labels[i] = Math.round(pct * 100) + "%";
         }
         return labels;
     }
 
     // ======================== Package-visible for testing ========================
 
-    /** @return the air line progress bar (for testing). */
-    JProgressBar getAirLineBar() { return airLineBar; }
+    /** @return the air line gauge slider (for testing). */
+    JSlider getAirLineGauge() { return airLineGauge; }
 
-    /** @return the air reservoir progress bar (for testing). */
-    JProgressBar getAirReservoirBar() { return airReservoirBar; }
+    /** @return the air reservoir gauge slider (for testing). */
+    JSlider getAirReservoirGauge() { return airReservoirGauge; }
 
     /** @return the air line numeric readout label (for testing). */
     JLabel getAirLineReadout() { return airLineReadout; }
