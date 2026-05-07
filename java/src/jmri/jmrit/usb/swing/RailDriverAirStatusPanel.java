@@ -58,17 +58,21 @@ import org.slf4j.LoggerFactory;
 public class RailDriverAirStatusPanel extends JInternalFrame
         implements PropertyChangeListener, AddressListener {
 
-    // Tango palette colours for air gauges
-    static final Color AIR_GAUGE_FILL = new Color(0x4e, 0x9a, 0x06, 0xCC);
+    // Tango palette colours — all sliders use the same orange track fill
+    static final Color TRACK_FILL = new Color(0xf5, 0x79, 0x00, 0xCC);
+
+    // Air gauge thumb gradient (red-at-0 → yellow-at-50 → green-at-100)
     static final Color AIR_THUMB_RED = new Color(0xcc, 0x00, 0x00);
     static final Color AIR_THUMB_YELLOW = new Color(0xed, 0xd4, 0x00);
     static final Color AIR_THUMB_GREEN = new Color(0x4e, 0x9a, 0x06);
 
-    // Tango palette colours for load slider
-    static final Color LOAD_TRACK_FILL = new Color(0xf5, 0x79, 0x00, 0xCC);
+    // Load slider thumb gradient (green-at-0 → yellow-at-mid → red-at-max)
     static final Color LOAD_THUMB_GREEN = new Color(0x4e, 0x9a, 0x06);
     static final Color LOAD_THUMB_YELLOW = new Color(0xed, 0xd4, 0x00);
     static final Color LOAD_THUMB_RED = new Color(0xcc, 0x00, 0x00);
+
+    /** Common preferred width for all three vertical sliders. */
+    private static final int SLIDER_WIDTH = 40;
 
     private JSlider airLineGauge;
     private JSlider airReservoirGauge;
@@ -111,11 +115,12 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
         // --- Air line gauge (vertical, read-only RailDriverSliderUI) ---
         JPanel airLinePanel = new JPanel(new BorderLayout());
+        airLinePanel.setPreferredSize(new java.awt.Dimension(SLIDER_WIDTH, 0));
         JLabel airLineLabel = new JLabel(Bundle.getMessage("RailDriverAirLine"), JLabel.CENTER);
         airLineLabel.setFont(smallFont);
         airLineGauge = new JSlider(JSlider.VERTICAL, 0, 100, 100);
         new RailDriverSliderUI.Builder(airLineGauge)
-                .trackFill(AIR_GAUGE_FILL)
+                .trackFill(TRACK_FILL)
                 .thumbColorBottom(AIR_THUMB_RED)
                 .thumbColorMiddle(AIR_THUMB_YELLOW)
                 .thumbColorTop(AIR_THUMB_GREEN)
@@ -130,11 +135,12 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
         // --- Air reservoir gauge (vertical, read-only RailDriverSliderUI) ---
         JPanel airReservoirPanel = new JPanel(new BorderLayout());
+        airReservoirPanel.setPreferredSize(new java.awt.Dimension(SLIDER_WIDTH, 0));
         JLabel airReservoirLabel = new JLabel(Bundle.getMessage("RailDriverAirReservoir"), JLabel.CENTER);
         airReservoirLabel.setFont(smallFont);
         airReservoirGauge = new JSlider(JSlider.VERTICAL, 0, 100, 100);
         new RailDriverSliderUI.Builder(airReservoirGauge)
-                .trackFill(AIR_GAUGE_FILL)
+                .trackFill(TRACK_FILL)
                 .thumbColorBottom(AIR_THUMB_RED)
                 .thumbColorMiddle(AIR_THUMB_YELLOW)
                 .thumbColorTop(AIR_THUMB_GREEN)
@@ -149,6 +155,7 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
         // --- Load slider (vertical, RailDriverSliderUI) ---
         JPanel loadPanel = new JPanel(new BorderLayout());
+        loadPanel.setPreferredSize(new java.awt.Dimension(SLIDER_WIDTH, 0));
         JLabel loadLabel = new JLabel(Bundle.getMessage("RailDriverLoad"), JLabel.CENTER);
         loadLabel.setFont(smallFont);
         loadSlider = buildLoadSlider(new SemiRealisticSettings(), smallFont);
@@ -226,7 +233,7 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         String[] labels = buildLoadLabelTexts(steps, settings.maxLoadPcnt);
 
         new RailDriverSliderUI.Builder(loadSlider)
-                .trackFill(LOAD_TRACK_FILL)
+                .trackFill(TRACK_FILL)
                 .thumbColorBottom(LOAD_THUMB_GREEN)
                 .thumbColorMiddle(LOAD_THUMB_YELLOW)
                 .thumbColorTop(LOAD_THUMB_RED)
@@ -388,7 +395,7 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         String[] labels = buildLoadLabelTexts(steps, settings.maxLoadPcnt);
 
         new RailDriverSliderUI.Builder(slider)
-                .trackFill(LOAD_TRACK_FILL)
+                .trackFill(TRACK_FILL)
                 .thumbColorBottom(LOAD_THUMB_GREEN)
                 .thumbColorMiddle(LOAD_THUMB_YELLOW)
                 .thumbColorTop(LOAD_THUMB_RED)
