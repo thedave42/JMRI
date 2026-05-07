@@ -6,6 +6,7 @@ import java.awt.Component;
 import java.awt.ComponentOrientation;
 import java.awt.Container;
 import java.awt.Dimension;
+import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Insets;
@@ -22,11 +23,9 @@ import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelListener;
-import java.util.Hashtable;
 import java.util.Objects;
 
 import javax.swing.JComponent;
-import javax.swing.JLabel;
 import javax.swing.JSlider;
 import javax.swing.SwingConstants;
 import javax.swing.plaf.basic.BasicSliderUI;
@@ -69,6 +68,7 @@ public class RailDriverSliderUI extends BasicSliderUI {
     private Color thumbTop = DEFAULT_THUMB_TOP;
     private Color thumbDisabled = DEFAULT_THUMB_DISABLED;
     private int[] tickPositions;
+    private String[] tickLabelTexts;
     private boolean readOnlyMode;
     private boolean fillParentMode;
     private Dimension fixedPreferredSize;
@@ -239,6 +239,7 @@ public class RailDriverSliderUI extends BasicSliderUI {
             ui.thumbTop = this.thumbTop;
             ui.thumbDisabled = this.thumbDisabled;
             ui.tickPositions = this.ticks;
+            ui.tickLabelTexts = this.tickLabels != null ? this.tickLabels.clone() : null;
             ui.readOnlyMode = this.readOnly;
             ui.fillParentMode = this.fillParent;
             ui.fixedPreferredSize = this.preferredSize;
@@ -251,19 +252,9 @@ public class RailDriverSliderUI extends BasicSliderUI {
             // We draw custom tick lines on the track; disable standard ticks
             slider.setPaintTicks(false);
 
-            // Build label table from tick positions + labels
-            if (tickLabels != null && ticks != null) {
-                Hashtable<Integer, JLabel> table = new Hashtable<>();
-                for (int i = 0; i < ticks.length; i++) {
-                    JLabel lbl = new JLabel(tickLabels[i]);
-                    lbl.setFont(slider.getFont());
-                    table.put(ticks[i], lbl);
-                }
-                slider.setLabelTable(table);
-                slider.setPaintLabels(true);
-            } else {
-                slider.setPaintLabels(false);
-            }
+            // Labels are painted inside the track by paintTrack();
+            // disable standard external label painting.
+            slider.setPaintLabels(false);
 
             // Install — triggers installUI() which uses readOnlyMode etc.
             slider.setUI(ui);
@@ -348,6 +339,37 @@ public class RailDriverSliderUI extends BasicSliderUI {
                     int y = yPositionForValue(val);
                     g2d.drawLine(trackRect.x, y,
                             trackRect.x + trackRect.width - 1, y);
+                }
+            }
+        }
+
+        // Tick labels painted inside the track, overlaying the fill
+        if (tickPositions != null && tickLabelTexts != null) {
+            Font labelFont = slider.getFont();
+            g2d.setFont(labelFont);
+            java.awt.FontMetrics fm = g2d.getFontMetrics(labelFont);
+            for (int i = 0; i < tickPositions.length && i < tickLabelTexts.length; i++) {
+                String text = tickLabelTexts[i];
+                if (text == null || text.isEmpty()) {
+                    continue;
+                }
+                int textW = fm.stringWidth(text);
+                int textH = fm.getAscent();
+                if (slider.getOrientation() == SwingConstants.HORIZONTAL) {
+                    int x = xPositionForValue(tickPositions[i]) - textW / 2;
+                    int y = trackRect.y + (trackRect.height + textH) / 2 - 1;
+                    // Dark shadow for readability over fill
+                    g2d.setPaint(THUMB_CONTOUR);
+                    g2d.drawString(text, x + 1, y + 1);
+                    g2d.setPaint(Color.WHITE);
+                    g2d.drawString(text, x, y);
+                } else {
+                    int x = trackRect.x + (trackRect.width - textW) / 2;
+                    int y = yPositionForValue(tickPositions[i]) + textH / 2 - 1;
+                    g2d.setPaint(THUMB_CONTOUR);
+                    g2d.drawString(text, x + 1, y + 1);
+                    g2d.setPaint(Color.WHITE);
+                    g2d.drawString(text, x, y);
                 }
             }
         }
@@ -598,6 +620,11 @@ public class RailDriverSliderUI extends BasicSliderUI {
     /** @return a copy of the tick positions array, or null. */
     int[] getTickPositions() {
         return tickPositions != null ? tickPositions.clone() : null;
+    }
+
+    /** @return a copy of the tick label texts array, or null. */
+    String[] getTickLabelTexts() {
+        return tickLabelTexts != null ? tickLabelTexts.clone() : null;
     }
 
     // ======================== Utility ========================

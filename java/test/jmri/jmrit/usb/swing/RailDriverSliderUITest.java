@@ -314,17 +314,17 @@ public class RailDriverSliderUITest {
     }
 
     @Test
-    public void testTickLabelsSetLabelTable() {
+    public void testTickLabelsStoredOnUI() {
         JSlider slider = new JSlider(0, 2, 0);
         int[] ticks = {0, 1, 2};
         String[] labels = {"Low", "Mid", "High"};
-        new RailDriverSliderUI.Builder(slider)
+        RailDriverSliderUI ui = new RailDriverSliderUI.Builder(slider)
                 .ticks(ticks)
                 .tickLabels(labels)
                 .build();
-        assertTrue(slider.getPaintLabels());
-        assertNotNull(slider.getLabelTable());
-        assertEquals(3, slider.getLabelTable().size());
+        // Labels are painted inside the track by the UI, not by JSlider
+        assertFalse(slider.getPaintLabels());
+        assertArrayEquals(new String[]{"Low", "Mid", "High"}, ui.getTickLabelTexts());
     }
 
     @Test
