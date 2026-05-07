@@ -102,18 +102,14 @@ public class RailDriverAirStatusPanel extends JInternalFrame
 
     private void initGUI() {
         JPanel mainPanel = new JPanel();
-        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
+        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.X_AXIS));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
         this.setContentPane(mainPanel);
         this.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
 
         Font smallFont = new Font(Font.SANS_SERIF, Font.PLAIN, 10);
 
-        // --- Gauges row (air line + reservoir, vertical) ---
-        JPanel gaugesRow = new JPanel();
-        gaugesRow.setLayout(new BoxLayout(gaugesRow, BoxLayout.X_AXIS));
-
-        // Air line gauge (vertical, read-only RailDriverSliderUI)
+        // --- Air line gauge (vertical, read-only RailDriverSliderUI) ---
         JPanel airLinePanel = new JPanel(new BorderLayout());
         JLabel airLineLabel = new JLabel(Bundle.getMessage("RailDriverAirLine"), JLabel.CENTER);
         airLineLabel.setFont(smallFont);
@@ -132,7 +128,7 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         airLinePanel.add(airLineGauge, BorderLayout.CENTER);
         airLinePanel.add(airLineReadout, BorderLayout.SOUTH);
 
-        // Air reservoir gauge (vertical, read-only RailDriverSliderUI)
+        // --- Air reservoir gauge (vertical, read-only RailDriverSliderUI) ---
         JPanel airReservoirPanel = new JPanel(new BorderLayout());
         JLabel airReservoirLabel = new JLabel(Bundle.getMessage("RailDriverAirReservoir"), JLabel.CENTER);
         airReservoirLabel.setFont(smallFont);
@@ -151,11 +147,7 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         airReservoirPanel.add(airReservoirGauge, BorderLayout.CENTER);
         airReservoirPanel.add(airReservoirReadout, BorderLayout.SOUTH);
 
-        gaugesRow.add(airLinePanel);
-        gaugesRow.add(Box.createHorizontalStrut(6));
-        gaugesRow.add(airReservoirPanel);
-
-        // --- Load slider (horizontal) ---
+        // --- Load slider (vertical, RailDriverSliderUI) ---
         JPanel loadPanel = new JPanel(new BorderLayout());
         JLabel loadLabel = new JLabel(Bundle.getMessage("RailDriverLoad"), JLabel.CENTER);
         loadLabel.setFont(smallFont);
@@ -163,8 +155,10 @@ public class RailDriverAirStatusPanel extends JInternalFrame
         loadPanel.add(loadLabel, BorderLayout.NORTH);
         loadPanel.add(loadSlider, BorderLayout.CENTER);
 
-        mainPanel.add(gaugesRow);
-        mainPanel.add(Box.createVerticalStrut(4));
+        mainPanel.add(airLinePanel);
+        mainPanel.add(Box.createHorizontalStrut(6));
+        mainPanel.add(airReservoirPanel);
+        mainPanel.add(Box.createHorizontalStrut(6));
         mainPanel.add(loadPanel);
     }
 
@@ -386,7 +380,7 @@ public class RailDriverAirStatusPanel extends JInternalFrame
     private JSlider buildLoadSlider(@Nonnull SemiRealisticSettings settings,
                                     @Nonnull Font labelFont) {
         int steps = Math.max(1, settings.numberOfLoadSteps);
-        JSlider slider = new JSlider(JSlider.HORIZONTAL, 0, steps,
+        JSlider slider = new JSlider(JSlider.VERTICAL, 0, steps,
                 Math.min(settings.loadSliderPosition, steps));
         slider.setFont(labelFont);
 

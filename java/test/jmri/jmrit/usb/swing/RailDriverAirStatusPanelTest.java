@@ -62,10 +62,10 @@ public class RailDriverAirStatusPanelTest {
     }
 
     @Test
-    public void testLoadSliderIsHorizontal() {
+    public void testLoadSliderIsVertical() {
         RailDriverAirStatusPanel panel = new RailDriverAirStatusPanel();
         JSlider slider = panel.getLoadSlider();
-        assertEquals(JSlider.HORIZONTAL, slider.getOrientation());
+        assertEquals(JSlider.VERTICAL, slider.getOrientation());
         panel.destroy();
     }
 
