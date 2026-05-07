@@ -452,7 +452,6 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
   - **Dyn-brake low-speed taper** (Feature 2c) — EngineDriver has no dynamic brake input; we add one with a prototype-like low-speed fade.
   - **Per-source brake load scaling** (Feature 2e) — EngineDriver applies load uniformly because it has a single brake slider. We differentiate: loco-only brakes (independent, dynamic) are reduced by load; train-wide braking (auto/air) is load-invariant. Justified by the RailDriver's separate physical levers and real-locomotive physics.
 - **JMRI threading conventions:** All timed events through `ThreadingUtil`, never `ScheduledExecutorService` or `java.util.Timer`.
-- **JMRI SPI patterns:** Persistence via `PreferencesManager`, discovered via `ServiceLoader`.
 - **Backward compatibility:** Legacy calibration files must migrate without data loss (detents preserved, physics coefficients discarded with warning).
 - **Live-apply for settings and calibration:** Saved settings and calibration are pushed to any attached engine / dispatcher immediately via PCS events. The engine accepts mid-session updates via `updateSettings()` on the layout thread. Exception: the `enabled` flag (dispatch strategy) is fixed at bind time — changing it requires closing and reopening the throttle.
 
