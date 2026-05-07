@@ -105,6 +105,13 @@
     </xs:sequence>
   </xs:complexType>
 
+  <xs:complexType name="AirStatusPanelType">
+    <xs:sequence>
+      <xs:element type="windowType" name="window"/>
+    </xs:sequence>
+    <xs:attribute type="xs:integer" name="loadSliderPosition" use="optional"/>
+  </xs:complexType>
+
   <xs:complexType name="JynstrumentType">
     <xs:sequence>
       <xs:element type="windowType" name="window"/>
@@ -118,6 +125,7 @@
       <xs:element type="FunctionPanelType" name="FunctionPanel" minOccurs="0"/>
       <xs:element type="AddressPanelType" name="AddressPanel" minOccurs="0"/>
       <xs:element type="SpeedPanelType" name="SpeedPanel" minOccurs="0"/>
+      <xs:element type="AirStatusPanelType" name="AirStatusPanel" minOccurs="0"/>
       <xs:element type="JynstrumentType" name="Jynstrument" maxOccurs="unbounded" minOccurs="0"/>
     </xs:sequence>
     <xs:attribute type="xs:integer" name="border" use="optional"/>
