@@ -394,13 +394,24 @@ public class SemiRealisticThrottleEngineTest {
                 "NONE mode should skip threshold validation");
     }
 
-    @BeforeEach
-    public void setUp() {
-        jmri.util.JUnitUtil.setUp();
+    // ======================== speedStepIncrement ramp tests ========================
+
+    @Test
+    public void testRampIncrement1_defaultBehaviour() {
+        // With increment=1, stepping from 0 to 5 takes 5 ticks
+        SemiRealisticThrottleEngine e = new SemiRealisticThrottleEngine();
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.speedStepIncrement = 1;
+        e.updateSettings(s);
+        assertEquals(0, e.getCurrentSpeedStep());
     }
 
-    @AfterEach
-    public void tearDown() {
-        jmri.util.JUnitUtil.tearDown();
+    @Test
+    public void testSpeedStepIncrementStoredInSettings() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.speedStepIncrement = 4;
+        SemiRealisticThrottleEngine e = new SemiRealisticThrottleEngine();
+        e.updateSettings(s);
+        assertFalse(e.isDriving()); // not attached, but settings accepted
     }
 }

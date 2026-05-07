@@ -49,6 +49,10 @@ public final class SemiRealisticSettings {
     public static final int DEFAULT_MAX_LOAD_PCNT = 1000;
     public static final int DEFAULT_LOAD_SLIDER_POSITION = 0;
 
+    // Ramp step size
+    /** Default speed steps per ramp tick. */
+    public static final int DEFAULT_SPEED_STEP_INCREMENT = 1;
+
     // ESU decoder-brake function defaults
     public static final int DEFAULT_ESU_LOW_FUNCTION  = 4;
     public static final int DEFAULT_ESU_MID_FUNCTION  = 5;
@@ -115,6 +119,10 @@ public final class SemiRealisticSettings {
     /** Current load slider position (0 = light engine). */
     public int loadSliderPosition = DEFAULT_LOAD_SLIDER_POSITION;
 
+    // --- Ramp step size ---
+    /** Speed steps per ramp tick (1 = smoothest, higher = coarser/faster). */
+    public int speedStepIncrement = DEFAULT_SPEED_STEP_INCREMENT;
+
     // --- ESU decoder brake ---
     public DecoderBrakeMode decoderBrakeMode = DecoderBrakeMode.NONE;
     public int esuLowFunction  = DEFAULT_ESU_LOW_FUNCTION;
@@ -152,6 +160,7 @@ public final class SemiRealisticSettings {
         numberOfLoadSteps = DEFAULT_NUMBER_OF_LOAD_STEPS;
         maxLoadPcnt = DEFAULT_MAX_LOAD_PCNT;
         loadSliderPosition = DEFAULT_LOAD_SLIDER_POSITION;
+        speedStepIncrement = DEFAULT_SPEED_STEP_INCREMENT;
         decoderBrakeMode = DecoderBrakeMode.NONE;
         esuLowFunction = DEFAULT_ESU_LOW_FUNCTION;
         esuMidFunction = DEFAULT_ESU_MID_FUNCTION;
@@ -175,6 +184,7 @@ public final class SemiRealisticSettings {
         this.numberOfLoadSteps = other.numberOfLoadSteps;
         this.maxLoadPcnt = other.maxLoadPcnt;
         this.loadSliderPosition = other.loadSliderPosition;
+        this.speedStepIncrement = other.speedStepIncrement;
         this.decoderBrakeMode = other.decoderBrakeMode;
         this.esuLowFunction = other.esuLowFunction;
         this.esuMidFunction = other.esuMidFunction;
@@ -211,6 +221,7 @@ public final class SemiRealisticSettings {
         if ((i = readInt(semiRealistic, "numberOfLoadSteps")) != null) numberOfLoadSteps = i;
         if ((i = readInt(semiRealistic, "maxLoadPcnt"))        != null) maxLoadPcnt        = i;
         if ((i = readInt(semiRealistic, "loadSliderPosition")) != null) loadSliderPosition = i;
+        if ((i = readInt(semiRealistic, "speedStepIncrement")) != null) speedStepIncrement = Math.max(1, i);
 
         String mode = readText(semiRealistic, "decoderBrakeMode");
         if (mode != null) decoderBrakeMode = DecoderBrakeMode.fromToken(mode);
@@ -237,6 +248,7 @@ public final class SemiRealisticSettings {
         e.addContent(child("numberOfLoadSteps", Integer.toString(numberOfLoadSteps)));
         e.addContent(child("maxLoadPcnt", Integer.toString(maxLoadPcnt)));
         e.addContent(child("loadSliderPosition", Integer.toString(loadSliderPosition)));
+        e.addContent(child("speedStepIncrement", Integer.toString(speedStepIncrement)));
         e.addContent(child("decoderBrakeMode", decoderBrakeMode.token()));
         e.addContent(child("esuLowFunction", Integer.toString(esuLowFunction)));
         e.addContent(child("esuMidFunction", Integer.toString(esuMidFunction)));

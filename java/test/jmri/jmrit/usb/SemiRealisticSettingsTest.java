@@ -24,6 +24,7 @@ public class SemiRealisticSettingsTest {
         assertEquals(5, s.numberOfLoadSteps);
         assertEquals(1000, s.maxLoadPcnt);
         assertEquals(0, s.loadSliderPosition);
+        assertEquals(1, s.speedStepIncrement);
         assertEquals(SemiRealisticSettings.DecoderBrakeMode.NONE, s.decoderBrakeMode);
     }
 
@@ -106,5 +107,51 @@ public class SemiRealisticSettingsTest {
                 SemiRealisticSettings.DecoderBrakeMode.fromToken("bogus"));
         assertEquals(SemiRealisticSettings.DecoderBrakeMode.NONE,
                 SemiRealisticSettings.DecoderBrakeMode.fromToken(null));
+    }
+
+    @Test
+    public void testSpeedStepIncrementDefault() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        assertEquals(1, s.speedStepIncrement);
+    }
+
+    @Test
+    public void testSpeedStepIncrementCopyAndReset() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.speedStepIncrement = 5;
+        SemiRealisticSettings copy = new SemiRealisticSettings(s);
+        assertEquals(5, copy.speedStepIncrement);
+        copy.resetToDefaults();
+        assertEquals(1, copy.speedStepIncrement);
+        assertEquals(5, s.speedStepIncrement); // original unchanged
+    }
+
+    @Test
+    public void testSpeedStepIncrementXmlRoundTrip() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.speedStepIncrement = 3;
+        org.jdom2.Element xml = s.writeTo();
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(3, loaded.speedStepIncrement);
+    }
+
+    @Test
+    public void testSpeedStepIncrementMissingElementDefaultsTo1() {
+        // Simulate a legacy XML file without the speedStepIncrement element
+        org.jdom2.Element xml = new org.jdom2.Element("semiRealistic");
+        xml.addContent(new org.jdom2.Element("enabled").setText("true"));
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(1, loaded.speedStepIncrement); // default
+    }
+
+    @Test
+    public void testSpeedStepIncrementClampedToMinimum1() {
+        org.jdom2.Element xml = new org.jdom2.Element("semiRealistic");
+        xml.addContent(new org.jdom2.Element("speedStepIncrement").setText("0"));
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(1, loaded.speedStepIncrement); // clamped
     }
 }

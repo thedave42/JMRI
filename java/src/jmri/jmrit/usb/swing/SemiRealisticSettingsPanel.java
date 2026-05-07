@@ -53,6 +53,9 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
     private final JSpinner loadStepsSpinner = new JSpinner(new SpinnerNumberModel(5, 1, 20, 1));
     private final JSpinner maxLoadPcntSpinner = new JSpinner(new SpinnerNumberModel(1000, 100, 5000, 100));
 
+    // Ramp step size
+    private final JSpinner speedStepIncrementSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10, 1));
+
     // Decoder brake
     private final JComboBox<DecoderBrakeMode> decoderBrakeCombo = new JComboBox<>(DecoderBrakeMode.values());
 
@@ -76,6 +79,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         attachDirtyOnSpinner(dynBrakeMinStepSpinner);
         attachDirtyOnSpinner(loadStepsSpinner);
         attachDirtyOnSpinner(maxLoadPcntSpinner);
+        attachDirtyOnSpinner(speedStepIncrementSpinner);
         decoderBrakeCombo.addItemListener(e -> { if (!populating) markDirty(); });
 
         JScrollPane scroll = new JScrollPane(buildBody());
@@ -107,6 +111,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         working.dynBrakeMinSpeedStep = intOf(dynBrakeMinStepSpinner);
         working.numberOfLoadSteps = intOf(loadStepsSpinner);
         working.maxLoadPcnt = intOf(maxLoadPcntSpinner);
+        working.speedStepIncrement = intOf(speedStepIncrementSpinner);
         DecoderBrakeMode mode = (DecoderBrakeMode) decoderBrakeCombo.getSelectedItem();
         working.decoderBrakeMode = mode != null ? mode : DecoderBrakeMode.NONE;
         target.semiRealistic().copyFrom(working);
@@ -144,6 +149,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         addLabeled(body, gc, "Acceleration delay (ms/step):", accelDelaySpinner);
         addLabeled(body, gc, "Deceleration delay (ms/step):", decelDelaySpinner);
         addLabeled(body, gc, "Min emit interval (ms):", emitIntervalSpinner);
+        addLabeled(body, gc, "Speed step increment:", speedStepIncrementSpinner);
 
         addSectionLabel(body, gc, "Brakes");
         addLabeled(body, gc, "Independent brake steps:", brakeStepsSpinner);
@@ -202,6 +208,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
             accelDelaySpinner.setValue(working.baseAccelDelayMs);
             decelDelaySpinner.setValue(working.baseDecelDelayMs);
             emitIntervalSpinner.setValue(working.minEmitIntervalMs);
+            speedStepIncrementSpinner.setValue(working.speedStepIncrement);
             brakeStepsSpinner.setValue(working.numberOfBrakeSteps);
             airRechargePcntSpinner.setValue(working.airLineRechargePcnt);
             airRefreshRateSpinner.setValue(working.airRefreshRateMs);
@@ -220,6 +227,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         accelDelaySpinner.setEnabled(enabled);
         decelDelaySpinner.setEnabled(enabled);
         emitIntervalSpinner.setEnabled(enabled);
+        speedStepIncrementSpinner.setEnabled(enabled);
         brakeStepsSpinner.setEnabled(enabled);
         airRechargePcntSpinner.setEnabled(enabled);
         airRefreshRateSpinner.setEnabled(enabled);

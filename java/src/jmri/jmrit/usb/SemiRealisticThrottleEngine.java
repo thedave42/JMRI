@@ -806,11 +806,12 @@ public final class SemiRealisticThrottleEngine {
         if (!attached || throttle == null || settings == null) return;
         if (currentSpeedStep == targetSpeedStep) return; // arrived
 
-        // Step by 1 in the appropriate direction
+        // Step by speedStepIncrement in the appropriate direction, clamping at target
+        int increment = Math.max(1, settings.speedStepIncrement);
         if (currentSpeedStep < targetSpeedStep) {
-            currentSpeedStep++;
+            currentSpeedStep = Math.min(currentSpeedStep + increment, targetSpeedStep);
         } else {
-            currentSpeedStep--;
+            currentSpeedStep = Math.max(currentSpeedStep - increment, targetSpeedStep);
         }
 
         // Emit the new speed setting
