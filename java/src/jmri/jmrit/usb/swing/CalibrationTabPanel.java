@@ -17,7 +17,6 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 
-import jmri.InstanceManager;
 import jmri.jmrit.usb.RailDriverCalibration;
 import jmri.jmrit.usb.RailDriverCalibration.AutoBrakeCal;
 import jmri.jmrit.usb.RailDriverCalibration.IndepBrakeCal;
@@ -25,26 +24,25 @@ import jmri.jmrit.usb.RailDriverCalibration.LightsCal;
 import jmri.jmrit.usb.RailDriverCalibration.ReverserCal;
 import jmri.jmrit.usb.RailDriverCalibration.ThrottleCal;
 import jmri.jmrit.usb.RailDriverCalibration.WiperCal;
-import jmri.jmrit.usb.RailDriverPreferencesManager;
+import jmri.jmrit.usb.swing.RailDriverSettingsFrame.DirtyTrackingTab;
 
 /**
- * Calibration editor for the RailDriver Modern Desktop's analog
- * controls: visual bars with detent markers and a live cursor that
- * tracks lever movements.
- * <p>
- * Hosted as a tab in the JMRI Preferences window under "RailDriver"
- * via {@link RailDriverCalibrationPreferencesPanel}.
+ * Calibration tab content for {@link RailDriverSettingsFrame}: visual bars
+ * with detent markers and a live cursor that tracks lever movements. The
+ * UI body is the same one previously hosted by the standalone
+ * {@code RailDriverCalibrationFrame}; this class only extracts it into a
+ * {@code JPanel} that participates in the unified frame's dirty-tracking
+ * model.
  * <p>
  * Capture buttons, per-section "Reset to defaults" buttons, and the
- * "Reset all to defaults" button mark the panel dirty so the
- * Preferences Save button activates.
- * {@link #resetFromCalibration(RailDriverCalibration)} clears
- * the dirty state after a successful save round-trip.
+ * "Reset all to defaults" button mark the panel dirty so the host frame's
+ * Apply button enables. {@link #resetToFile(RailDriverCalibration)} clears
+ * the dirty state after a successful Save/Apply round-trip from disk.
  * <p>
  * See {@code docs/rpi-raildriver/semi-realistic-throttle-plan.md} §2.4 and
  * §3.1.
  */
-public final class CalibrationTabPanel extends JPanel implements RailDriverPreferencesEditor, PropertyChangeListener {
+public final class CalibrationTabPanel extends JPanel implements DirtyTrackingTab, PropertyChangeListener {
 
     private static final int AXIS_COUNT = 7;
 
@@ -72,15 +70,7 @@ public final class CalibrationTabPanel extends JPanel implements RailDriverPrefe
         for (int i = 0; i < AXIS_COUNT; i++) {
             liveBytes[i] = -1;
         }
-        // Load current calibration from PreferencesManager (or defaults).
-        RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
-                RailDriverPreferencesManager.class);
-        if (mgr != null) {
-            this.working = new RailDriverCalibration();
-            this.working.copyFrom(mgr.getCalibration());
-        } else {
-            this.working = new RailDriverCalibration();
-        }
+        this.working = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
 
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
@@ -114,7 +104,7 @@ public final class CalibrationTabPanel extends JPanel implements RailDriverPrefe
         }
     }
 
-    // -------- RailDriverPreferencesEditor --------
+    // -------- DirtyTrackingTab --------
 
     @Override
     public boolean isDirty() {
@@ -140,7 +130,7 @@ public final class CalibrationTabPanel extends JPanel implements RailDriverPrefe
     }
 
     @Override
-    public void resetFromCalibration(RailDriverCalibration freshFromDisk) {
+    public void resetToFile(RailDriverCalibration freshFromDisk) {
         working.copyFrom(freshFromDisk);
         allBars.forEach(CalibrationBar::refresh);
         auxRefreshers.forEach(Runnable::run);

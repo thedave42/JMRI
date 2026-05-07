@@ -1,7 +1,23 @@
 package jmri.jmrit.usb;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
+
+import jmri.profile.Profile;
+import jmri.profile.ProfileManager;
+
+import org.jdom2.Document;
+import org.jdom2.Element;
+import org.jdom2.JDOMException;
+import org.jdom2.input.SAXBuilder;
+import org.jdom2.output.Format;
+import org.jdom2.output.XMLOutputter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Per-profile calibration data for the RailDriver Modern Desktop's analog controls.
@@ -10,12 +26,22 @@ import javax.annotation.Nonnull;
  * captured position is stored as a boxed Integer (byte 0..255) or {@code null}
  * meaning "not yet captured — fall back to the default".
  * <p>
- * Persistence is handled by {@link RailDriverPreferencesManager} via
- * AuxiliaryConfiguration fragments. This class is a pure data holder.
+ * Persistence is a self-managed XML file at
+ * {@code <profile>/profile/raildriver-calibration.xml}, read with JDOM2. See
+ * {@code docs/rpi-raildriver/plan-impl-phase3.md} §2.2 for the schema.
  *
  * @author the Dave (phase 3)
  */
 public final class RailDriverCalibration {
+
+    private static final String FILE_NAME = "raildriver-calibration.xml";
+    // Schema version bumped to "2" for the semi-realistic-throttle feature
+    // (see docs/rpi-raildriver/semi-realistic-throttle-plan.md). Stage 1 still
+    // writes only the existing six children and tolerates absence of the new
+    // <semiRealistic> subtree on read; stage 2 adds parsing/serialisation of
+    // that subtree. Pre-existing version="1" files load cleanly because the
+    // loader does not branch on version.
+    private static final String SCHEMA_VERSION = "2";
 
     // Defaults from control-inventory.md. Centre/middle positions that the
     // capture protocol intentionally does not measure are filled with sensible
@@ -228,10 +254,80 @@ public final class RailDriverCalibration {
         return (off + full) / 2.0;
     }
 
-    // -------- persistence removed (TASK-053) --------
-    // File-based save/loadOrDefault/getDefaultFile methods have been
-    // removed. Persistence is now handled exclusively by
-    // RailDriverPreferencesManager via AuxiliaryConfiguration.
+    // -------- persistence --------
+
+    /**
+     * Returns the canonical per-profile calibration file location, or
+     * {@code null} if no profile is active.
+     */
+    @CheckForNull
+    public static File getDefaultFile() {
+        Profile profile = ProfileManager.getDefault().getActiveProfile();
+        if (profile == null) {
+            return null;
+        }
+        return new File(new File(profile.getPath(), Profile.PROFILE), FILE_NAME);
+    }
+
+    /**
+     * Loads calibration from the given file, falling back to defaults for
+     * any field that is missing, empty, or unparseable. Always returns a
+     * non-null instance.
+     *
+     * @param file the XML file to read; may be {@code null} (returns defaults)
+     */
+    @Nonnull
+    public static RailDriverCalibration loadOrDefault(@CheckForNull File file) {
+        RailDriverCalibration cal = new RailDriverCalibration();
+        if (file == null || !file.exists() || !file.canRead()) {
+            return cal;
+        }
+        try {
+            Document doc = new SAXBuilder().build(file);
+            Element root = doc.getRootElement();
+            // Tolerate any version (currently "1" or "2") or attribute absence:
+            // unknown children — including a future <semiRealistic> subtree
+            // populated by stage 2 of the semi-realistic throttle plan — are
+            // silently ignored at this stage so a forward-saved file still
+            // round-trips its known fields.
+            populateReverser(cal.reverser,     root.getChild("reverser"));
+            populateThrottle(cal.throttle,     root.getChild("throttle"));
+            populateAutoBrake(cal.autoBrake,   root.getChild("autoBrake"));
+            populateIndepBrake(cal.indepBrake, root.getChild("indepBrake"));
+            populateWiper(cal.wiper,           root.getChild("wiper"));
+            populateLights(cal.lights,         root.getChild("lights"));
+            cal.semiRealistic.loadFrom(         root.getChild("semiRealistic"));
+        } catch (IOException | JDOMException ex) {
+            log.warn("Failed to parse RailDriver calibration file '{}'; falling back to defaults", file, ex);
+        }
+        return cal;
+    }
+
+    /**
+     * Persists this calibration to the given file, creating parent
+     * directories as needed.
+     */
+    public void save(@Nonnull File file) throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("Could not create parent directory: " + parent);
+        }
+        Element root = new Element("raildriver-calibration");
+        root.setAttribute("version", SCHEMA_VERSION);
+        root.addContent(buildReverser(reverser));
+        root.addContent(buildThrottle(throttle));
+        root.addContent(buildAutoBrake(autoBrake));
+        root.addContent(buildIndepBrake(indepBrake));
+        root.addContent(buildWiper(wiper));
+        root.addContent(buildLights(lights));
+        root.addContent(semiRealistic.writeTo());
+        Document doc = new Document(root);
+        XMLOutputter fmt = new XMLOutputter(Format.getPrettyFormat()
+                .setLineSeparator(System.lineSeparator()));
+        try (FileWriter fw = new FileWriter(file)) {
+            fmt.output(doc, fw);
+        }
+    }
 
     /**
      * Copies every field from {@code other} into this instance. Used by
@@ -305,4 +401,153 @@ public final class RailDriverCalibration {
         lights.full = null;
         semiRealistic.resetToDefaults();
     }
+
+    // -------- XML helpers --------
+
+    private static void populateReverser(ReverserCal r, @CheckForNull Element e) {
+        if (e == null) return;
+        r.forward = readInt(e, "forward");
+        r.neutral = readInt(e, "neutral");
+        r.reverse = readInt(e, "reverse");
+    }
+
+    private static void populateThrottle(ThrottleCal t, @CheckForNull Element e) {
+        if (e == null) return;
+        t.fullThrottle = readInt(e, "fullThrottle");
+        t.idleLow      = readInt(e, "idleLow");
+        t.idleHigh     = readInt(e, "idleHigh");
+        t.fullDynBrake = readInt(e, "fullDynBrake");
+    }
+
+    private static void populateAutoBrake(AutoBrakeCal a, @CheckForNull Element e) {
+        if (e == null) return;
+        a.released = readInt(e, "released");
+        a.sup      = readInt(e, "sup");
+        a.cs       = readInt(e, "cs");
+        a.emg      = readInt(e, "emg");
+    }
+
+    private static void populateIndepBrake(IndepBrakeCal i, @CheckForNull Element e) {
+        if (e == null) return;
+        i.fullRelease     = readInt(e, "fullRelease");
+        i.fullApplication = readInt(e, "fullApplication");
+        i.bailoffRest     = readInt(e, "bailoffRest");
+        i.bailoffPressed  = readInt(e, "bailoffPressed");
+    }
+
+    private static void populateWiper(WiperCal w, @CheckForNull Element e) {
+        if (e == null) return;
+        w.off  = readInt(e, "off");
+        w.slow = readInt(e, "slow");
+        w.full = readInt(e, "full");
+    }
+
+    private static void populateLights(LightsCal l, @CheckForNull Element e) {
+        if (e == null) return;
+        l.off  = readInt(e, "off");
+        l.dim  = readInt(e, "dim");
+        l.full = readInt(e, "full");
+    }
+
+    private static Element buildReverser(ReverserCal r) {
+        Element e = new Element("reverser");
+        e.addContent(intElement("forward", r.forward));
+        e.addContent(intElement("neutral", r.neutral));
+        e.addContent(intElement("reverse", r.reverse));
+        return e;
+    }
+
+    private static Element buildThrottle(ThrottleCal t) {
+        Element e = new Element("throttle");
+        e.addContent(intElement("fullThrottle", t.fullThrottle));
+        e.addContent(intElement("idleLow",      t.idleLow));
+        e.addContent(intElement("idleHigh",     t.idleHigh));
+        e.addContent(intElement("fullDynBrake", t.fullDynBrake));
+        return e;
+    }
+
+    private static Element buildAutoBrake(AutoBrakeCal a) {
+        Element e = new Element("autoBrake");
+        e.addContent(intElement("released", a.released));
+        e.addContent(intElement("sup",      a.sup));
+        e.addContent(intElement("cs",       a.cs));
+        e.addContent(intElement("emg",      a.emg));
+        return e;
+    }
+
+    private static Element buildIndepBrake(IndepBrakeCal i) {
+        Element e = new Element("indepBrake");
+        e.addContent(intElement("fullRelease",     i.fullRelease));
+        e.addContent(intElement("fullApplication", i.fullApplication));
+        e.addContent(intElement("bailoffRest",     i.bailoffRest));
+        e.addContent(intElement("bailoffPressed", i.bailoffPressed));
+        return e;
+    }
+
+    private static Element buildWiper(WiperCal w) {
+        Element e = new Element("wiper");
+        e.addContent(intElement("off",  w.off));
+        e.addContent(intElement("slow", w.slow));
+        e.addContent(intElement("full", w.full));
+        return e;
+    }
+
+    private static Element buildLights(LightsCal l) {
+        Element e = new Element("lights");
+        e.addContent(intElement("off",  l.off));
+        e.addContent(intElement("dim",  l.dim));
+        e.addContent(intElement("full", l.full));
+        return e;
+    }
+
+    @CheckForNull
+    private static Integer readInt(Element parent, String childName) {
+        Element child = parent.getChild(childName);
+        if (child == null) return null;
+        String text = child.getTextTrim();
+        if (text == null || text.isEmpty()) return null;
+        try {
+            int v = Integer.parseInt(text);
+            if (v < 0 || v > 255) {
+                log.warn("RailDriver calibration {} value {} out of byte range; ignoring", childName, v);
+                return null;
+            }
+            return v;
+        } catch (NumberFormatException ex) {
+            log.warn("RailDriver calibration {} value '{}' is not a valid integer; ignoring", childName, text);
+            return null;
+        }
+    }
+
+    @CheckForNull
+    private static Double readDouble(Element parent, String childName) {
+        Element child = parent.getChild(childName);
+        if (child == null) return null;
+        String text = child.getTextTrim();
+        if (text == null || text.isEmpty()) return null;
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException ex) {
+            log.warn("RailDriver calibration {} value '{}' is not a valid double; ignoring", childName, text);
+            return null;
+        }
+    }
+
+    private static Element intElement(String name, @CheckForNull Integer value) {
+        Element e = new Element(name);
+        if (value != null) {
+            e.setText(value.toString());
+        }
+        return e;
+    }
+
+    private static Element doubleElement(String name, @CheckForNull Double value) {
+        Element e = new Element(name);
+        if (value != null) {
+            e.setText(value.toString());
+        }
+        return e;
+    }
+
+    private static final Logger log = LoggerFactory.getLogger(RailDriverCalibration.class);
 }

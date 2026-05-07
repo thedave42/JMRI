@@ -18,19 +18,16 @@ import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
 
-import jmri.InstanceManager;
+import jmri.jmrit.usb.swing.RailDriverSettingsFrame.DirtyTrackingTab;
 import jmri.jmrit.usb.RailDriverCalibration;
-import jmri.jmrit.usb.RailDriverPreferencesManager;
 import jmri.jmrit.usb.SemiRealisticSettings;
 import jmri.jmrit.usb.SemiRealisticSettings.DecoderBrakeMode;
 
 /**
- * Settings editor for the semi-realistic throttle engine parameters.
- * Exposes EngineDriver-aligned step-rate fields. Hosted as a tab in the
- * JMRI Preferences window under the "RailDriver" category via
- * {@link RailDriverSemiRealisticPreferencesPanel}.
+ * Settings tab content for the unified RailDriver settings window.
+ * Exposes EngineDriver-aligned step-rate fields.
  */
-public final class SemiRealisticSettingsPanel extends JPanel implements RailDriverPreferencesEditor {
+public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTrackingTab {
 
     private final SemiRealisticSettings working = new SemiRealisticSettings();
 
@@ -66,15 +63,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements RailDriv
     public SemiRealisticSettingsPanel() {
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-
-        // Load current settings from the PreferencesManager (or defaults).
-        RailDriverPreferencesManager mgr = InstanceManager.getNullableDefault(
-                RailDriverPreferencesManager.class);
-        if (mgr != null) {
-            working.copyFrom(mgr.getCalibration().semiRealistic());
-        } else {
-            working.resetToDefaults();
-        }
+        working.resetToDefaults();
 
         enableCheckbox.addItemListener(e -> { if (!populating) markDirty(); refreshEnableState(); });
         attachDirtyOnSpinner(accelDelaySpinner);
@@ -98,7 +87,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements RailDriv
         refreshEnableState();
     }
 
-    // -------- RailDriverPreferencesEditor --------
+    // -------- DirtyTrackingTab --------
 
     @Override public boolean isDirty() { return dirty; }
 
@@ -125,7 +114,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements RailDriv
     }
 
     @Override
-    public void resetFromCalibration(RailDriverCalibration freshFromDisk) {
+    public void resetToFile(RailDriverCalibration freshFromDisk) {
         working.copyFrom(freshFromDisk.semiRealistic());
         renderToFields();
         setDirty(false);
