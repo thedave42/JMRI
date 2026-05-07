@@ -20,21 +20,13 @@ Introduce a **logarithmic delay curve** to the acceleration ramp. When the throt
 
 - **Realism:** Operators experience a power-delivery feel that closely mimics real locomotive acceleration characteristics — fast initial pull followed by a gradual settling toward cruising speed.
 - **Differentiated throttle response:** Small throttle adjustments feel gentle; large throttle openings feel powerful and urgent.
-- **Backward compatibility:** The feature is opt-in (disabled by default) and all existing settings, load, and brake behaviors are preserved when disabled.
+- **Non-disruptive:** The power curve integrates naturally into the existing semi-realistic throttle engine — all existing load and brake behaviors continue to function as before.
 
 ## 3. User Personas
 
-### RailDriver Operator (Primary)
+### RailDriver Operator
 
 A model railroad enthusiast using a RailDriver Modern Desktop USB controller connected to JMRI. They value realistic train handling and expect the physical controls to produce behavior that mirrors real locomotive operation. They have configured the semi-realistic throttle engine and want the acceleration to feel like real motive power rather than a linear speed ramp.
-
-### On-Screen Throttle User (Secondary)
-
-A JMRI user operating trains via the on-screen throttle interface with the semi-realistic engine enabled. While they do not have the tactile feedback of a hardware controller, they still benefit from more realistic acceleration behavior when moving the virtual throttle slider.
-
-### Layout Operator / Dispatcher (Tertiary)
-
-A user running automated or semi-automated operations who may enable the semi-realistic engine for specific consists. They need the power curve to interact correctly with existing load, brake, and speed profile settings without unexpected behavior.
 
 ## 4. High-Level User Journeys
 
@@ -43,12 +35,10 @@ A user running automated or semi-automated operations who may enable the semi-re
 1. Operator opens **Debug → RailDriver Settings** (or equivalent settings UI).
 2. Operator navigates to the Semi-Realistic Engine settings tab.
 3. Operator sees a new **Power Curve** section with:
-   - An **Enable Power Curve** checkbox (off by default).
    - A **Curve Steepness** slider or spinner (default ~9.0).
    - A **Displacement Scaling** slider or spinner (default ~1.5).
-4. Operator enables the power curve and accepts the defaults.
-5. Operator saves settings and begins operating.
-6. When the operator pushes the throttle lever forward, the train accelerates quickly at first, then smoothly settles toward the target speed — the feel is noticeably more realistic than the previous linear ramp.
+4. Operator adjusts the curve steepness to taste and saves settings.
+5. When the operator pushes the throttle lever forward, the train accelerates quickly at first, then smoothly settles toward the target speed — the feel is noticeably more realistic than the previous linear ramp.
 
 ### Journey 2: Experiencing Displacement-Scaled Acceleration
 
@@ -88,23 +78,21 @@ A user running automated or semi-automated operations who may enable the semi-re
 - **FR-2:** When power curve is enabled and the engine is accelerating (currentSpeedStep < targetSpeedStep), the inter-step delay shall be computed as a logarithmic interpolation between `minEmitIntervalMs` (floor) and `baseAccelDelayMs × loadMultiplier` (ceiling), based on ramp progress (0.0 at ramp start → 1.0 at target).
 - **FR-3:** The logarithmic curve shall use the formula: `delay = minDelay + (maxDelay - minDelay) × [log(1 + progress × k) / log(1 + k)]`, where `k` is the configurable curve steepness.
 - **FR-4:** The effective curve steepness shall scale with throttle displacement: `effectiveK = baseSteepness × (1.0 + displacementFraction × displacementScale)`, where `displacementFraction = totalRampDistance / maxSpeedSteps`.
-- **FR-5:** When power curve is disabled, `computeRampDelay()` shall behave identically to the current implementation (no regression).
-- **FR-6:** The power curve shall apply only to acceleration. Deceleration (coast-down, braking) shall continue to use the existing constant-delay behavior.
+- **FR-5:** The power curve shall apply only to acceleration. Deceleration (coast-down, braking) shall continue to use the existing constant-delay behavior.
 - **FR-7:** Existing load multiplier and brake modifier effects on `targetAcceleration` shall continue to function, modifying the delay ceiling that the logarithmic curve approaches.
 - **FR-8:** When the throttle lever is moved to a new position during an active ramp, `rampStartStep` shall be reset to the current speed step and a new power curve shall begin from that point.
 - **FR-9:** The speed step increment shall remain at 1 per tick (preserving smooth DCC speed granularity) — the power curve affects only the timing between steps.
-- **FR-10:** Three new settings shall be added to `SemiRealisticSettings`:
-  - `powerCurveEnabled` (boolean, default `false`)
+- **FR-10:** Two new settings shall be added to `SemiRealisticSettings`:
   - `powerCurveSteepness` (double, default `9.0`, valid range 1.0–50.0)
   - `powerCurveDisplacementScale` (double, default `1.5`, valid range 0.0–5.0)
 - **FR-11:** The new settings shall be persisted to and loaded from the RailDriver calibration XML using the existing `SemiRealisticSettings` XML store/load pattern.
-- **FR-12:** The settings UI shall expose the power curve controls in the semi-realistic engine settings tab, matching the existing control style (checkbox, labeled spinners with tooltips).
+- **FR-12:** The settings UI shall expose the power curve controls in the semi-realistic engine settings tab, matching the existing control style (labeled spinners with tooltips).
 
 ### Non-Functional Requirements
 
 - **NFR-1: Threading compliance.** All new logic shall execute on the JMRI layout thread. No new threads, executors, or timers shall be introduced. Timed events shall use `ThreadingUtil.runOnLayoutDelayed()` exclusively.
 - **NFR-2: Performance.** The logarithmic computation in `computeRampDelay()` shall add negligible overhead — `Math.log1p()` is called once per ramp tick (every 50–300ms), which is trivially cheap.
-- **NFR-3: Backward compatibility.** Enabling the power curve shall not change the behavior of any other engine feature (braking, load, air line, dynamic brake, bail-off, direction interlocking). Disabling the power curve shall produce byte-identical DCC output to the current implementation given the same inputs.
+- **NFR-3: Non-interference.** The power curve shall not change the behavior of any other engine feature (braking, load, air line, dynamic brake, bail-off, direction interlocking).
 - **NFR-4: Testability.** The logarithmic delay computation shall be extractable as a pure static method for unit testing with known inputs and expected outputs.
 - **NFR-5: Epoch safety.** The `rampStartStep` shall be invalidated (or ignored) when the ramp epoch changes, preventing stale progress calculations from leaking across ramp boundaries.
 
@@ -114,7 +102,7 @@ A user running automated or semi-automated operations who may enable the semi-re
 |--------|--------|-------------|
 | Operator-perceived realism | Subjective improvement over linear ramp | Operator feedback during testing |
 | Displacement differentiation | 50% push reaches 15% speed mark ≥20% faster than 25% push | Timed test with logging enabled |
-| No regression in existing behavior | All existing unit tests pass with power curve disabled | CI / `ant headlesstest` |
+| No regression in existing behavior | All existing unit tests pass | CI / `ant headlesstest` |
 | Settings persist correctly | Power curve settings round-trip through XML save/load | Unit test: save → load → compare |
 | Load interaction correctness | Power curve delay ceiling scales with load multiplier | Manual test at load positions 0, 3, 5 |
 
@@ -171,13 +159,13 @@ The semi-realistic throttle engine is the core differentiator for realistic Rail
 ### Story 4: Power Curve Settings Persistence
 
 **As a** RailDriver operator,
-**I want** my power curve settings (enabled, steepness, displacement scale) to be saved and restored with my RailDriver calibration,
+**I want** my power curve settings (steepness, displacement scale) to be saved and restored with my RailDriver calibration,
 **so that** I don't have to reconfigure them every session.
 
 **Acceptance Criteria:**
-- `powerCurveEnabled`, `powerCurveSteepness`, and `powerCurveDisplacementScale` are stored in the calibration XML.
+- `powerCurveSteepness` and `powerCurveDisplacementScale` are stored in the calibration XML.
 - Settings round-trip correctly through save and load.
-- Missing XML elements (older calibration files) default to power curve disabled with default steepness and displacement scale values.
+- Missing XML elements (older calibration files) default to steepness 9.0 and displacement scale 1.5.
 
 ### Story 5: Power Curve Settings UI
 
@@ -186,9 +174,8 @@ The semi-realistic throttle engine is the core differentiator for realistic Rail
 **so that** I can adjust the feel to my preference without editing XML.
 
 **Acceptance Criteria:**
-- An **Enable Power Curve** checkbox appears in the settings tab.
-- A **Curve Steepness** spinner (range 1.0–50.0, step 0.5) appears when power curve is enabled.
-- A **Displacement Scale** spinner (range 0.0–5.0, step 0.1) appears when power curve is enabled.
+- A **Curve Steepness** spinner (range 1.0–50.0, step 0.5) appears in the settings tab.
+- A **Displacement Scale** spinner (range 0.0–5.0, step 0.1) appears in the settings tab.
 - Tooltips explain what each setting does in plain language.
 - The controls follow the existing dirty-tracking and save/reset pattern of the settings tab.
 
@@ -202,15 +189,3 @@ The semi-realistic throttle engine is the core differentiator for realistic Rail
 - The delay ceiling used by the logarithmic curve is `baseAccelDelayMs × loadMultiplier` (not just `baseAccelDelayMs`).
 - At high load, the initial burst is still present (delay starts near `minEmitIntervalMs`) but the curve stretches over a wider delay range, producing slower overall acceleration.
 - At zero load (light engine), the power curve operates with the unmodified `baseAccelDelayMs` ceiling.
-
-### Story 7: Backward Compatibility / Feature Toggle
-
-**As a** JMRI user who has not enabled the power curve,
-**I want** the throttle engine to behave exactly as it does today,
-**so that** this new feature does not change my experience unless I opt in.
-
-**Acceptance Criteria:**
-- Power curve is disabled by default (`powerCurveEnabled = false`).
-- When disabled, `computeRampDelay()` returns the same value as the current implementation for all inputs.
-- All existing unit tests pass without modification when power curve is disabled.
-- Calibration files without power curve XML elements load without errors or warnings.
