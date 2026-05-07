@@ -292,6 +292,11 @@ public class RailDriverSliderUI extends BasicSliderUI {
                     RenderingHints.VALUE_ANTIALIAS_ON);
         }
         super.paint(g, c);
+        // Paint tick labels last so they render above the thumb
+        if (tickPositions != null && tickLabelTexts != null
+                && g instanceof Graphics2D) {
+            paintTickLabels((Graphics2D) g);
+        }
     }
 
     @Override
@@ -343,37 +348,37 @@ public class RailDriverSliderUI extends BasicSliderUI {
             }
         }
 
-        // Tick labels painted inside the track, overlaying the fill
-        if (tickPositions != null && tickLabelTexts != null) {
-            Font labelFont = slider.getFont();
-            g2d.setFont(labelFont);
-            java.awt.FontMetrics fm = g2d.getFontMetrics(labelFont);
-            for (int i = 0; i < tickPositions.length && i < tickLabelTexts.length; i++) {
-                String text = tickLabelTexts[i];
-                if (text == null || text.isEmpty()) {
-                    continue;
-                }
-                int textW = fm.stringWidth(text);
-                int textH = fm.getAscent();
-                if (slider.getOrientation() == SwingConstants.HORIZONTAL) {
-                    int x = xPositionForValue(tickPositions[i]) - textW / 2;
-                    int y = trackRect.y + (trackRect.height + textH) / 2 - 1;
-                    // Dark shadow for readability over fill
-                    g2d.setPaint(THUMB_CONTOUR);
-                    g2d.drawString(text, x + 1, y + 1);
-                    g2d.setPaint(Color.WHITE);
-                    g2d.drawString(text, x, y);
-                } else {
-                    int x = trackRect.x + (trackRect.width - textW) / 2;
-                    int y = yPositionForValue(tickPositions[i]) + textH / 2 - 1;
-                    g2d.setPaint(THUMB_CONTOUR);
-                    g2d.drawString(text, x + 1, y + 1);
-                    g2d.setPaint(Color.WHITE);
-                    g2d.drawString(text, x, y);
-                }
+        g2d.setPaint(oldPaint);
+    }
+
+    /**
+     * Paints tick labels inside the track, overlaying both the fill and
+     * the thumb. Called from {@link #paint} after all other painting.
+     */
+    private void paintTickLabels(Graphics2D g2d) {
+        Paint oldPaint = g2d.getPaint();
+        Font labelFont = slider.getFont();
+        g2d.setFont(labelFont);
+        java.awt.FontMetrics fm = g2d.getFontMetrics(labelFont);
+        for (int i = 0; i < tickPositions.length && i < tickLabelTexts.length; i++) {
+            String text = tickLabelTexts[i];
+            if (text == null || text.isEmpty()) {
+                continue;
+            }
+            int textW = fm.stringWidth(text);
+            int textH = fm.getAscent();
+            if (slider.getOrientation() == SwingConstants.HORIZONTAL) {
+                int x = xPositionForValue(tickPositions[i]) - textW / 2;
+                int y = trackRect.y + (trackRect.height + textH) / 2 - 1;
+                g2d.setPaint(Color.BLACK);
+                g2d.drawString(text, x, y);
+            } else {
+                int x = trackRect.x + (trackRect.width - textW) / 2;
+                int y = yPositionForValue(tickPositions[i]) + textH / 2 - 1;
+                g2d.setPaint(Color.BLACK);
+                g2d.drawString(text, x, y);
             }
         }
-
         g2d.setPaint(oldPaint);
     }
 
