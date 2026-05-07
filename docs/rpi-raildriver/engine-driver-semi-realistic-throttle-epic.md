@@ -300,59 +300,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ---
 
-### Feature 7: Profile-Aware Persistence (`AuxiliaryConfiguration`)
-
-**Description:** Migrate persistence from a freestanding `raildriver-calibration.xml` file to two `AuxiliaryConfiguration` fragments under namespace `http://jmri.org/xml/schema/raildriver/3`:
-
-| Fragment                      | Space   | Content                                    |
-|-------------------------------|---------|--------------------------------------------|
-| `<rd:hardwareCalibration>`    | Private | Per-machine HID byte detents (7 axes)      |
-| `<rd:semiRealistic>`          | Shared  | All EngineDriver-aligned operator preferences |
-
-**Key Behaviours:**
-- Two XSD schemas under `xml/schema/raildriver/` (Venetian Blinds pattern).
-- Missing fragment → schema defaults applied silently.
-- Unparseable attribute → `ErrorHandler` report + default substituted.
-- Unknown namespace (future `/4`) → treated as missing; defaults applied.
-
-**User Stories:**
-
-- As an operator, I want my semi-realistic preferences to travel with my profile when I share it across computers.
-- As an operator, I want my per-machine HID calibration to stay private to each computer.
-
-**Acceptance Criteria:**
-- [ ] Shared fragment persists to root `profile.xml`; private fragment persists to per-node `profile.xml`.
-- [ ] Both XSDs validate via `xmllint -schema http://www.w3.org/2001/XMLSchema.xsd`.
-- [ ] Standard JMRI `trueFalseType` used for the `enabled` attribute.
-- [ ] Enum-valued attributes use `EnumIoNames` with `ErrorHandler` routing.
-- [ ] Schema annotations include `<jmri:usingclass>` identifying the reader/writer class.
-
----
-
-### Feature 8: Legacy File Migration
-
-**Description:** One-time migration from the freestanding `<profile-root>/profile/raildriver-calibration.xml` (v1/v2) to the new `AuxiliaryConfiguration` fragments. Runs automatically on first load of a profile with the new code.
-
-**Migration Rules:**
-1. **Only legacy file exists:** Detents copied to `<rd:hardwareCalibration>` (private). v2 `<semiRealistic>` subtree **fully discarded** (field meanings changed incompatibly). Fresh `<rd:semiRealistic>` at defaults written to shared space. Legacy file renamed to `.bak`. Warn-level `ErrorHandler` report for v2 discard.
-2. **Both exist:** New fragments win. Legacy file left in place. Warn-level report.
-3. **Neither exists:** Defaults on first load; fragment created on first save.
-4. **Idempotent:** Repeated calls short-circuit.
-
-**User Stories:**
-
-- As an operator upgrading from an older JMRI version, I want my captured calibration detents preserved automatically.
-- As an operator, I want the old file renamed (not deleted) so I can review it if needed.
-
-**Acceptance Criteria:**
-- [ ] v1 file → detents migrate, defaults for semi-realistic, no error report.
-- [ ] v2 file → detents migrate, v2 semi-realistic discarded, warn-level error report fires.
-- [ ] Legacy file renamed to `.bak` (not deleted).
-- [ ] Migration is idempotent — running twice produces no further filesystem changes.
-
----
-
-### Feature 9: Throttle-Toolbar Connectivity Indicator (Jynstrument)
+### Feature 7: Throttle-Toolbar Connectivity Indicator (Jynstrument)
 
 **Description:** A passive RailDriver-USB connectivity indicator on the throttle window toolbar. Two visual states only: active (connected) or greyed (disconnected). Clicking opens the RailDriver Settings window. Not mode-aware.
 
@@ -371,7 +319,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ---
 
-### Feature 10: Package Relocation
+### Feature 8: Package Relocation
 
 **Description:** Relocate all RailDriver classes from `jmri.util.usb` to `jmri.jmrit.usb` (with `.swing` and `.configurexml` sub-packages). This satisfies the JMRI structure rules: `jmrit` is the correct home for user-level tools, and references to `jmri.jmrit.throttle` / `jmri.jmrit.roster` become legal cross-tree references.
 
@@ -393,7 +341,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ---
 
-### Feature 11: Testing & Documentation
+### Feature 9: Testing & Documentation
 
 **Description:** Comprehensive test suite and documentation for all features.
 
