@@ -341,7 +341,77 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 
 ---
 
-### Feature 9: Testing & Documentation
+### Feature 9: RailDriver Status Slider UI Component
+
+**Description:** A reusable custom `JSlider` UI (`RailDriverSliderUI`) that draws a filled-track gauge — similar to `ControlPanelCustomSliderUI` in the throttle `ControlPanel` — but with all visual and behavioural properties configurable at construction time. The component serves two roles: an interactive slider the operator drags (e.g. the Load slider) and a read-only progress indicator that displays live status without accepting mouse/keyboard input (e.g. air line pressure, reservoir level on the Air Status Panel from Feature 2).
+
+**Motivation:** The Air Status Panel (Feature 2, user story "I want to view the current status of my air line and air reservoir") needs gauge-style indicators that fill with colour to show pressure. The Load slider (Feature 4) needs discrete snap-to-tick stops with quadratic tick labels. Both share the same visual language — a track that fills from the zero point to the thumb, with a colour-shifting thumb — but differ in interactivity and tick configuration. A single configurable slider UI component satisfies both, avoids duplicating the `ControlPanelCustomSliderUI` painting code, and gives the RailDriver UI a consistent visual identity.
+
+**Key Behaviours:**
+
+- **Configurable track colours.** The caller supplies two `Color` values at construction: `trackBackground` (the unfilled portion) and `trackFill` (the filled/active portion from the zero point to the current thumb position). Both support alpha transparency, matching `ControlPanelCustomSliderUI`'s semi-transparent treatment.
+- **Configurable thumb colour gradient.** The caller supplies three `Color` values: `thumbColorBottom` (value at slider minimum), `thumbColorMiddle` (value at slider midpoint), and `thumbColorTop` (value at slider maximum). As the thumb moves, its fill colour is linearly interpolated between `thumbColorBottom` → `thumbColorMiddle` in the lower half and `thumbColorMiddle` → `thumbColorTop` in the upper half — blending across all four RGBA channels. This replaces `ControlPanelCustomSliderUI`'s hardcoded red-at-zero / yellow-green-scaling-to-green formula with a general three-stop gradient. A separate `thumbColorDisabled` (defaulting to dark grey) is used when the slider is disabled.
+- **Configurable ticks with optional labels.** The caller provides an array of tick positions (integer slider values where tick marks are drawn) and an optional parallel array of `String` labels. When labels are present, they are painted adjacent to their tick marks. Labels are free-form strings — the caller is responsible for formatting (e.g. "1.0×", "2.44×", "10.0×" for the quadratic load curve). When labels are `null` or omitted, only unlabelled tick marks are drawn. The tick colour is derived from `trackBackground` at full opacity (no separate tick colour parameter needed).
+- **Snap-to-ticks mode.** A boolean `snapToTicks` flag (default `false`). When `true`, the slider value snaps to the nearest defined tick position on release — the thumb jumps between ticks rather than sliding smoothly. This is implemented by calling `JSlider.setSnapToTicks(true)` and setting the slider's tick spacing to match the provided tick positions. When `false`, the slider moves continuously through its full range and ticks are purely visual, matching `ControlPanelCustomSliderUI`'s smooth behaviour.
+- **Read-only (indicator) mode.** A boolean `readOnly` flag (default `false`). When `true`, the slider does not respond to mouse clicks, drags, mouse wheel, or keyboard input — it functions purely as a status display. The calling code updates the value programmatically via `JSlider.setValue()`. The thumb is still painted (showing the current value and its interpolated colour) but does not highlight on hover. When `false`, the slider behaves as a normal interactive `JSlider`.
+- **Sizing.** The caller can control the slider's footprint in two ways via the builder: **explicit preferred size** (`preferredSize(Dimension)`) or **fill mode** (`fillParent(true)`). When an explicit preferred size is set, the slider reports that `Dimension` from `getPreferredSize()` — useful for fixed-layout panels where the gauge should be a known pixel size. When fill mode is enabled, the slider sets its preferred size to the parent container's available space and registers a `ComponentListener` that updates the preferred size on parent resize — useful when the slider should expand to fill a cell in a `GridBagLayout`, `BoxLayout`, or similar resizable layout. Fill mode and explicit preferred size are mutually exclusive; setting one clears the other. When neither is set (the default), the slider uses `BasicSliderUI`'s standard preferred-size calculation based on tick spacing, labels, and orientation — behaving identically to a stock `JSlider`.
+- **Painting.** The `paintTrack` method follows the same structure as `ControlPanelCustomSliderUI`: fill the full track rect with `trackBackground`, then overpaint from the zero point to the thumb centre with `trackFill`. Tick lines are drawn at each caller-specified position in the tick colour. Labels (when present) are drawn in the current `JSlider` font adjacent to their tick mark. The `paintThumb` method draws a rectangular thumb with the interpolated gradient fill and a dark contour stroke, matching `ControlPanelCustomSliderUI`'s thumb shape. Supports both horizontal and vertical orientations.
+- **Builder pattern.** Construction uses a builder to keep the parameter list manageable:
+
+  ```java
+  new RailDriverSliderUI.Builder(slider)
+      .trackBackground(new Color(0x88, 0x8a, 0x85, 0x88))
+      .trackFill(new Color(0x4e, 0x9a, 0x06, 0xCC))
+      .thumbColorBottom(new Color(0xcc, 0x00, 0x00))
+      .thumbColorMiddle(new Color(0xd7, 0xd2, 0x7a))
+      .thumbColorTop(new Color(0x4e, 0x9a, 0x06))
+      .ticks(new int[]{0, 1, 2, 3, 4, 5})
+      .tickLabels(new String[]{"1.0×", "1.4×", "2.4×", "4.2×", "6.8×", "10×"})
+      .snapToTicks(true)
+      .readOnly(false)
+      .preferredSize(new Dimension(40, 200))
+      .build();
+  ```
+
+  Only the `JSlider` argument is required; everything else has sensible defaults (Tango-palette colours matching `ControlPanelCustomSliderUI`, no ticks, smooth, interactive).
+
+**Consumers:**
+
+- **Air Status Panel (Feature 2):** Two read-only vertical indicators for `airLineValue` (0–100) and `airReservoirPct` (0–100). Green fill, no ticks, read-only. Thumb colour: red at 0 (empty/danger), yellow at 50, green at 100 (fully charged). Updated programmatically from the air repeater callbacks.
+- **Load Slider (Feature 4):** Interactive horizontal slider (0–`numberOfLoadSteps`). Ticks at each step with quadratic multiplier labels. Snap-to-ticks enabled. Orange fill. Thumb colour: green at 0 (light engine), yellow at midpoint, red at max (heavy load).
+
+**User Stories:**
+
+- As an operator, I want the air line and reservoir gauges to fill with colour so I can see pressure status at a glance without reading numbers.
+- As an operator, I want the thumb colour to shift as values change so I can tell at a glance whether a gauge is in a good (green) or bad (red) state.
+- As an operator, I want the load slider to snap between discrete positions so I can set load precisely without guessing.
+- As an operator, I want the load slider ticks labelled with the actual multiplier values so I know the effect of each position.
+- As a developer, I want a single reusable slider UI component so I don't duplicate painting code across the Air Status Panel and Load Slider.
+
+**Acceptance Criteria:**
+- [ ] `RailDriverSliderUI` extends `BasicSliderUI` and can be applied to any `JSlider` via `setUI()`.
+- [ ] Track background and fill colours are set at construction time and used by `paintTrack`.
+- [ ] Thumb interpolates between three caller-supplied colours (bottom/middle/top) based on current value, blending all four RGBA channels.
+- [ ] When disabled, thumb uses `thumbColorDisabled` regardless of value.
+- [ ] Caller-supplied tick positions are drawn as lines across the track in the tick colour.
+- [ ] When tick labels are supplied, they are painted adjacent to their tick marks in the slider's current font.
+- [ ] When `snapToTicks` is true, the slider value snaps to the nearest tick on release.
+- [ ] When `snapToTicks` is false, the slider moves smoothly through its full range.
+- [ ] When `readOnly` is true, mouse clicks, drags, mouse wheel, and keyboard input are ignored; `setValue()` still works programmatically.
+- [ ] When `readOnly` is false, the slider behaves as a normal interactive `JSlider`.
+- [ ] Both horizontal and vertical orientations are supported.
+- [ ] When `preferredSize` is set, the slider reports that `Dimension` from `getPreferredSize()`.
+- [ ] When `fillParent` is true, the slider resizes to fill the parent container's available space on layout and on parent resize.
+- [ ] `preferredSize` and `fillParent` are mutually exclusive; setting one clears the other.
+- [ ] When neither sizing option is set, the slider uses `BasicSliderUI`'s default preferred-size calculation.
+- [ ] Builder requires only a `JSlider`; all other parameters have sensible defaults.
+- [ ] Default colours match the Tango palette used by `ControlPanelCustomSliderUI`.
+- [ ] Air Status Panel uses two read-only instances (air line, reservoir) updated from air repeater callbacks.
+- [ ] Load Slider uses one interactive instance with snap-to-ticks and quadratic multiplier labels.
+
+---
+
+### Feature 10: Testing & Documentation
 
 **Description:** Comprehensive test suite and documentation for all features.
 
@@ -351,6 +421,7 @@ At light engine (loadMultiplier = 1.0), both paths are no-ops — behaviour is i
 |--------------------------|----------------------------------------------------------------|
 | Unit tests (pure math)   | `getBrakeDecimalPcnt`, `getLoadPcnt`, `effectiveDynBrakeStep` — table-driven with EngineDriver-verified expected values (load tests verify the quadratic at each default slider step and at non-default `maxLoadPcnt` values) |
 | Engine integration tests | Mock `DccThrottle`; lever inputs → emission sequence verification (pure-throttle ramp, brake clip, brake to zero, air depletion, bail-off, direction interlock, load multiplier scaling) |
+| Slider UI tests          | `RailDriverSliderUITest` — thumb colour interpolation at min/mid/max/quarter values, read-only mode blocks mouse/keyboard events, snap-to-ticks rounds to nearest tick, tick and label painting with mock Graphics2D, builder defaults produce valid UI, horizontal and vertical orientations |
 | Schema validation        | `SchemaTest` over `valid/` and `invalid/` fixture directories for both fragments |
 | Load/store round-trip    | `LoadAndStoreTest` for fragment round-trip and legacy-file migration (Groups A and B) |
 | Manual hardware tests    | Smoke tests on real RailDriver console with connected layout or debug-throttle |
