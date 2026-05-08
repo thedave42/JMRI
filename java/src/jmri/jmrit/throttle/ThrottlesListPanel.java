@@ -116,7 +116,10 @@ public class ThrottlesListPanel extends JPanel {
     public Element getXml() {
         Element me = new Element("ThrottlesListPanel");
         java.util.ArrayList<Element> children = new java.util.ArrayList<>(1);
-        children.add(WindowPreferences.getPreferences(this.getTopLevelAncestor()));
+        java.awt.Container ancestor = this.getTopLevelAncestor();
+        if (ancestor != null) {
+            children.add(WindowPreferences.getPreferences(ancestor));
+        }
         me.setContent(children);
         return me;
     }
