@@ -53,6 +53,10 @@ public final class SemiRealisticSettings {
     /** Default speed steps per ramp tick. */
     public static final int DEFAULT_SPEED_STEP_INCREMENT = 1;
 
+    // Power curve
+    /** Default power curve steepness (k) for logarithmic acceleration. */
+    public static final double DEFAULT_POWER_CURVE_STEEPNESS = 0.5;
+
     // ESU decoder-brake function defaults
     public static final int DEFAULT_ESU_LOW_FUNCTION  = 4;
     public static final int DEFAULT_ESU_MID_FUNCTION  = 5;
@@ -123,6 +127,10 @@ public final class SemiRealisticSettings {
     /** Speed steps per ramp tick (1 = smoothest, higher = coarser/faster). */
     public int speedStepIncrement = DEFAULT_SPEED_STEP_INCREMENT;
 
+    // --- Power curve ---
+    /** Logarithmic curve steepness for acceleration (0.1 = gradual, 1.0 = aggressive). */
+    public double powerCurveSteepness = DEFAULT_POWER_CURVE_STEEPNESS;
+
     // --- ESU decoder brake ---
     public DecoderBrakeMode decoderBrakeMode = DecoderBrakeMode.NONE;
     public int esuLowFunction  = DEFAULT_ESU_LOW_FUNCTION;
@@ -161,6 +169,7 @@ public final class SemiRealisticSettings {
         maxLoadPcnt = DEFAULT_MAX_LOAD_PCNT;
         loadSliderPosition = DEFAULT_LOAD_SLIDER_POSITION;
         speedStepIncrement = DEFAULT_SPEED_STEP_INCREMENT;
+        powerCurveSteepness = DEFAULT_POWER_CURVE_STEEPNESS;
         decoderBrakeMode = DecoderBrakeMode.NONE;
         esuLowFunction = DEFAULT_ESU_LOW_FUNCTION;
         esuMidFunction = DEFAULT_ESU_MID_FUNCTION;
@@ -185,6 +194,7 @@ public final class SemiRealisticSettings {
         this.maxLoadPcnt = other.maxLoadPcnt;
         this.loadSliderPosition = other.loadSliderPosition;
         this.speedStepIncrement = other.speedStepIncrement;
+        this.powerCurveSteepness = other.powerCurveSteepness;
         this.decoderBrakeMode = other.decoderBrakeMode;
         this.esuLowFunction = other.esuLowFunction;
         this.esuMidFunction = other.esuMidFunction;
@@ -223,6 +233,9 @@ public final class SemiRealisticSettings {
         if ((i = readInt(semiRealistic, "loadSliderPosition")) != null) loadSliderPosition = i;
         if ((i = readInt(semiRealistic, "speedStepIncrement")) != null) speedStepIncrement = Math.max(1, i);
 
+        Double d = readDouble(semiRealistic, "powerCurveSteepness");
+        if (d != null) powerCurveSteepness = Math.max(0.1, Math.min(1.0, d));
+
         String mode = readText(semiRealistic, "decoderBrakeMode");
         if (mode != null) decoderBrakeMode = DecoderBrakeMode.fromToken(mode);
         if ((i = readInt(semiRealistic, "esuLowFunction"))  != null) esuLowFunction  = i;
@@ -249,6 +262,7 @@ public final class SemiRealisticSettings {
         e.addContent(child("maxLoadPcnt", Integer.toString(maxLoadPcnt)));
         e.addContent(child("loadSliderPosition", Integer.toString(loadSliderPosition)));
         e.addContent(child("speedStepIncrement", Integer.toString(speedStepIncrement)));
+        e.addContent(child("powerCurveSteepness", Double.toString(powerCurveSteepness)));
         e.addContent(child("decoderBrakeMode", decoderBrakeMode.token()));
         e.addContent(child("esuLowFunction", Integer.toString(esuLowFunction)));
         e.addContent(child("esuMidFunction", Integer.toString(esuMidFunction)));
@@ -287,6 +301,14 @@ public final class SemiRealisticSettings {
         String t = readText(parent, childName);
         if (t == null) return null;
         try { return Integer.parseInt(t); }
+        catch (NumberFormatException ex) { return null; }
+    }
+
+    @CheckForNull
+    private static Double readDouble(Element parent, String childName) {
+        String t = readText(parent, childName);
+        if (t == null) return null;
+        try { return Double.parseDouble(t); }
         catch (NumberFormatException ex) { return null; }
     }
 }

@@ -154,4 +154,68 @@ public class SemiRealisticSettingsTest {
         loaded.loadFrom(xml);
         assertEquals(1, loaded.speedStepIncrement); // clamped
     }
+
+    // ==================== Power curve steepness tests ====================
+
+    @Test
+    public void testPowerCurveSteepness_default() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        assertEquals(0.5, s.powerCurveSteepness, 0.001);
+    }
+
+    @Test
+    public void testPowerCurveSteepness_copyFrom() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.powerCurveSteepness = 0.8;
+        SemiRealisticSettings copy = new SemiRealisticSettings(s);
+        assertEquals(0.8, copy.powerCurveSteepness, 0.001);
+        // Verify true copy
+        copy.powerCurveSteepness = 0.3;
+        assertEquals(0.8, s.powerCurveSteepness, 0.001);
+    }
+
+    @Test
+    public void testPowerCurveSteepness_resetToDefaults() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.powerCurveSteepness = 0.9;
+        s.resetToDefaults();
+        assertEquals(0.5, s.powerCurveSteepness, 0.001);
+    }
+
+    @Test
+    public void testPowerCurveSteepness_xmlRoundTrip() {
+        SemiRealisticSettings s = new SemiRealisticSettings();
+        s.powerCurveSteepness = 0.7;
+        org.jdom2.Element xml = s.writeTo();
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(0.7, loaded.powerCurveSteepness, 0.001);
+    }
+
+    @Test
+    public void testPowerCurveSteepness_missingElementDefaultsTo05() {
+        org.jdom2.Element xml = new org.jdom2.Element("semiRealistic");
+        xml.addContent(new org.jdom2.Element("enabled").setText("true"));
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(0.5, loaded.powerCurveSteepness, 0.001);
+    }
+
+    @Test
+    public void testPowerCurveSteepness_clampedAbove1() {
+        org.jdom2.Element xml = new org.jdom2.Element("semiRealistic");
+        xml.addContent(new org.jdom2.Element("powerCurveSteepness").setText("5.0"));
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(1.0, loaded.powerCurveSteepness, 0.001);
+    }
+
+    @Test
+    public void testPowerCurveSteepness_clampedBelowMin() {
+        org.jdom2.Element xml = new org.jdom2.Element("semiRealistic");
+        xml.addContent(new org.jdom2.Element("powerCurveSteepness").setText("-0.5"));
+        SemiRealisticSettings loaded = new SemiRealisticSettings();
+        loaded.loadFrom(xml);
+        assertEquals(0.1, loaded.powerCurveSteepness, 0.001);
+    }
 }

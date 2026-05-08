@@ -75,6 +75,11 @@ public final class SemiRealisticThrottleEngine {
     private int currentSpeedStep = 0;
     private int targetSpeedStep = 0;
 
+    /** Speed step at which the current acceleration ramp began. Reset
+     *  each time {@link #recomputeTarget} starts a new accelerating ramp.
+     *  Used by the power-curve delay computation to calculate ramp progress. */
+    private int rampStartStep = 0;
+
     /** Multiplicative modifier on inter-step delay. Sign indicates
      *  direction: positive = accelerate, negative = decelerate. Magnitude
      *  scales the base delay (1.0 = unmodified). Computed by
@@ -203,6 +208,7 @@ public final class SemiRealisticThrottleEngine {
         this.currentSpeedStep = 0;
         this.targetSpeedStep = 0;
         this.targetAcceleration = 0;
+        this.rampStartStep = 0;
         this.pendingDirection = null;
         setAirLineValue(100);
         setAirReservoirPct(100);
@@ -256,6 +262,7 @@ public final class SemiRealisticThrottleEngine {
         currentSpeedStep = 0;
         targetSpeedStep = 0;
         targetAcceleration = 0;
+        rampStartStep = 0;
         pendingDirection = null;
         if (throttle != null) {
             throttle.setSpeedSetting(-1f);
@@ -537,6 +544,9 @@ public final class SemiRealisticThrottleEngine {
         // Start a fresh ramp if there is work to do.
         if (currentSpeedStep != targetSpeedStep) {
             rampEpoch++;
+            if (targetSpeedStep > currentSpeedStep) {
+                rampStartStep = currentSpeedStep;
+            }
             final int epoch = rampEpoch;
             int delayMs = computeRampDelay();
             ThreadingUtil.runOnLayoutDelayed(() -> rampCallback(epoch), delayMs);
@@ -557,6 +567,53 @@ public final class SemiRealisticThrottleEngine {
         if (step <= 0 || steps <= 0) return 1.0;
         double load = (double) step / (double) steps;
         return ((load * load * (maxLoadPcnt - 100)) + 100) / 100.0;
+    }
+
+    // ======================== Power Curve Delay ========================
+
+    /**
+     * Computes the inter-step delay for a logarithmic power-curve
+     * acceleration ramp. The delay starts near {@code minDelayMs} at the
+     * beginning of the ramp (fast acceleration) and increases toward
+     * {@code maxDelayMs} as the current speed approaches the target
+     * (settling into cruising speed).
+     * <p>
+     * Formula:
+     * {@code delay = minDelayMs + (maxDelayMs - minDelayMs) × (expm1(progress × k) / expm1(k))}
+     * where {@code progress = (currentSpeedStep - rampStartStep) / (targetSpeedStep - rampStartStep)}.
+     * <p>
+     * This method is acceleration-only: {@code targetSpeedStep} must be
+     * greater than or equal to {@code rampStartStep}. If they are equal
+     * (no ramp to traverse), {@code maxDelayMs} is returned.
+     *
+     * @param rampStartStep    speed step at which this acceleration ramp began
+     * @param currentSpeedStep current speed step within the ramp
+     * @param targetSpeedStep  target speed step the ramp is heading toward
+     * @param minDelayMs       minimum inter-step delay (floor, typically minEmitIntervalMs)
+     * @param maxDelayMs       maximum inter-step delay (ceiling, typically baseAccelDelayMs × load)
+     * @param steepnessK       curve steepness parameter (0.1–1.0); higher = more front-loaded
+     * @return inter-step delay in milliseconds, clamped to [{@code minDelayMs}, {@code maxDelayMs}]
+     */
+    static int computePowerCurveDelay(int rampStartStep, int currentSpeedStep,
+            int targetSpeedStep, int minDelayMs, int maxDelayMs, double steepnessK) {
+        int range = targetSpeedStep - rampStartStep;
+        if (range <= 0) return maxDelayMs;
+
+        double progress = (double) (currentSpeedStep - rampStartStep) / (double) range;
+        if (progress < 0.0) progress = 0.0;
+        if (progress > 1.0) progress = 1.0;
+
+        // For k <= 0 or non-finite, fall back to linear interpolation
+        // (the mathematical limit of the exponential curve as k → 0).
+        double ratio;
+        if (!Double.isFinite(steepnessK) || steepnessK <= 0.0) {
+            ratio = progress;
+        } else {
+            ratio = Math.expm1(progress * steepnessK) / Math.expm1(steepnessK);
+        }
+
+        int delay = (int) Math.round(minDelayMs + (maxDelayMs - minDelayMs) * ratio);
+        return Math.max(minDelayMs, Math.min(maxDelayMs, delay));
     }
 
     // ======================== ESU Decoder Brake Passthrough ========================
@@ -775,25 +832,35 @@ public final class SemiRealisticThrottleEngine {
 
     /**
      * Computes the inter-step delay in milliseconds.
-     * EngineDriver formula: {@code Δt = baseDelay × |targetAcceleration|}
      * <p>
-     * For acceleration: magnitude starts at 1.0 (unloaded); load increases
-     * it (e.g. 10× at max load) → longer delay → slower accel.
+     * For acceleration with a power curve enabled: delegates to
+     * {@link #computePowerCurveDelay} which produces a logarithmic
+     * delay ramp from {@code minEmitIntervalMs} up to the load-adjusted
+     * base acceleration delay.
      * <p>
-     * For deceleration: magnitude is {@code effectiveBrake} (1.0 = no brake,
-     * ~0.0 = full brake) → smaller value → shorter delay → faster decel.
+     * For deceleration (or when no power curve is configured): uses the
+     * original EngineDriver formula {@code Δt = baseDelay × |targetAcceleration|}.
      */
     private int computeRampDelay() {
         if (settings == null) return 300;
-        int baseDelay;
+
         if (targetAcceleration > 0) {
-            baseDelay = settings.baseAccelDelayMs;
-        } else {
-            baseDelay = settings.baseDecelDelayMs;
+            // Accelerating — use power curve if steepness is configured.
+            double magnitude = Math.abs(targetAcceleration);
+            if (magnitude < 0.01) magnitude = 1.0;
+            int maxDelay = Math.max(1, (int) Math.round(settings.baseAccelDelayMs * magnitude));
+            if (settings.powerCurveSteepness > 0) {
+                return computePowerCurveDelay(rampStartStep, currentSpeedStep,
+                        targetSpeedStep, settings.minEmitIntervalMs, maxDelay,
+                        settings.powerCurveSteepness);
+            }
+            return maxDelay;
         }
+
+        // Decelerating — unchanged constant-delay formula.
         double magnitude = Math.abs(targetAcceleration);
         if (magnitude < 0.01) magnitude = 1.0;
-        return Math.max(1, (int) Math.round(baseDelay * magnitude));
+        return Math.max(1, (int) Math.round(settings.baseDecelDelayMs * magnitude));
     }
 
     /**

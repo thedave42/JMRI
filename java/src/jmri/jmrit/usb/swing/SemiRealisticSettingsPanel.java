@@ -55,6 +55,9 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
     // Ramp step size
     private final JSpinner speedStepIncrementSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10, 1));
 
+    // Power curve
+    private final JSpinner steepnessSpinner = new JSpinner(new SpinnerNumberModel(0.5, 0.1, 1.0, 0.1));
+
     // Decoder brake
     private final JComboBox<DecoderBrakeMode> decoderBrakeCombo = new JComboBox<>(DecoderBrakeMode.values());
 
@@ -78,6 +81,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         attachDirtyOnSpinner(loadStepsSpinner);
         attachDirtyOnSpinner(maxLoadPcntSpinner);
         attachDirtyOnSpinner(speedStepIncrementSpinner);
+        attachDirtyOnSpinner(steepnessSpinner);
         decoderBrakeCombo.addItemListener(e -> { if (!populating) markDirty(); });
 
         JScrollPane scroll = new JScrollPane(buildBody());
@@ -109,6 +113,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         working.numberOfLoadSteps = intOf(loadStepsSpinner);
         working.maxLoadPcnt = intOf(maxLoadPcntSpinner);
         working.speedStepIncrement = intOf(speedStepIncrementSpinner);
+        working.powerCurveSteepness = doubleOf(steepnessSpinner);
         DecoderBrakeMode mode = (DecoderBrakeMode) decoderBrakeCombo.getSelectedItem();
         working.decoderBrakeMode = mode != null ? mode : DecoderBrakeMode.NONE;
         target.semiRealistic().copyFrom(working);
@@ -146,6 +151,13 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         addLabeled(body, gc, "Acceleration delay (ms/step):", accelDelaySpinner);
         addLabeled(body, gc, "Deceleration delay (ms/step):", decelDelaySpinner);
         addLabeled(body, gc, "Speed step increment:", speedStepIncrementSpinner);
+
+        addSectionLabel(body, gc, "Power curve");
+        steepnessSpinner.setToolTipText(
+                "Controls how aggressively the power curve front-loads acceleration. "
+                + "Lower values (0.1) produce a gradual curve; higher values (1.0) "
+                + "produce a sharp initial burst.");
+        addLabeled(body, gc, "Curve steepness (k):", steepnessSpinner);
 
         addSectionLabel(body, gc, "Brakes");
         addLabeled(body, gc, "Independent brake steps:", brakeStepsSpinner);
@@ -197,6 +209,11 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         return v instanceof Number ? ((Number) v).intValue() : 0;
     }
 
+    private static double doubleOf(JSpinner s) {
+        Object v = s.getValue();
+        return v instanceof Number ? ((Number) v).doubleValue() : 0.0;
+    }
+
     private void renderToFields() {
         populating = true;
         try {
@@ -204,6 +221,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
             accelDelaySpinner.setValue(working.baseAccelDelayMs);
             decelDelaySpinner.setValue(working.baseDecelDelayMs);
             speedStepIncrementSpinner.setValue(working.speedStepIncrement);
+            steepnessSpinner.setValue(working.powerCurveSteepness);
             brakeStepsSpinner.setValue(working.numberOfBrakeSteps);
             airRechargePcntSpinner.setValue(working.airLineRechargePcnt);
             airRefreshRateSpinner.setValue(working.airRefreshRateMs);
@@ -222,6 +240,7 @@ public final class SemiRealisticSettingsPanel extends JPanel implements DirtyTra
         accelDelaySpinner.setEnabled(enabled);
         decelDelaySpinner.setEnabled(enabled);
         speedStepIncrementSpinner.setEnabled(enabled);
+        steepnessSpinner.setEnabled(enabled);
         brakeStepsSpinner.setEnabled(enabled);
         airRechargePcntSpinner.setEnabled(enabled);
         airRefreshRateSpinner.setEnabled(enabled);

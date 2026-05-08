@@ -414,4 +414,129 @@ public class SemiRealisticThrottleEngineTest {
         e.updateSettings(s);
         assertFalse(e.isDriving()); // not attached, but settings accepted
     }
+
+    // ==================== Power curve delay tests ====================
+
+    @Test
+    public void testPowerCurveDelay_atRampStart_returnsMinDelay() {
+        // progress = 0.0 → delay should be minDelayMs
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 0, 100, 50, 300, 0.5);
+        assertEquals(50, delay, "At ramp start, delay should equal minDelayMs");
+    }
+
+    @Test
+    public void testPowerCurveDelay_atRampEnd_returnsMaxDelay() {
+        // progress = 1.0 → delay should be maxDelayMs
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 100, 100, 50, 300, 0.5);
+        assertEquals(300, delay, "At ramp end, delay should equal maxDelayMs");
+    }
+
+    @Test
+    public void testPowerCurveDelay_midRamp_betweenMinAndMax() {
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 50, 100, 50, 300, 0.5);
+        assertTrue(delay > 50, "Mid-ramp delay should be above minDelayMs: " + delay);
+        assertTrue(delay < 300, "Mid-ramp delay should be below maxDelayMs: " + delay);
+    }
+
+    @Test
+    public void testPowerCurveDelay_monotonicallyIncreasing() {
+        int prevDelay = 0;
+        for (int step = 0; step <= 126; step++) {
+            int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                    0, step, 126, 50, 300, 0.5);
+            assertTrue(delay >= prevDelay,
+                    "Delay must be monotonically increasing at step " + step
+                    + ": prev=" + prevDelay + " cur=" + delay);
+            prevDelay = delay;
+        }
+    }
+
+    @Test
+    public void testPowerCurveDelay_highK_moreFrontLoaded() {
+        // With k=1.0 the delay should stay lower (closer to minDelay) for
+        // longer in the early portion of the ramp compared to k=0.1.
+        // Test at 25% progress.
+        int delayLowK = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 25, 100, 50, 300, 0.1);
+        int delayHighK = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 25, 100, 50, 300, 1.0);
+        assertTrue(delayHighK < delayLowK,
+                "At 25% progress, k=1.0 delay (" + delayHighK
+                + ") should be lower than k=0.1 delay (" + delayLowK + ")");
+    }
+
+    @Test
+    public void testPowerCurveDelay_noRamp_returnsMaxDelay() {
+        // rampStartStep == targetSpeedStep → no ramp to traverse
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                50, 50, 50, 50, 300, 0.5);
+        assertEquals(300, delay, "When start == target, should return maxDelayMs");
+    }
+
+    @Test
+    public void testPowerCurveDelay_currentBelowStart_clampsToMin() {
+        // currentSpeedStep < rampStartStep → progress clamped to 0.0
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                10, 5, 100, 50, 300, 0.5);
+        assertEquals(50, delay, "Current below start should clamp to minDelayMs");
+    }
+
+    @Test
+    public void testPowerCurveDelay_currentAboveTarget_clampsToMax() {
+        // currentSpeedStep > targetSpeedStep → progress clamped to 1.0
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 110, 100, 50, 300, 0.5);
+        assertEquals(300, delay, "Current above target should clamp to maxDelayMs");
+    }
+
+    @Test
+    public void testPowerCurveDelay_kZero_linearFallback() {
+        // k=0 triggers the linear fallback; at 50% progress, delay
+        // should be the midpoint: 50 + (300-50)*0.5 = 175
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 50, 100, 50, 300, 0.0);
+        assertEquals(175, delay, "k=0 should produce linear interpolation");
+    }
+
+    @Test
+    public void testPowerCurveDelay_kNegative_linearFallback() {
+        // Negative k also triggers the linear fallback
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 50, 100, 50, 300, -1.0);
+        assertEquals(175, delay, "Negative k should produce linear interpolation");
+    }
+
+    @Test
+    public void testPowerCurveDelay_kNaN_linearFallback() {
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                0, 50, 100, 50, 300, Double.NaN);
+        assertEquals(175, delay, "NaN k should produce linear interpolation");
+    }
+
+    @Test
+    public void testPowerCurveDelay_midRampRetarget() {
+        // Simulate mid-ramp retarget: ramp started at step 20, now at 40,
+        // new target is 80 (range = 60 steps).
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                20, 40, 80, 50, 300, 0.5);
+        // progress = (40-20)/(80-20) = 1/3 ≈ 0.333
+        assertTrue(delay > 50 && delay < 300,
+                "Mid-ramp retarget delay should be between min and max: " + delay);
+
+        // And at the new start of this retargeted ramp:
+        int delayAtStart = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                20, 20, 80, 50, 300, 0.5);
+        assertEquals(50, delayAtStart, "At retarget start, delay should be minDelayMs");
+    }
+
+    @Test
+    public void testPowerCurveDelay_targetBelowStart_returnsMaxDelay() {
+        // Descending ramp (decel) — not supported, should return maxDelay
+        int delay = SemiRealisticThrottleEngine.computePowerCurveDelay(
+                100, 80, 50, 50, 300, 0.5);
+        assertEquals(300, delay, "Descending ramp should return maxDelayMs");
+    }
 }

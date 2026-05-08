@@ -3,7 +3,7 @@ goal: Implement logarithmic power curve acceleration for the semi-realistic thro
 version: 1.0
 date_created: 2026-05-07
 owner: thedave42
-status: 'Planned'
+status: 'In progress'
 tags:
   - feature
   - raildriver
@@ -13,7 +13,7 @@ tags:
 
 # Introduction
 
-![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+![Status: In progress](https://img.shields.io/badge/status-In%20progress-yellow)
 
 Implement a logarithmic delay curve for the acceleration ramp in the semi-realistic throttle engine. When the throttle lever moves to a higher position, the inter-step delay starts near `minEmitIntervalMs` (~50 ms) and increases toward `baseAccelDelayMs` (~300 ms) as the current speed approaches the target, following the formula `delay = minDelay + (maxDelay - minDelay) × (e^(progress×k) - 1) / (e^k - 1)`. A single configurable parameter `k` (range 0.1–1.0) controls the curve shape. The power curve applies only to acceleration — deceleration continues to use the existing constant-delay behavior.
 
@@ -55,9 +55,9 @@ Implement a logarithmic delay curve for the acceleration ramp in the semi-realis
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-001 | Add `static int computePowerCurveDelay(int rampStartStep, int currentSpeedStep, int targetSpeedStep, int minDelayMs, int maxDelayMs, double steepnessK)` to `SemiRealisticThrottleEngine`. Returns the inter-step delay for the current ramp position using `delay = minDelay + (maxDelay - minDelay) × (Math.expm1(progress × k) / Math.expm1(k))` where `progress = (currentSpeedStep - rampStartStep) / (targetSpeedStep - rampStartStep)`. Clamp progress to [0.0, 1.0]. Guard against division by zero when `targetSpeedStep == rampStartStep` (return `maxDelayMs`). Clamp result to `[minDelayMs, maxDelayMs]`. | | |
-| TASK-002 | Add unit tests in `SemiRealisticThrottleEngineTest` for `computePowerCurveDelay`: (a) progress=0.0 returns ~`minDelayMs`, (b) progress=1.0 returns ~`maxDelayMs`, (c) monotonically increasing delay across the ramp, (d) k=0.1 produces a more gradual curve vs k=1.0, (e) `rampStartStep == targetSpeedStep` returns `maxDelayMs`, (f) `currentSpeedStep` below `rampStartStep` clamps to progress=0.0, (g) `currentSpeedStep` above `targetSpeedStep` clamps to progress=1.0. | | |
-| TASK-003 | Verify all existing tests still pass after adding the static method (no behavioral change yet). | | |
+| TASK-001 | Add `static int computePowerCurveDelay(int rampStartStep, int currentSpeedStep, int targetSpeedStep, int minDelayMs, int maxDelayMs, double steepnessK)` to `SemiRealisticThrottleEngine`. Returns the inter-step delay for the current ramp position using `delay = minDelay + (maxDelay - minDelay) × (Math.expm1(progress × k) / Math.expm1(k))` where `progress = (currentSpeedStep - rampStartStep) / (targetSpeedStep - rampStartStep)`. Clamp progress to [0.0, 1.0]. Guard against division by zero when `targetSpeedStep == rampStartStep` (return `maxDelayMs`). Clamp result to `[minDelayMs, maxDelayMs]`. Also guards k ≤ 0 / NaN / Infinity with linear fallback. | ✅ | 2026-05-07 |
+| TASK-002 | Add unit tests in `SemiRealisticThrottleEngineTest` for `computePowerCurveDelay`: (a) progress=0.0 returns ~`minDelayMs`, (b) progress=1.0 returns ~`maxDelayMs`, (c) monotonically increasing delay across the ramp, (d) k=0.1 produces a more gradual curve vs k=1.0, (e) `rampStartStep == targetSpeedStep` returns `maxDelayMs`, (f) `currentSpeedStep` below `rampStartStep` clamps to progress=0.0, (g) `currentSpeedStep` above `targetSpeedStep` clamps to progress=1.0, plus k=0/negative/NaN linear fallback, mid-ramp retarget, and descending ramp tests. 14 new tests total. | ✅ | 2026-05-07 |
+| TASK-003 | Verify all existing tests still pass after adding the static method (no behavioral change yet). All 47 tests pass (33 existing + 14 new). | ✅ | 2026-05-07 |
 
 ### Phase 2: Settings & XML Persistence
 
@@ -65,13 +65,13 @@ Implement a logarithmic delay curve for the acceleration ramp in the semi-realis
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-004 | Add `public static final double DEFAULT_POWER_CURVE_STEEPNESS = 0.5` constant and `public double powerCurveSteepness = DEFAULT_POWER_CURVE_STEEPNESS` field to `SemiRealisticSettings`. | | |
-| TASK-005 | Add private `readDouble(Element parent, String childName)` helper to `SemiRealisticSettings`, following the pattern of the existing `readInt` helper but using `Double.parseDouble`. | | |
-| TASK-006 | Update `resetToDefaults()` to reset `powerCurveSteepness` to `DEFAULT_POWER_CURVE_STEEPNESS`. | | |
-| TASK-007 | Update `copyFrom(SemiRealisticSettings other)` to copy `powerCurveSteepness`. | | |
-| TASK-008 | Update `loadFrom(Element)` to read `powerCurveSteepness` via `readDouble`, clamping to [0.1, 1.0]. Missing element falls back to default. | | |
-| TASK-009 | Update `writeTo()` to write `powerCurveSteepness` as a `<powerCurveSteepness>` child element using `Double.toString()`. | | |
-| TASK-010 | Add/update unit tests in `SemiRealisticSettingsTest`: (a) default value assertion, (b) `copyFrom` covers new field, (c) `resetToDefaults` covers new field, (d) XML round-trip for `powerCurveSteepness`, (e) missing element falls back to default, (f) out-of-range value (e.g. 5.0) is clamped to 1.0, (g) negative value is clamped to 0.1. | | |
+| TASK-004 | Add `public static final double DEFAULT_POWER_CURVE_STEEPNESS = 0.5` constant and `public double powerCurveSteepness = DEFAULT_POWER_CURVE_STEEPNESS` field to `SemiRealisticSettings`. | ✅ | 2026-05-07 |
+| TASK-005 | Add private `readDouble(Element parent, String childName)` helper to `SemiRealisticSettings`, following the pattern of the existing `readInt` helper but using `Double.parseDouble`. | ✅ | 2026-05-07 |
+| TASK-006 | Update `resetToDefaults()` to reset `powerCurveSteepness` to `DEFAULT_POWER_CURVE_STEEPNESS`. | ✅ | 2026-05-07 |
+| TASK-007 | Update `copyFrom(SemiRealisticSettings other)` to copy `powerCurveSteepness`. | ✅ | 2026-05-07 |
+| TASK-008 | Update `loadFrom(Element)` to read `powerCurveSteepness` via `readDouble`, clamping to [0.1, 1.0]. Missing element falls back to default. | ✅ | 2026-05-07 |
+| TASK-009 | Update `writeTo()` to write `powerCurveSteepness` as a `<powerCurveSteepness>` child element using `Double.toString()`. | ✅ | 2026-05-07 |
+| TASK-010 | Add/update unit tests in `SemiRealisticSettingsTest`: (a) default value assertion, (b) `copyFrom` covers new field, (c) `resetToDefaults` covers new field, (d) XML round-trip for `powerCurveSteepness`, (e) missing element falls back to default, (f) out-of-range value (e.g. 5.0) is clamped to 1.0, (g) negative value is clamped to 0.1. 7 new tests total. | ✅ | 2026-05-07 |
 
 ### Phase 3: Wire Power Curve into Ramp Pipeline
 
@@ -79,13 +79,13 @@ Implement a logarithmic delay curve for the acceleration ramp in the semi-realis
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-011 | Add `private int rampStartStep = 0` field to `SemiRealisticThrottleEngine`. | | |
-| TASK-012 | In `recomputeTarget()`, at the point where `rampEpoch` is bumped and a new ramp is started (line ~538), set `rampStartStep = currentSpeedStep` when the new ramp is accelerating (`targetSpeedStep > currentSpeedStep`). For decelerating ramps, `rampStartStep` is irrelevant (the power curve won't be used). | | |
-| TASK-013 | In `recomputeTarget()`, reset `rampStartStep` in `detachThrottle()` and `emergencyHalt()` to 0 alongside the other state resets. | | |
-| TASK-014 | Modify `computeRampDelay()` (or add overload): when `targetAcceleration > 0` (accelerating) and `settings.powerCurveSteepness > 0`, delegate to `computePowerCurveDelay(rampStartStep, currentSpeedStep, targetSpeedStep, settings.minEmitIntervalMs, baseDelay_with_load, settings.powerCurveSteepness)` where `baseDelay_with_load = (int) Math.round(settings.baseAccelDelayMs * Math.abs(targetAcceleration))`. When decelerating, use the existing constant-delay formula unchanged. | | |
-| TASK-015 | In `rampCallback()`, the re-scheduling call at line ~831 already calls `computeRampDelay()` — verify that each tick sees a progressively longer delay as `currentSpeedStep` advances toward `targetSpeedStep`. No change needed to `rampCallback()` itself; the delay change is fully encapsulated in `computeRampDelay()`. | | |
-| TASK-016 | Verify that mid-ramp re-targeting works: when `recomputeTarget()` fires during an active acceleration ramp (throttle lever moved further), `rampStartStep` resets to `currentSpeedStep`, the epoch bumps, and a new logarithmic curve begins from the current position. Validate by inspection and existing test suite. | | |
-| TASK-017 | Run full existing test suite to confirm no regressions. | | |
+| TASK-011 | Add `private int rampStartStep = 0` field to `SemiRealisticThrottleEngine`. | ✅ | 2026-05-07 |
+| TASK-012 | In `recomputeTarget()`, at the point where `rampEpoch` is bumped and a new ramp is started, set `rampStartStep = currentSpeedStep` when the new ramp is accelerating (`targetSpeedStep > currentSpeedStep`). For decelerating ramps, `rampStartStep` is irrelevant (the power curve won't be used). | ✅ | 2026-05-07 |
+| TASK-013 | Reset `rampStartStep` to 0 in `detachThrottle()` and `emergencyHalt()` alongside the other state resets. | ✅ | 2026-05-07 |
+| TASK-014 | Modify `computeRampDelay()`: when `targetAcceleration > 0` (accelerating) and `settings.powerCurveSteepness > 0`, delegate to `computePowerCurveDelay(rampStartStep, currentSpeedStep, targetSpeedStep, settings.minEmitIntervalMs, baseDelay_with_load, settings.powerCurveSteepness)`. When decelerating, use the existing constant-delay formula unchanged. | ✅ | 2026-05-07 |
+| TASK-015 | In `rampCallback()`, the re-scheduling call already calls `computeRampDelay()` — verified that each tick sees a progressively longer delay as `currentSpeedStep` advances toward `targetSpeedStep`. No change needed to `rampCallback()` itself. | ✅ | 2026-05-07 |
+| TASK-016 | Verified mid-ramp re-targeting: when `recomputeTarget()` fires during an active acceleration ramp, `rampStartStep` resets to `currentSpeedStep`, the epoch bumps, and a new logarithmic curve begins from the current position. | ✅ | 2026-05-07 |
+| TASK-017 | All 66 tests pass (19 settings + 47 engine) — zero regressions. | ✅ | 2026-05-07 |
 
 ### Phase 4: Settings UI
 
@@ -93,12 +93,12 @@ Implement a logarithmic delay curve for the acceleration ramp in the semi-realis
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-018 | Add a `JSpinner steepnessSpinner` field to `SemiRealisticSettingsPanel` with `SpinnerNumberModel(0.5, 0.1, 1.0, 0.1)`. | | |
-| TASK-019 | In `buildBody()`, add a new "Power curve" section label (using `addSectionLabel`) between the "Ramp timing" section and the "Brakes" section. Add a labeled spinner `"Curve steepness (k):"` with tooltip: `"Controls how aggressively the power curve front-loads acceleration. Lower values (0.1) produce a gradual curve; higher values (1.0) produce a sharp initial burst."`. | | |
-| TASK-020 | Wire the spinner into dirty tracking via `attachDirtyOnSpinner(steepnessSpinner)`. | | |
-| TASK-021 | In `renderToFields()`, set the spinner value from `working.powerCurveSteepness`. | | |
-| TASK-022 | In `refreshEnableState()`, enable/disable the steepness spinner based on the enable checkbox. | | |
-| TASK-023 | In `validateAndApplyTo()`, read the spinner value and write it to `working.powerCurveSteepness`. | | |
+| TASK-018 | Add a `JSpinner steepnessSpinner` field to `SemiRealisticSettingsPanel` with `SpinnerNumberModel(0.5, 0.1, 1.0, 0.1)`. | ✅ | 2026-05-07 |
+| TASK-019 | In `buildBody()`, add a new "Power curve" section label between "Ramp timing" and "Brakes". Add labeled spinner `"Curve steepness (k):"` with tooltip. | ✅ | 2026-05-07 |
+| TASK-020 | Wire the spinner into dirty tracking via `attachDirtyOnSpinner(steepnessSpinner)`. | ✅ | 2026-05-07 |
+| TASK-021 | In `renderToFields()`, set the spinner value from `working.powerCurveSteepness`. | ✅ | 2026-05-07 |
+| TASK-022 | In `refreshEnableState()`, enable/disable the steepness spinner based on the enable checkbox. | ✅ | 2026-05-07 |
+| TASK-023 | In `validateAndApplyTo()`, read the spinner value and write it to `working.powerCurveSteepness`. | ✅ | 2026-05-07 |
 | TASK-024 | Manually verify the UI: open Debug → RailDriver Settings, navigate to the Semi-Realistic tab, confirm the new "Power curve" section appears with the steepness spinner, tooltip is visible, dirty tracking works, save/reset round-trips the value. | | |
 
 ### Phase 5: Integration Testing & Polish
