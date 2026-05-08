@@ -6,8 +6,6 @@ import java.awt.Container;
 import java.awt.event.ActionEvent;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
-import java.io.File;
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
@@ -23,7 +21,6 @@ import jmri.jmrit.roster.swing.RosterEntryComboBox;
 import jmri.jmrit.roster.swing.RosterEntrySelectorPanel;
 import jmri.jmrit.throttle.AddressListener;
 import jmri.jmrit.throttle.AddressPanel;
-import jmri.jmrit.throttle.LoadXmlThrottlesLayoutAction;
 import jmri.jmrit.throttle.ThrottleFrame;
 import jmri.jmrit.throttle.ThrottleFrameManager;
 import jmri.jmrit.throttle.ThrottleWindow;
@@ -364,20 +361,12 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         ThrottleFrameManager tfManager = InstanceManager.getDefault(ThrottleFrameManager.class);
 
         if (activeThrottleFrame == null) {
-            try {
-                LoadXmlThrottlesLayoutAction lxta = new LoadXmlThrottlesLayoutAction();
-                if (!lxta.loadThrottlesLayout(new File(ThrottleFrame.getDefaultThrottleFilename()))) {
-                    throw new IOException();
-                }
-            } catch (IOException ex) {
-                throttleWindow = tfManager.createThrottleWindow();
-                activeThrottleFrame = (ThrottleFrame) throttleWindow.newThrottleController();
-            }
+            throttleWindow = tfManager.createThrottleWindow();
+            activeThrottleFrame = (ThrottleFrame) throttleWindow.newThrottleController();
         }
 
-        // LoadXmlThrottlesLayoutAction uses an invokeLater to open the
-        // default throttles layout, so listener wiring has to wait until
-        // that has completed.
+        // Listener wiring runs on the GUI thread so the window is fully
+        // realised before we attach.
         ThreadingUtil.runOnGUIEventually(() -> {
             if (activeThrottleFrame == null) {
                 throttleWindow = tfManager.getCurrentThrottleFrame();
