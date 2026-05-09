@@ -75,6 +75,28 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     private ThrottleFrame activeThrottleFrame = null;
     private AddressPanel attachedAddressPanel = null;
 
+    // ======================== LED Display State Machine ========================
+
+    /** Context-aware display modes for the RailDriver 7-segment LED. */
+    enum LedDisplayMode { IDLE, ADDRESS, SPEED, FUNCTION_FLASH, DYN_BRAKE }
+
+    private LedDisplayMode ledMode = LedDisplayMode.IDLE;
+    private int functionFlashEpoch = 0;
+    private String functionFlashLabel = "";
+    private long lastLedUpdateMs = 0;
+    private static final int LED_MIN_UPDATE_INTERVAL_MS = 100;
+
+    /** Listener for semi-realistic engine speed step changes. Registered
+     *  on the engine when a throttle is acquired; removed on detach. */
+    private final PropertyChangeListener speedStepLedListener = evt -> {
+        if (ledMode != LedDisplayMode.FUNCTION_FLASH
+                && ledMode != LedDisplayMode.DYN_BRAKE) {
+            int step = (Integer) evt.getNewValue();
+            ledMode = (step > 0) ? LedDisplayMode.SPEED : LedDisplayMode.ADDRESS;
+            updateLedDisplay();
+        }
+    };
+
     /**
      * Per-throttle semi-realistic physics engine. Lazily created in
      * {@link #attachThrottleWindow()} after the {@code activeThrottleFrame}
@@ -109,8 +131,11 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
         @Override
         public void notifyAddressReleased(LocoAddress address) {
             if (engine != null) {
+                engine.removePropertyChangeListener(speedStepLedListener);
                 engine.detachThrottle();
             }
+            ledMode = LedDisplayMode.IDLE;
+            updateLedDisplay();
         }
 
         @Override
@@ -119,6 +144,9 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             SemiRealisticSettings s = getCalibration().semiRealistic();
             engine.updateSettings(s);
             engine.attachThrottle(t);
+            engine.addPropertyChangeListener(speedStepLedListener);
+            ledMode = LedDisplayMode.ADDRESS;
+            updateLedDisplay();
         }
 
         @Override
@@ -293,6 +321,7 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
             calibration = RailDriverCalibration.loadOrDefault(RailDriverCalibration.getDefaultFile());
         }
         setLEDs("Pro");
+        ledMode = LedDisplayMode.IDLE;
         speakerOn();
         if (thread == null || !thread.isAlive()) {
             startPollingThread();
@@ -752,6 +781,78 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
     private final byte DASHSEGMENT = 0x40;
     private final byte DPSEGMENT = (byte) 0x80;
 
+    // ======================== LED Display Helpers ========================
+
+    /**
+     * Formats the current loco address for the 3-digit LED display.
+     * Right-aligned; addresses &gt; 999 show the last 3 digits.
+     * Returns "Pro" if no active throttle frame or address.
+     */
+    String formatAddress() {
+        if (activeThrottleFrame == null) return "Pro";
+        AddressPanel ap = activeThrottleFrame.getAddressPanel();
+        if (ap == null) return "Pro";
+        DccLocoAddress addr = ap.getCurrentAddress();
+        if (addr == null) return "Pro";
+        int num = addr.getNumber();
+        return String.format("%3d", num % 1000);
+    }
+
+    /**
+     * Formats the current speed for the 3-digit LED display. In
+     * semi-realistic mode, shows the engine's live ramp step; otherwise
+     * derives the step from the throttle's speed setting.
+     */
+    String formatSpeed() {
+        if (engine != null && engine.isDriving()) {
+            return String.format("%3d", engine.getCurrentSpeedStep());
+        }
+        if (activeThrottleFrame == null) return "  0";
+        AddressPanel ap = activeThrottleFrame.getAddressPanel();
+        if (ap == null) return "  0";
+        DccThrottle t = ap.getThrottle();
+        if (t == null) return "  0";
+        float setting = t.getSpeedSetting();
+        if (setting <= 0f) return "  0";
+        float inc = t.getSpeedIncrement();
+        int maxSteps = (inc > 0f) ? Math.round(1.0f / inc) : 126;
+        int step = Math.round(setting * maxSteps);
+        return String.format("%3d", step);
+    }
+
+    /**
+     * Updates the LED display based on the current {@link #ledMode}.
+     * Rate-limited to avoid flooding the USB HID output — skips the
+     * write if fewer than {@link #LED_MIN_UPDATE_INTERVAL_MS} have
+     * elapsed since the last update (unless the mode itself changed).
+     */
+    private void updateLedDisplay() {
+        long now = System.currentTimeMillis();
+        if ((now - lastLedUpdateMs) < LED_MIN_UPDATE_INTERVAL_MS) {
+            return; // rate-limit
+        }
+        lastLedUpdateMs = now;
+        switch (ledMode) {
+            case IDLE:
+                setLEDs("Pro");
+                break;
+            case ADDRESS:
+                setLEDs(formatAddress());
+                break;
+            case SPEED:
+                setLEDs(formatSpeed());
+                break;
+            case FUNCTION_FLASH:
+                setLEDs(functionFlashLabel);
+                break;
+            case DYN_BRAKE:
+                setLEDs("DBr");
+                break;
+            default:
+                break;
+        }
+    }
+
     // Set the LEDS.
     public void setLEDs(@Nonnull String ledstring) {
         byte[] buff = new byte[7]; // Segment buffer.
@@ -934,10 +1035,13 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     attachedAddressPanel = null;
                 }
                 if (engine != null) {
+                    engine.removePropertyChangeListener(speedStepLedListener);
                     engine.dispose();
                     engine = null;
                 }
                 removeAirStatusPanel();
+                ledMode = LedDisplayMode.IDLE;
+                updateLedDisplay();
                 ThrottleFrame oldFrame = activeThrottleFrame;
                 if (throttleWindow != null) {
                     throttleWindow.removePropertyChangeListener(this);
@@ -1063,12 +1167,16 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                         ThreadingUtil.runOnGUIEventually(() -> t.setSpeedSetting(fractionF));
                     }
                     if (value < 0) {
-                        //TODO: dynamic braking
-                        setLEDs("DBr");
-                    } else {
-                        String speed = String.format("%03d", (int) fraction*100);
-                        //log.info("speed: " + speed);
-                        setLEDs(speed);
+                        ledMode = LedDisplayMode.DYN_BRAKE;
+                        updateLedDisplay();
+                    } else if (ledMode != LedDisplayMode.FUNCTION_FLASH) {
+                        // In semi-realistic mode, the speedStepLedListener
+                        // handles display updates on ramp ticks. In direct
+                        // mode, update here on lever movement.
+                        if (engine == null || !engine.isDriving()) {
+                            ledMode = (fractionF > 0f) ? LedDisplayMode.SPEED : LedDisplayMode.ADDRESS;
+                            updateLedDisplay();
+                        }
                     }
                 }
                 break;
@@ -1335,11 +1443,23 @@ public class RailDriverMenuItem extends JMenuItem implements HidServicesListener
                     }
                 }
                 if (isDown) {
-                    if (ledString.length() <= 3) {
-                        setLEDs(ledString);
-                    } else {
-                        sendStringAsync(ledString, 0.333);
-                    }
+                    // Flash the function label, then revert to speed/address
+                    functionFlashLabel = (ledString.length() <= 3) ? ledString : ledString.substring(0, 3);
+                    ledMode = LedDisplayMode.FUNCTION_FLASH;
+                    lastLedUpdateMs = 0; // force immediate update
+                    updateLedDisplay();
+                    functionFlashEpoch++;
+                    final int epoch = functionFlashEpoch;
+                    ThreadingUtil.runOnLayoutDelayed(() -> {
+                        if (epoch == functionFlashEpoch) {
+                            // Revert: check engine speed to decide mode
+                            boolean moving = (engine != null && engine.isDriving()
+                                    && engine.getCurrentSpeedStep() > 0);
+                            ledMode = moving ? LedDisplayMode.SPEED : LedDisplayMode.ADDRESS;
+                            lastLedUpdateMs = 0; // force immediate update
+                            updateLedDisplay();
+                        }
+                    }, 1500);
                 }
                 break; // if (oldValue.equals(...) {} else...
         }

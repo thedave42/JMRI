@@ -258,6 +258,7 @@ public class SemiRealisticThrottleEngineTest {
     public void testPropertyChangeConstants() {
         assertEquals("airLineValue", SemiRealisticThrottleEngine.AIR_LINE_VALUE);
         assertEquals("airReservoirPct", SemiRealisticThrottleEngine.AIR_RESERVOIR_PCT);
+        assertEquals("currentSpeedStep", SemiRealisticThrottleEngine.CURRENT_SPEED_STEP);
     }
 
     // ==================== ESU Decoder Brake Passthrough tests ====================

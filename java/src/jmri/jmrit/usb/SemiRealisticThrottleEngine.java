@@ -52,10 +52,10 @@ import org.slf4j.LoggerFactory;
  *   <li>{@link #dispose}: same as detach; engine is unusable after.
  * </ol>
  * <p>
- * Property change events: the engine fires {@link #AIR_LINE_VALUE}
- * and {@link #AIR_RESERVOIR_PCT} PropertyChange events on all air
- * system state transitions. Events fire on the layout thread; UI
- * consumers must marshal to the GUI thread via
+ * Property change events: the engine fires {@link #AIR_LINE_VALUE},
+ * {@link #AIR_RESERVOIR_PCT}, and {@link #CURRENT_SPEED_STEP}
+ * PropertyChange events on state transitions. Events fire on the layout
+ * thread; UI consumers must marshal to the GUI thread via
  * {@link ThreadingUtil#runOnGUIEventually}.
  * <p>
  * Algorithm reference: EngineDriver {@code throttle_semi_realistic.java}
@@ -67,6 +67,8 @@ public final class SemiRealisticThrottleEngine {
     public static final String AIR_LINE_VALUE = "airLineValue";
     /** PropertyChange event name for air reservoir percentage. */
     public static final String AIR_RESERVOIR_PCT = "airReservoirPct";
+    /** PropertyChange event name for current speed step (ramp tick). */
+    public static final String CURRENT_SPEED_STEP = "currentSpeedStep";
 
     /** Reverser direction. */
     public enum Direction { FORWARD, NEUTRAL, REVERSE }
@@ -1009,10 +1011,16 @@ public final class SemiRealisticThrottleEngine {
 
         // Step by speedStepIncrement in the appropriate direction, clamping at target
         int increment = Math.max(1, settings.speedStepIncrement);
+        int oldStep = currentSpeedStep;
         if (currentSpeedStep < targetSpeedStep) {
             currentSpeedStep = Math.min(currentSpeedStep + increment, targetSpeedStep);
         } else {
             currentSpeedStep = Math.max(currentSpeedStep - increment, targetSpeedStep);
+        }
+
+        // Notify listeners of the speed step change (drives LED display updates).
+        if (currentSpeedStep != oldStep) {
+            pcs.firePropertyChange(CURRENT_SPEED_STEP, oldStep, currentSpeedStep);
         }
 
         // Emit the new speed setting
