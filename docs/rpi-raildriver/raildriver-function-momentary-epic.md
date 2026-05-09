@@ -33,11 +33,12 @@ behavior directly in the Swing layer — it never consults the `DccThrottle` obj
 `functionMomentary` flags.
 
 The RailDriver code, by contrast, reads `DccThrottle.getFunctionMomentary(functionNumber)` to
-decide how to handle button presses. The problem is that the `FunctionPanel` never propagates
-the roster entry's lockable settings to `DccThrottle.setFunctionMomentary()` — the notification
-path is gated by a `dirty` flag that is `false` during roster-driven initialization. As a result,
-`getFunctionMomentary()` always returns `false` (the default), and the RailDriver treats every
-function as latching.
+decide how to handle button presses. The problem is that nobody calls
+`DccThrottle.setFunctionMomentary()` with the roster entry's lockable settings at throttle
+acquire time. A freshly-acquired `DccThrottle` defaults all `functionMomentary` flags to `false`
+(not momentary = latching), and the `FunctionPanel` reads the roster into its local button models
+but never syncs those values back to the throttle object. As a result, `getFunctionMomentary()`
+always returns `false`, and the RailDriver treats every function as latching.
 
 The WiThrottle server has the same need and correctly solves it by explicitly calling
 `throttle.setFunctionMomentary(funcNum, !rosterEntry.getFunctionLockable(funcNum))` when a
