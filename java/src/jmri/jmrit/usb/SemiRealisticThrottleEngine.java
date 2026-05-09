@@ -20,8 +20,19 @@ import org.slf4j.LoggerFactory;
  * The throttle lever sets a target decoder speed step (integer). A
  * self-rescheduling callback on the JMRI layout thread walks the current
  * speed step toward the target one step at a time, with a configurable
- * delay between steps. Brakes, load, and air-line state modify the delay
- * (and thereby the ramp rate) rather than applying continuous physics.
+ * delay between steps.
+ * <p>
+ * <b>Deceleration</b> uses an additive force model: each deceleration
+ * source (rolling resistance, air brake, independent brake, dynamic brake)
+ * contributes an independent force value with its own load behaviour.
+ * Air brake force is load-invariant (force proportional to mass); loco-only
+ * brake and coast forces degrade inversely with load. The delay between
+ * speed steps is {@code baseDecelDelayMs / totalForce}, producing smooth
+ * coast-to-brake transitions and correct per-source load scaling.
+ * <p>
+ * <b>Acceleration</b> uses the EngineDriver model: the base acceleration
+ * delay is scaled by load (heavier = slower), with an optional logarithmic
+ * power curve.
  * <p>
  * Threading contract: <b>all public methods must be called on the layout
  * thread</b> (enforced by {@code @InvokeOnLayoutThread} annotations and
@@ -81,10 +92,22 @@ public final class SemiRealisticThrottleEngine {
     private int rampStartStep = 0;
 
     /** Multiplicative modifier on inter-step delay. Sign indicates
-     *  direction: positive = accelerate, negative = decelerate. Magnitude
-     *  scales the base delay (1.0 = unmodified). Computed by
+     *  direction: positive = accelerate, negative = decelerate. For
+     *  acceleration, the magnitude scales the base delay (1.0 = unmodified,
+     *  load-scaled). For deceleration, the sign is used to select the
+     *  decel path in {@link #computeRampDelay}; the actual delay is
+     *  computed by the additive force model via
+     *  {@link #computeDecelerationDelay}. Computed by
      *  {@link #recomputeTarget}. */
     private double targetAcceleration = 0;
+
+    // --- Additive force model state (populated by recomputeTarget) ---
+    /** Coast (rolling-resistance) force: {@code 1.0 / loadMultiplier}. */
+    private double decelCoastForce = 1.0;
+    /** Air brake force (load-invariant). */
+    private double decelAirForce = 0.0;
+    /** Combined independent + dynamic brake force (load-degraded). */
+    private double decelLocoForce = 0.0;
 
     /** Epoch counter for the ramp pipeline. Bumped on every
      *  {@link #recomputeTarget} and {@link #detachThrottle} call; stale
@@ -218,6 +241,9 @@ public final class SemiRealisticThrottleEngine {
         this.esuLowActive = false;
         this.esuMidActive = false;
         this.esuHighActive = false;
+        this.decelCoastForce = 1.0;
+        this.decelAirForce = 0.0;
+        this.decelLocoForce = 0.0;
         log.debug("Engine detached");
     }
 
@@ -264,6 +290,9 @@ public final class SemiRealisticThrottleEngine {
         targetAcceleration = 0;
         rampStartStep = 0;
         pendingDirection = null;
+        decelCoastForce = 1.0;
+        decelAirForce = 0.0;
+        decelLocoForce = 0.0;
         if (throttle != null) {
             throttle.setSpeedSetting(-1f);
         }
@@ -440,8 +469,14 @@ public final class SemiRealisticThrottleEngine {
 
     /**
      * Computes the target speed step and acceleration from the current
-     * input state, bumps the ramp epoch, and posts a fresh ramp callback.
-     * Matches EngineDriver's {@code setTargetSpeed} logic.
+     * input state, populates the additive force fields for
+     * {@link #computeRampDelay}, bumps the ramp epoch, and posts a fresh
+     * ramp callback.
+     * <p>
+     * Deceleration delay is determined by the additive force model: each
+     * brake source contributes force independently with its own load
+     * behavior. Acceleration delay still uses the EngineDriver global
+     * load-scaling model.
      */
     private void recomputeTarget() {
         if (!attached || settings == null) return;
@@ -450,14 +485,14 @@ public final class SemiRealisticThrottleEngine {
         if (sliderSpeed > maxSpeedSteps) sliderSpeed = maxSpeedSteps;
         if (sliderSpeed < 0) sliderSpeed = 0;
 
-        // Direction NEUTRAL short-circuits to coast-to-stop.
+        // NEUTRAL sets target to zero but does NOT skip brake computation —
+        // brakes function in NEUTRAL (reverser affects tractive effort only).
         if (direction == Direction.NEUTRAL) {
             targetSpeedStep = 0;
-            targetAcceleration = -1.0;
         } else {
             targetSpeedStep = sliderSpeed;
-            targetAcceleration = 1.0; // default: no modifier
         }
+        targetAcceleration = 1.0; // default; overridden by regime logic below
 
         // --- Compute effective brake from all sources ---
         // Independent brake: quantise lever fraction to notches.
@@ -486,58 +521,83 @@ public final class SemiRealisticThrottleEngine {
         double airBrakePcnt = getBrakeDecimalPcnt(effAirStep,
                 settings.numberOfBrakeSteps, MAX_BRAKE);
 
-        // Per-source load scaling (Epic §2e): loco-only brakes (indep,
-        // dyn) are reduced by load; train-wide braking (air) is invariant.
+        // --- Load multiplier ---
         boolean loadChanged = (settings.loadSliderPosition != prevLoadStep);
         prevLoadStep = settings.loadSliderPosition;
         double loadMultiplier = (settings.loadSliderPosition > 0)
                 ? getLoadPcnt(settings.loadSliderPosition,
                         settings.numberOfLoadSteps, settings.maxLoadPcnt)
                 : 1.0;
+
+        // Per-source load scaling on effectiveBrake: loco-only brakes
+        // (indep, dyn) are reduced by load for Regime C target clamping.
+        // Air brake is invariant. These scaled values are used ONLY for
+        // effectiveBrake / regime logic, NOT for the force model.
+        double scaledIndepBrakePcnt = indepBrakePcnt;
+        double scaledDynBrakePcnt = dynBrakePcnt;
         if (loadMultiplier > 1.0) {
-            indepBrakePcnt = 1.0 - ((1.0 - indepBrakePcnt) / loadMultiplier);
-            dynBrakePcnt   = 1.0 - ((1.0 - dynBrakePcnt)   / loadMultiplier);
+            scaledIndepBrakePcnt = 1.0 - ((1.0 - indepBrakePcnt) / loadMultiplier);
+            scaledDynBrakePcnt   = 1.0 - ((1.0 - dynBrakePcnt)   / loadMultiplier);
         }
 
         // Effective brake = min of all sources (smaller = more braking).
-        double effectiveBrake = Math.min(indepBrakePcnt,
-                Math.min(dynBrakePcnt, airBrakePcnt));
+        // Uses per-source-scaled values for correct Regime C target clamping.
+        double effectiveBrake = Math.min(scaledIndepBrakePcnt,
+                Math.min(scaledDynBrakePcnt, airBrakePcnt));
 
         // --- Apply brake to target/acceleration (EngineDriver §3.5) ---
-        if (direction != Direction.NEUTRAL) {
-            if (effectiveBrake >= 1.0) {
-                // Regime A: no brake force — ramp toward slider.
-                if (targetSpeedStep > currentSpeedStep) {
-                    targetAcceleration = 1.0;
-                } else if (targetSpeedStep < currentSpeedStep) {
-                    targetAcceleration = -1.0;
-                } else {
-                    targetAcceleration = 0;
-                }
-            } else if (targetSpeedStep == 0) {
-                // Regime B: throttle at zero + brake applied.
-                targetAcceleration = -1.0 * effectiveBrake;
+        // NEUTRAL participates in regime logic (brakes work in NEUTRAL).
+        boolean underPower = false;
+        if (effectiveBrake >= 1.0) {
+            // Regime A: no brake force — ramp toward slider (or toward 0 in NEUTRAL).
+            if (targetSpeedStep > currentSpeedStep) {
+                targetAcceleration = 1.0;
+            } else if (targetSpeedStep < currentSpeedStep) {
+                targetAcceleration = -1.0;
             } else {
-                // Regime C: throttle and brake both active.
-                // Brake clips the target speed.
-                int brakeReducedTarget = (int) Math.round(
-                        sliderSpeed - sliderSpeed * (1.0 - effectiveBrake));
-                if (brakeReducedTarget < 0) brakeReducedTarget = 0;
-                targetSpeedStep = brakeReducedTarget;
+                targetAcceleration = 0;
+            }
+        } else if (targetSpeedStep == 0) {
+            // Regime B: throttle at zero (or NEUTRAL) + brake applied.
+            targetAcceleration = -1.0 * effectiveBrake;
+        } else {
+            // Regime C: throttle and brake both active.
+            // Brake clips the target speed.
+            int brakeReducedTarget = (int) Math.round(
+                    sliderSpeed - sliderSpeed * (1.0 - effectiveBrake));
+            if (brakeReducedTarget < 0) brakeReducedTarget = 0;
+            targetSpeedStep = brakeReducedTarget;
 
-                if (targetSpeedStep <= currentSpeedStep) {
-                    // Slowing down under power — softer braking
-                    targetAcceleration = -1.0 * (1.0 - effectiveBrake * MAX_BRAKE_UNDER_POWER);
-                } else {
-                    // Still accelerating but slower
-                    targetAcceleration = 1.0 + (1.0 - effectiveBrake * MAX_BRAKE);
-                }
+            if (targetSpeedStep <= currentSpeedStep) {
+                // Slowing down under power — softer braking
+                targetAcceleration = -1.0 * (1.0 - effectiveBrake * MAX_BRAKE_UNDER_POWER);
+                underPower = true;
+            } else {
+                // Still accelerating but slower
+                targetAcceleration = 1.0 + (1.0 - effectiveBrake * MAX_BRAKE);
             }
         }
 
-        // Load scaling on targetAcceleration (EngineDriver §4):
-        // higher load = longer inter-step delay = slower acceleration.
-        if (loadMultiplier > 1.0) {
+        // --- Populate additive force fields for computeRampDelay ---
+        // Each source contributes force independently with its own load behaviour:
+        //   Coast (rolling resistance): inversely proportional to mass (inertia)
+        //   Air brake: load-invariant (force ∝ mass → constant deceleration)
+        //   Loco-only (indep, dyn): inversely proportional to mass (fixed force)
+        decelCoastForce = coastForce(loadMultiplier);
+        if (underPower) {
+            // Regime C under-power: use exact-match formula (spike RT-6 Candidate B)
+            decelAirForce = brakeForceUnderPower(airBrakePcnt);
+            decelLocoForce = brakeForceUnderPower(indepBrakePcnt) / Math.max(loadMultiplier, 1.0)
+                           + brakeForceUnderPower(dynBrakePcnt) / Math.max(loadMultiplier, 1.0);
+        } else {
+            // Regime A/B or NEUTRAL: standard force mapping
+            decelAirForce = brakeForce(airBrakePcnt);
+            decelLocoForce = brakeForce(indepBrakePcnt) / Math.max(loadMultiplier, 1.0)
+                           + brakeForce(dynBrakePcnt) / Math.max(loadMultiplier, 1.0);
+        }
+
+        // Acceleration: global load scaling (heavier = slower to speed up).
+        if (loadMultiplier > 1.0 && targetAcceleration > 0) {
             targetAcceleration = targetAcceleration * loadMultiplier;
         }
 
@@ -614,6 +674,80 @@ public final class SemiRealisticThrottleEngine {
 
         int delay = (int) Math.round(minDelayMs + (maxDelayMs - minDelayMs) * ratio);
         return Math.max(minDelayMs, Math.min(maxDelayMs, delay));
+    }
+
+    // ======================== Additive Force Model ========================
+
+    /**
+     * Converts a brake percentage (from {@link #getBrakeDecimalPcnt}) into
+     * an additive force value. The mapping is derived from the identity
+     * {@code baseDecel / (1 + brakeForce) = baseDecel × brakePcnt}, giving
+     * {@code brakeForce = (1/brakePcnt) − 1}.
+     * <p>
+     * Returns 0.0 when the brake is fully released ({@code brakePcnt >= 1.0}).
+     *
+     * @param brakePcnt brake percentage where 1.0 = no braking, 0.30 = full
+     * @return additive force value (0.0 = no force, 2.333 = full brake at MAX_BRAKE=0.70)
+     */
+    static double brakeForce(double brakePcnt) {
+        if (brakePcnt >= 1.0) return 0.0;
+        if (brakePcnt <= 0.0) brakePcnt = 0.01; // guard against division by zero
+        return (1.0 / brakePcnt) - 1.0;
+    }
+
+    /**
+     * Converts a brake percentage into an additive force value for Regime C
+     * (under-power braking). Derived from
+     * {@code baseDecel / (1 + f) = baseDecel × (1 − brakePcnt × MAX_BRAKE_UNDER_POWER)},
+     * giving {@code f = (brakePcnt × 0.50) / (1 − brakePcnt × 0.50)}.
+     *
+     * @param brakePcnt brake percentage where 1.0 = no braking
+     * @return additive force value matching Regime C delay curve
+     */
+    static double brakeForceUnderPower(double brakePcnt) {
+        if (brakePcnt >= 1.0) return 0.0;
+        double product = brakePcnt * MAX_BRAKE_UNDER_POWER;
+        double denom = 1.0 - product;
+        if (denom <= 0.0) denom = 0.01;
+        return product / denom;
+    }
+
+    /**
+     * Computes the coast (rolling-resistance) force for a given load
+     * multiplier. At load 0 (multiplier 1.0), returns 1.0. At higher
+     * loads the force decreases inversely, modelling inertia.
+     *
+     * @param loadMultiplier the load multiplier from {@link #getLoadPcnt}
+     * @return coast force value
+     */
+    static double coastForce(double loadMultiplier) {
+        return 1.0 / Math.max(loadMultiplier, 1.0);
+    }
+
+    /**
+     * Computes the deceleration inter-step delay using the additive force
+     * model. Each deceleration source (coast/rolling resistance, air brake,
+     * loco-only brakes) contributes an independent force value. Forces add,
+     * and the delay is inversely proportional to total force:
+     * {@code delay = baseDecelDelayMs / totalForce}.
+     * <p>
+     * At load 0 this produces identical delays to the original EngineDriver
+     * formula {@code delay = baseDecelDelayMs × brakePcnt}. At higher loads,
+     * air brake force is load-invariant while loco-only and coast forces
+     * degrade with load, producing per-source load scaling with smooth
+     * coast-to-brake transitions.
+     *
+     * @param coastForce     rolling-resistance force ({@code 1.0 / loadMultiplier})
+     * @param airForce       air brake force (load-invariant)
+     * @param locoForce      combined independent + dynamic brake force (load-degraded)
+     * @param baseDecelDelayMs base deceleration delay in milliseconds
+     * @return inter-step delay in milliseconds, at least 1
+     */
+    static int computeDecelerationDelay(double coastForce, double airForce,
+                                        double locoForce, int baseDecelDelayMs) {
+        double totalForce = coastForce + airForce + locoForce;
+        if (totalForce < 0.001) totalForce = 0.001;
+        return Math.max(1, (int) Math.round((double) baseDecelDelayMs / totalForce));
     }
 
     // ======================== ESU Decoder Brake Passthrough ========================
@@ -838,8 +972,9 @@ public final class SemiRealisticThrottleEngine {
      * delay ramp from {@code minEmitIntervalMs} up to the load-adjusted
      * base acceleration delay.
      * <p>
-     * For deceleration (or when no power curve is configured): uses the
-     * original EngineDriver formula {@code Δt = baseDelay × |targetAcceleration|}.
+     * For deceleration: delegates to the additive force model via
+     * {@link #computeDecelerationDelay} using the per-source force
+     * fields populated by {@link #recomputeTarget}.
      */
     private int computeRampDelay() {
         if (settings == null) return 300;
@@ -857,10 +992,9 @@ public final class SemiRealisticThrottleEngine {
             return maxDelay;
         }
 
-        // Decelerating — unchanged constant-delay formula.
-        double magnitude = Math.abs(targetAcceleration);
-        if (magnitude < 0.01) magnitude = 1.0;
-        return Math.max(1, (int) Math.round(settings.baseDecelDelayMs * magnitude));
+        // Decelerating — additive force model.
+        return computeDecelerationDelay(decelCoastForce, decelAirForce,
+                decelLocoForce, settings.baseDecelDelayMs);
     }
 
     /**

@@ -539,4 +539,163 @@ public class SemiRealisticThrottleEngineTest {
                 100, 80, 50, 50, 300, 0.5);
         assertEquals(300, delay, "Descending ramp should return maxDelayMs");
     }
+
+    // ==================== Additive force model: computeDecelerationDelay ====================
+
+    @Test
+    public void testDecelDelay_coastOnly_load0() {
+        // Coast at load 0: coastForce=1.0, no brakes. delay = 800/1.0 = 800
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                1.0, 0.0, 0.0, 800);
+        assertEquals(800, delay);
+    }
+
+    @Test
+    public void testDecelDelay_coastOnly_load5() {
+        // Coast at load 5 (multiplier 10): coastForce=0.1. delay = 800/0.1 = 8000
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.1, 0.0, 0.0, 800);
+        assertEquals(8000, delay);
+    }
+
+    @Test
+    public void testDecelDelay_fullAirBrake_load0_matchesCurrent() {
+        // Full air brake at load 0. brakePcnt=0.30, brakeForce=(1/0.30)-1=2.3333
+        // totalForce = 1.0 + 2.3333 = 3.3333, delay = 800/3.3333 = 240
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                1.0, 2.333333, 0.0, 800);
+        assertEquals(240, delay, "Must match current no-load full-brake delay");
+    }
+
+    @Test
+    public void testDecelDelay_fullAirBrake_load5_withinSM1() {
+        // Full air at load 5. coastForce=0.1, airForce=2.3333 (invariant).
+        // totalForce = 0.1 + 2.3333 = 2.4333, delay = 800/2.4333 ≈ 329
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.1, 2.333333, 0.0, 800);
+        // SM-1: ratio must be ≤ 3× of no-load (240ms). 329/240 = 1.37
+        assertTrue(delay <= 720, "Air brake at load 5 must be ≤ 3× no-load delay");
+        assertEquals(329, delay);
+    }
+
+    @Test
+    public void testDecelDelay_fullIndepBrake_load5_matchesSM2() {
+        // Full indep at load 5. coastForce=0.1, indepForce=2.3333/10=0.23333
+        // totalForce = 0.1 + 0.23333 = 0.33333, delay = 800/0.33333 = 2400
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.1, 0.0, 0.233333, 800);
+        // SM-2: ratio must be ≈ 10× of no-load (240ms). 2400/240 = 10.0
+        assertEquals(2400, delay, "Indep brake at load 5 must be ~10× no-load delay");
+    }
+
+    @Test
+    public void testDecelDelay_mixedBraking_shorterThanEitherAlone() {
+        // Full air + full indep at load 5.
+        // coastForce=0.1, airForce=2.3333, locoForce=0.23333
+        // totalForce = 0.1 + 2.3333 + 0.23333 = 2.6667, delay = 800/2.6667 = 300
+        int airOnly = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.1, 2.333333, 0.0, 800);
+        int indepOnly = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.1, 0.0, 0.233333, 800);
+        int mixed = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.1, 2.333333, 0.233333, 800);
+        assertTrue(mixed < airOnly, "Mixed must be shorter than air-only");
+        assertTrue(mixed < indepOnly, "Mixed must be shorter than indep-only");
+        assertEquals(300, mixed);
+    }
+
+    @Test
+    public void testDecelDelay_zeroForce_clamped() {
+        // Edge case: all forces zero → totalForce clamped to 0.001
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                0.0, 0.0, 0.0, 800);
+        assertEquals(800000, delay, "Zero force should produce very large but finite delay");
+    }
+
+    @Test
+    public void testDecelDelay_midBrake_load0_matchesCurrent() {
+        // Notch 4 at load 0. brakePcnt=0.697628, brakeForce=(1/0.697628)-1=0.433428
+        // totalForce = 1.0 + 0.433428 = 1.433428, delay = 800/1.433428 ≈ 558
+        int delay = SemiRealisticThrottleEngine.computeDecelerationDelay(
+                1.0, 0.433428, 0.0, 800);
+        assertEquals(558, delay, "Mid-brake at load 0 should match current delay");
+    }
+
+    // ==================== Phase 3: brakeForce / coastForce helpers ====================
+
+    @Test
+    public void testBrakeForce_released() {
+        assertEquals(0.0, SemiRealisticThrottleEngine.brakeForce(1.0), 0.0001);
+    }
+
+    @Test
+    public void testBrakeForce_fullBrake() {
+        // brakePcnt=0.30 → (1/0.30)-1 = 2.3333
+        assertEquals(2.3333, SemiRealisticThrottleEngine.brakeForce(0.30), 0.001);
+    }
+
+    @Test
+    public void testBrakeForce_monotonicallyIncreasing() {
+        double prev = 0.0;
+        for (int step = 1; step <= 7; step++) {
+            double brakePcnt = SemiRealisticThrottleEngine.getBrakeDecimalPcnt(step, 7, 0.70);
+            double force = SemiRealisticThrottleEngine.brakeForce(brakePcnt);
+            assertTrue(force > prev, "brakeForce must increase as brake applied more");
+            prev = force;
+        }
+    }
+
+    @Test
+    public void testBrakeForce_preservesDelayAtLoad0() {
+        // Verify identity: 800 / (1.0 + brakeForce) == 800 * brakePcnt
+        for (int step = 0; step <= 7; step++) {
+            double brakePcnt = SemiRealisticThrottleEngine.getBrakeDecimalPcnt(step, 7, 0.70);
+            double force = SemiRealisticThrottleEngine.brakeForce(brakePcnt);
+            double delayFromForce = 800.0 / (1.0 + force);
+            double delayFromCurrent = 800.0 * brakePcnt;
+            assertEquals(delayFromCurrent, delayFromForce, 0.01,
+                    "Force model must match current model at load 0, step " + step);
+        }
+    }
+
+    @Test
+    public void testBrakeForce_guardsDivisionByZero() {
+        double force = SemiRealisticThrottleEngine.brakeForce(0.0);
+        assertTrue(Double.isFinite(force), "brakeForce(0) must be finite");
+        assertTrue(force > 0, "brakeForce(0) must be positive");
+    }
+
+    @Test
+    public void testBrakeForceUnderPower_released() {
+        assertEquals(0.0, SemiRealisticThrottleEngine.brakeForceUnderPower(1.0), 0.0001);
+    }
+
+    @Test
+    public void testBrakeForceUnderPower_matchesCurrentRegimeC() {
+        // Verify: 800 / (1 + f) == 800 * (1 - brakePcnt * 0.50) at load 0
+        double[] testPcnts = {0.30, 0.50, 0.70, 0.90, 0.962};
+        for (double brakePcnt : testPcnts) {
+            double force = SemiRealisticThrottleEngine.brakeForceUnderPower(brakePcnt);
+            double delayFromForce = 800.0 / (1.0 + force);
+            double delayFromCurrent = 800.0 * (1.0 - brakePcnt * 0.50);
+            assertEquals(delayFromCurrent, delayFromForce, 0.01,
+                    "Under-power force must match current Regime C at load 0, brakePcnt " + brakePcnt);
+        }
+    }
+
+    @Test
+    public void testCoastForce_load0() {
+        assertEquals(1.0, SemiRealisticThrottleEngine.coastForce(1.0), 0.0001);
+    }
+
+    @Test
+    public void testCoastForce_load5() {
+        assertEquals(0.1, SemiRealisticThrottleEngine.coastForce(10.0), 0.0001);
+    }
+
+    @Test
+    public void testCoastForce_clampsBelowOne() {
+        // loadMultiplier < 1 should still give 1.0
+        assertEquals(1.0, SemiRealisticThrottleEngine.coastForce(0.5), 0.0001);
+    }
 }

@@ -4,7 +4,7 @@ version: 1
 date_created: 2025-05-08
 last_updated: 2025-05-08
 owner: thedave42
-status: 'Planned'
+status: 'In progress'
 tags: [feature, semi-realistic, braking, raildriver]
 ---
 
